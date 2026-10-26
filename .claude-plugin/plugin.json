@@ -1,0 +1,9 @@
+{
+  "name": "notes-keeping",
+  "version": "0.1.0",
+  "description": "Session notes file (initial prompt, updates, important, chat) kept across compaction, with a notes pane and a selection band",
+  "author": {
+    "name": "Cyril Antoni"
+  },
+  "types": "./types/index.d.ts"
+}
