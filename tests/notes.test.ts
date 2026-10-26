@@ -2,6 +2,7 @@ import { describe, expect, test } from 'claude-code/testing'
 
 import {
   addChat,
+  addTurn,
   addImportant,
   addSession,
   addUpdate,
@@ -13,6 +14,7 @@ import {
   projectName,
   sections,
   setContinuation,
+  setObjectives,
   stamp,
   summary,
 } from '../hooks/notes'
@@ -61,20 +63,20 @@ describe('stamp and file names', () => {
 describe('section writer', () => {
   test('init lays out the four headings in order and records the session id', () => {
     expect(create('  Plan the day  ', ID)).toBe(
-      `# Initial Prompt\n\nSessions: ${ID}\n\nPlan the day\n\n## Updates\n\n# Important\n\n# Chat\n`,
+      `# Objectives\n\nSessions: ${ID}\n\nPlan the day\n\n## Updates\n\n# Important\n\n# Chat\n`,
     )
     expect(sections(create('Plan', ID)).sessions).toEqual([ID])
-    expect(sections(create('Plan', ID)).prompt).toBe('Plan')
+    expect(sections(create('Plan', ID)).objectives).toBe('Plan')
   })
 
-  test('addSession records a new session id once, keeping the continuation and the prompt', () => {
+  test('addSession records a new session id once, keeping the continuation and the objectives', () => {
     let md = setContinuation(create('Plan', 'first'), 'old.md')
     md = addSession(md, 'second')
     md = addSession(md, 'second')
-    expect(md.startsWith('# Initial Prompt\n\nContinuation of: old.md\n\nSessions: first, second\n\nPlan\n\n## Updates')).toBe(true)
+    expect(md.startsWith('# Objectives\n\nContinuation of: old.md\n\nSessions: first, second\n\nPlan\n\n## Updates')).toBe(true)
     expect(sections(md).sessions).toEqual(['first', 'second'])
     expect(sections(md).continuation).toBe('old.md')
-    expect(sections(md).prompt).toBe('Plan')
+    expect(sections(md).objectives).toBe('Plan')
   })
 
   test('update, important and chat land in their own sections', () => {
@@ -86,7 +88,7 @@ describe('section writer', () => {
     md = addChat(md, 'Next?', 'Ship it')
     expect(md).toBe(
       [
-        '# Initial Prompt',
+        '# Objectives',
         '',
         `Sessions: ${ID}`,
         '',
@@ -124,19 +126,19 @@ describe('section writer', () => {
     expect(s.chat).toContain('\\# Important')
   })
 
-  test('continuation goes first under # Initial Prompt and is replaced, not stacked', () => {
+  test('continuation goes first under # Objectives and is replaced, not stacked', () => {
     let md = setContinuation(create('Plan', ID), '25-10-2026-00-00.md')
-    expect(md.startsWith(`# Initial Prompt\n\nContinuation of: 25-10-2026-00-00.md\n\nSessions: ${ID}\n\nPlan\n`)).toBe(true)
+    expect(md.startsWith(`# Objectives\n\nContinuation of: 25-10-2026-00-00.md\n\nSessions: ${ID}\n\nPlan\n`)).toBe(true)
     md = setContinuation(md, '24-10-2026-09-00.md')
     expect(md.match(/Continuation of:/g)?.length).toBe(1)
     expect(sections(md).continuation).toBe('24-10-2026-09-00.md')
-    expect(sections(md).prompt).toBe('Plan')
+    expect(sections(md).objectives).toBe('Plan')
   })
 
   test('reads and writes the captain\'s example layout', () => {
     const example = '# Initial Prompt\n\nAll workers died.\n\n## Updates\n\n[UPDATE] 26-10-2026-10-58\n- Make a plugin\n\n\n# Important\n\n[AI_AGENT] keep this\n\n# Chat\n\n[AI_AGENT]Captain, go?\n[USER]Go.\n'
     const s = sections(example)
-    expect(s.prompt).toBe('All workers died.')
+    expect(s.objectives).toBe('All workers died.')
     expect(s.updates).toBe('[UPDATE] 26-10-2026-10-58\n- Make a plugin')
     expect(s.important).toBe('[AI_AGENT] keep this')
     expect(s.chat).toBe('[AI_AGENT]Captain, go?\n[USER]Go.')
@@ -144,9 +146,49 @@ describe('section writer', () => {
     expect(sections(addImportant(example, '[USER]', 'two')).important).toBe('[AI_AGENT] keep this\n\n[USER] two')
   })
 
+  test('empty objectives leave the heading bare; setObjectives fills it once, updates go under ## Updates', () => {
+    const md = create('', ID)
+    expect(md).toBe(`# Objectives\n\nSessions: ${ID}\n\n## Updates\n\n# Important\n\n# Chat\n`)
+    expect(sections(md).objectives).toBe('')
+    const set = setObjectives(md, 'Ship the band fix')
+    expect(set).toBe(`# Objectives\n\nSessions: ${ID}\n\nShip the band fix\n\n## Updates\n\n# Important\n\n# Chat\n`)
+    expect(summary(set)).toBe('Ship the band fix')
+  })
+
+  test('a file from before Objectives keeps its # Initial Prompt heading', () => {
+    const old = `# Initial Prompt\n\nSessions: ${ID}\n\nOld plan\n\n## Updates\n\n# Important\n\n# Chat\n`
+    expect(sections(old).objectives).toBe('Old plan')
+    const md = addSession(old, 'second')
+    expect(md.startsWith(`# Initial Prompt\n\nSessions: ${ID}, second\n\nOld plan\n\n## Updates`)).toBe(true)
+    expect(md).not.toContain('# Objectives')
+  })
+
+  test("reads and writes the captain's hand-edited heading layout intact", () => {
+    // The captain's hand-edited headings; the body text is a stand-in.
+    const captain = '# Initial Prompt\n\n# Goals\n\nGoal one\n- step\n\n## Updates\n\n# Important\n\n# Chat\n'
+    const s = sections(captain)
+    expect(s.objectives).toBe('Goal one\n- step')
+    expect(s.updates).toBe('')
+    expect(summary(captain)).toBe('Goal one')
+    let md = addSession(captain, ID)
+    md = addImportant(md, '[USER]', 'kept')
+    md = addUpdate(md, '2026-10-26-14-00', 'more')
+    expect(md).toBe(
+      `# Initial Prompt\n\nSessions: ${ID}\n\n# Goals\n\nGoal one\n- step\n\n## Updates\n\n[UPDATE] 2026-10-26-14-00\nmore\n\n# Important\n\n[USER] kept\n\n# Chat\n`,
+    )
+    expect(sections(md).objectives).toBe('Goal one\n- step')
+    const empty = setObjectives('# Initial Prompt\n\n# Goals\n\n## Updates\n\n# Important\n\n# Chat\n', 'Filled')
+    expect(empty.startsWith('# Initial Prompt\n\n# Goals\n\nFilled\n\n## Updates')).toBe(true)
+  })
+
+  test('addTurn records each queued pair, then the message typed with them', () => {
+    const md = addTurn(create('Plan', ID), [{ agent: 'Merge?', user: 'Yes' }, { agent: 'Push?', user: 'No' }], 'carry on')
+    expect(sections(md).chat).toBe('[AI_AGENT] Merge?\n[USER] Yes\n\n[AI_AGENT] Push?\n[USER] No\n\n[USER] carry on')
+  })
+
   test('a file missing sections gets them back on the next write', () => {
     const s = sections(addChat('# Initial Prompt\n\nPlan\n', 'a', 'b'))
-    expect(s.prompt).toBe('Plan')
+    expect(s.objectives).toBe('Plan')
     expect(s.chat).toBe('[AI_AGENT] a\n[USER] b')
   })
 })

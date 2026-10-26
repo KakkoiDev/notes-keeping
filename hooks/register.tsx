@@ -1,13 +1,13 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { Band, Notes } from '../types'
+import type { Notes, Pair, Select } from '../types'
 import {
   AGENT_TAG,
   USER_TAG,
-  addChat,
   addImportant,
   addSession,
+  addTurn,
   addUpdate,
   chatPair,
   create,
@@ -18,34 +18,50 @@ import {
   projectName,
   sections,
   setContinuation,
+  setObjectives,
   stamp,
   summary,
 } from './notes'
 
 const NAME = 'notes-keeping'
 const PANE = 'notes-keeping'
+const SELECT = 'notes-keeping-select'
+const REPLIES = 'notes-keeping-replies'
 const TITLE = 'Notes'
 const DIR = '.notes-keeping'
+// An engine action with no handler mounted at the prompt; the user's ctrl+q binding, or its own ctrl+x b, presses it.
+const ACTION = 'app:cycleDiffBase'
+const CHORD = 'ctrl+q'
 const GIT_MS = 10_000
 const POLL_MS = 600
 const REFRESH_MS = 5_000
 const PREVIEW = 60
 const HISTORY_CAP = 20
 const HEAD_CHARS = 200
+const NEAR = 2
+
+const SUBCOMMANDS = ['init', 'objectives', 'update', 'important', 'reply', 'replies', 'history', 'show', 'hide']
 
 const USAGE = [
   'Usage: /notes-keeping <subcommand>',
-  '  init [--new] [prompt]   start this session\'s notes; no prompt takes the session\'s first prompt',
-  '  update <text>           add an [UPDATE] block under # Initial Prompt > ## Updates',
-  '  important [text]        add text, or the selected text, to # Important',
-  '  reply <text>            add the selected text and your reply to # Chat and to the prompt box',
-  '  history [n|file]        list earlier notes; pick one to continue it here',
-  '  show | hide             open or close the notes pane',
+  '  init [--new] [objectives]  start this session\'s notes; text sets the objectives',
+  '  objectives <text>          set the objectives; once set, add an [UPDATE] under ## Updates',
+  '  update <text>              same as objectives',
+  '  important [text]           add text, or the selected text, to # Important',
+  '  reply <text>               queue the selected text and your reply; they go out with your next message',
+  '  replies                    list queued replies; pick one to read or remove it',
+  '  history [n|file]           list earlier notes; pick one to continue it here',
+  `  show | hide                open or close the notes pane (also ${CHORD} and the Notes button under the prompt)`,
+  'Every write starts the notes file when the session has none.',
 ].join('\n')
 
 const notes = atom({ plugin: 'notes-keeping', key: 'notes' } as const, null as Notes | null)
-const band = atom({ plugin: 'notes-keeping', key: 'band' } as const, null as Band | null)
+const select = atom({ plugin: 'notes-keeping', key: 'select' } as const, null as Select | null)
 const handled = atom({ plugin: 'notes-keeping', key: 'handled' } as const, '')
+const queue = atom({ plugin: 'notes-keeping', key: 'queue' } as const, [] as Pair[])
+const editing = atom({ plugin: 'notes-keeping', key: 'editing' } as const, false)
+const picked = atom({ plugin: 'notes-keeping', key: 'picked' } as const, null as number | null)
+const isNotesOpen = atom({ plugin: 'notes-keeping', key: 'isNotesOpen' } as const, false)
 
 function message(error: unknown): string {
   return (error instanceof Error ? error.message : String(error)).split('\n')[0] ?? 'unknown error'
@@ -61,6 +77,12 @@ function headKey(sessionId: string): string {
 
 // The file a /clear or a /resume left behind; the next session id to look for its notes takes it.
 let carried: string | undefined
+// A session that starts with messages was continued or resumed: its first prompt carries the notes.
+let resumed = false
+// The selection the last poll read: a drag still under way changes it between polls.
+let seen = ''
+// Closing the dock widens the transcript, and the kept selection then covers other text.
+let isClosed = false
 
 async function boundPath($: EngineInterface): Promise<string | undefined> {
   const id = await $.session.id()
@@ -109,17 +131,34 @@ async function save($: EngineInterface, path: string, text: string, subject: str
   return commit($, await notesDir($), `${subject}: ${path.split('/').pop()}`)
 }
 
-async function edit($: EngineInterface, subject: string, change: (text: string) => string): Promise<string[]> {
+async function start($: EngineInterface, objectives: string): Promise<{ path: string; said: string[] }> {
+  const dir = await notesDir($)
+  const taken = (await $.fs.exists(dir)) ? (await $.fs.list(dir)).map(entry => entry.name) : []
+  const id = await $.session.id()
+  const path = `${dir}/${fileName(projectName(await $.session.root()), id, await $.clock.now(), taken)}`
+  await $.store.set(bindKey(id), path)
+  return { path, said: await save($, path, create(objectives, id), 'init') }
+}
+
+// The session's notes file, started with empty objectives when it has none.
+async function bound($: EngineInterface): Promise<{ path: string; said: string[] }> {
   const path = await boundPath($)
-  if (path === undefined) throw new Error('no notes file for this session; run /notes-keeping init first')
-  return save($, path, change(await readText($, path)), subject)
+  if (path !== undefined) return { path, said: [] }
+  const started = await start($, '')
+  $.ui.toast(`Notes started: ${started.path}`)
+  return started
+}
+
+async function edit($: EngineInterface, subject: string, change: (text: string) => string): Promise<string[]> {
+  const { path, said } = await bound($)
+  return [...said, ...(await save($, path, change(await readText($, path)), subject))]
 }
 
 function told(text: string, said: readonly string[]): string {
   return [text, ...said].join('\n')
 }
 
-// A band press has no output row: what follows the first line goes to a toast.
+// A press has no output row: what follows the first line goes to a toast.
 function warn($: EngineInterface, text: string): void {
   const rest = text.split('\n').slice(1).join(' ')
   if (rest !== '') $.ui.toast(rest)
@@ -139,24 +178,27 @@ async function listNotes($: EngineInterface): Promise<string[]> {
   return newestFirst(entries.filter(entry => entry.kind === 'file').map(entry => entry.name))
 }
 
-async function firstPrompt($: EngineInterface): Promise<string> {
-  const rows = await $.session.messages()
-  return rows.find(row => row.role === 'user' && row.text.trim() !== '' && !row.text.trim().startsWith('/'))?.text ?? ''
+// Sets the objectives while they are empty; after that each text is an [UPDATE] under ## Updates.
+async function objectives($: EngineInterface, text: string): Promise<string> {
+  const { path, said } = await bound($)
+  const md = await readText($, path)
+  if (sections(md).objectives === '') {
+    return told('Objectives set.', [...said, ...(await save($, path, setObjectives(md, text), 'objectives'))])
+  }
+  const when = stamp(await $.clock.now())
+  return told('Objectives updated under ## Updates.', [...said, ...(await save($, path, addUpdate(md, when, text), 'update'))])
 }
 
 async function init($: EngineInterface, args: string): Promise<string> {
   const isNew = /^--new\b/.test(args)
-  const prompt = args.replace(/^--new\b\s*/, '').trim() || (await firstPrompt($))
+  const text = args.replace(/^--new\b\s*/, '').trim()
   const current = await boundPath($)
   if (current !== undefined && !isNew) {
-    return `This session already keeps ${current}. Run /notes-keeping init --new [prompt] to start a new file for it.`
+    if (text === '') return `This session already keeps ${current}. Run /notes-keeping init --new [objectives] to start a new file for it.`
+    return told(`This session keeps ${current}.`, [await objectives($, text)])
   }
-  const dir = await notesDir($)
-  const taken = (await $.fs.exists(dir)) ? (await $.fs.list(dir)).map(entry => entry.name) : []
-  const id = await $.session.id()
-  const path = `${dir}/${fileName(projectName(await $.session.root()), id, await $.clock.now(), taken)}`
-  await $.store.set(bindKey(id), path)
-  return told(`Notes started: ${path}`, await save($, path, create(prompt, id), 'init'))
+  const { path, said } = await start($, text)
+  return told(`Notes started: ${path}`, said)
 }
 
 async function history($: EngineInterface, args: string): Promise<{ text: string; context?: string[] }> {
@@ -178,13 +220,30 @@ async function history($: EngineInterface, args: string): Promise<{ text: string
   }
   const pick = /^\d+$/.test(args) ? names[Number(args) - 1] : names.find(name => name === args || name === `${args}.md`)
   if (pick === undefined) return { text: `No earlier notes match "${args}".` }
-  if (current === undefined) return { text: 'Run /notes-keeping init first, then pick the notes to continue.' }
   const previous = await readText($, `${dir}/${pick}`)
   const said = await edit($, 'continue', text => setContinuation(text, pick))
   return {
     text: told(`Continuing ${pick}: the whole file is now in context.`, said),
     context: [inject(previous, `${dir}/${pick}`)],
   }
+}
+
+function distance(a: string, b: string): number {
+  let row = Array.from({ length: b.length + 1 }, (_, j) => j)
+  for (let i = 1; i <= a.length; i++) {
+    const next = [i]
+    for (let j = 1; j <= b.length; j++) {
+      next[j] = Math.min((row[j] ?? 0) + 1, (next[j - 1] ?? 0) + 1, (row[j - 1] ?? 0) + (a[i - 1] === b[j - 1] ? 0 : 1))
+    }
+    row = next
+  }
+  return row[b.length] ?? 0
+}
+
+function unknown(sub: string): string {
+  const near = SUBCOMMANDS.map(name => ({ name, d: distance(sub, name) })).sort((a, b) => a.d - b.d)[0]
+  const said = near !== undefined && near.d <= NEAR ? `unknown subcommand ${sub}, did you mean ${near.name}?` : `unknown subcommand ${sub}`
+  return `${said}\n${USAGE}`
 }
 
 async function selected($: EngineInterface): Promise<string> {
@@ -195,12 +254,33 @@ async function important($: EngineInterface, text: string, tag: string): Promise
   return told('Added to # Important.', await edit($, 'important', md => addImportant(md, tag, text)))
 }
 
-async function reply($: EngineInterface, agent: string, user: string): Promise<string> {
-  const said = await edit($, 'reply', md => addChat(md, agent, user))
-  await $.prompt.fill({ text: `${chatPair(agent, user)}\n`, mode: 'append' })
-  await update($, handled, () => agent)
-  await update($, band, () => null)
-  return told('Added to # Chat and to the prompt box.', said)
+function showQueue($: EngineInterface, n: number): void {
+  $.ui.status(n === 0 ? undefined : `notes: ${n} repl${n === 1 ? 'y' : 'ies'} queued, sent with your next message`)
+}
+
+// The selection is answered: the same text does not raise the pane again until it changes.
+async function finish($: EngineInterface, selection: string): Promise<void> {
+  await update($, handled, () => selection)
+  await update($, select, () => null)
+  await $.ui.close({ id: SELECT })
+  isClosed = true
+}
+
+async function queueReply($: EngineInterface, agent: string, user: string): Promise<void> {
+  const next = await update($, queue, list => [...list, { agent, user }])
+  showQueue($, next.length)
+  await finish($, agent)
+}
+
+async function openSelect($: EngineInterface, selection: string): Promise<void> {
+  await update($, select, () => ({ mode: 'menu', selection, isPlaced: false, hadFocus: false }))
+  const opened = await $.ui.open({ id: SELECT, title: 'Selection', focus: true, closeOnEscape: true, rows: 4 })
+  await update($, select, current => (current === null ? null : { ...current, isPlaced: opened.isPlaced }))
+}
+
+async function openReply($: EngineInterface, selection: string): Promise<void> {
+  await update($, select, () => ({ mode: 'reply', selection, isPlaced: true, hadFocus: false }))
+  await $.ui.open({ id: SELECT, title: 'Reply', focus: true, closeOnEscape: true, rows: 4 })
 }
 
 async function refresh($: EngineInterface): Promise<void> {
@@ -209,27 +289,68 @@ async function refresh($: EngineInterface): Promise<void> {
   await publish($, path, await readText($, path))
 }
 
-export const register: Register = on => {
-  let bandId: string | undefined
+async function showNotes($: EngineInterface): Promise<void> {
+  await refresh($)
+  await $.ui.open({ id: PANE, title: TITLE, focus: true, closeOnEscape: true })
+  await update($, isNotesOpen, () => true)
+}
 
+// A close the mod asks for itself does not pass through its own ui.close hook.
+async function hideNotes($: EngineInterface): Promise<void> {
+  await $.ui.close({ id: PANE })
+  await update($, editing, () => false)
+  await update($, isNotesOpen, () => false)
+}
+
+async function toggleNotes($: EngineInterface): Promise<void> {
+  if ((await $.ui.panes()).some(pane => pane.id === PANE)) await hideNotes($)
+  else await showNotes($)
+}
+
+function isDrawn(surface: string): boolean {
+  return surface === 'terminal' || surface === 'desktop'
+}
+
+export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await $.command.register({
       name: NAME,
-      description: 'Session notes: init, update, important, reply, history, show, hide',
-      argumentHint: 'init|update|important|reply|history|show|hide [text]',
+      description: 'Session notes: objectives, important, queued replies, history, show, hide',
+      argumentHint: 'init|objectives|update|important|reply|replies|history|show|hide [text]',
     })
+    resumed = (await $.session.messages()).length > 0
     if (e.isInteractive) {
       $.clock.every(POLL_MS, async () => {
-        const current = await read($, band)
+        const current = await read($, select)
         if (current?.mode === 'reply') return
-        const text = (await boundPath($)) === undefined ? '' : await selected($)
+        const isFocused = (await $.ui.panes()).some(pane => pane.id === SELECT && pane.isFocused)
+        // A key that is none of r/i/x hands the keyboard back to the prompt: the menu goes with it.
+        if (current !== null && current.hadFocus && !isFocused) {
+          await finish($, current.selection)
+          return
+        }
+        if (current !== null && isFocused && !current.hadFocus) await update($, select, () => ({ ...current, hadFocus: true }))
+        const text = await selected($)
+        // The first selection read after a close is the old one, moved by the reflow: it counts as answered.
+        if (isClosed) {
+          isClosed = false
+          if (text !== '') await update($, handled, () => text)
+          return
+        }
+        // A docked pane narrows the transcript and the terminal drops the selection, so an open pane outlives it.
         if (text === '') {
-          if (current !== null) await update($, band, () => null)
-          if ((await read($, handled)) !== '') await update($, handled, () => '')
+          seen = ''
+          if (current !== null && !current.isPlaced) await update($, select, () => null)
+          if (current === null && (await read($, handled)) !== '') await update($, handled, () => '')
           return
         }
         if (text === (await read($, handled)) || text === current?.selection) return
-        await update($, band, () => ({ mode: 'menu', selection: text }))
+        // Opening the dock mid-drag reflows the transcript under the pointer, so the pane waits for a still selection.
+        if (text !== seen) {
+          seen = text
+          return
+        }
+        await openSelect($, text)
       })
       $.clock.every(REFRESH_MS, async () => {
         const panes = await $.ui.panes()
@@ -241,6 +362,27 @@ export const register: Register = on => {
 
   on('session.end', async ($, e, next) => {
     if (e.reason === 'clear' || e.reason === 'resume') carried = await boundPath($)
+    if (e.reason === 'clear') {
+      await update($, queue, () => [])
+      showQueue($, 0)
+    }
+    return next(e)
+  })
+
+  on('ui.close', async ($, e, next) => {
+    if (e.id === SELECT) {
+      const current = await read($, select)
+      if (current !== null) {
+        await update($, handled, () => current.selection)
+        await update($, select, () => null)
+      }
+      isClosed = true
+    }
+    if (e.id === PANE) {
+      await update($, editing, () => false)
+      await update($, isNotesOpen, () => false)
+    }
+    if (e.id === REPLIES) await update($, picked, () => null)
     return next(e)
   })
 
@@ -252,11 +394,10 @@ export const register: Register = on => {
       switch (sub) {
         case 'init':
           return { text: await init($, rest) }
-        case 'update': {
-          if (rest === '') return { text: 'Usage: /notes-keeping update <text>' }
-          const when = stamp(await $.clock.now())
-          return { text: told('Update kept under ## Updates.', await edit($, 'update', md => addUpdate(md, when, rest))) }
-        }
+        case 'objectives':
+        case 'update':
+          if (rest === '') return { text: `Usage: /notes-keeping ${sub} <text>` }
+          return { text: await objectives($, rest) }
         case 'important': {
           const text = rest || (await selected($))
           if (text === '') return { text: 'Nothing to keep: give text or select some first.' }
@@ -266,19 +407,24 @@ export const register: Register = on => {
           const agent = await selected($)
           if (agent === '') return { text: 'Select the text to reply to first.' }
           if (rest === '') return { text: 'Usage: /notes-keeping reply <your reply>' }
-          return { text: await reply($, agent, rest) }
+          await queueReply($, agent, rest)
+          return { text: 'Reply queued; it goes out with your next message.' }
         }
+        case 'replies':
+          await $.ui.open({ id: REPLIES, title: 'Replies', focus: true, closeOnEscape: true, rows: 12 })
+          return {}
         case 'history':
           return await history($, rest)
         case 'show':
-          await refresh($)
-          await $.ui.open({ id: PANE, title: TITLE, closeOnEscape: true })
+          await showNotes($)
           return {}
         case 'hide':
-          await $.ui.close({ id: PANE })
+          await hideNotes($)
           return {}
-        default:
+        case '':
           return { text: USAGE }
+        default:
+          return { text: unknown(sub) }
       }
     } catch (error) {
       return { text: `notes-keeping: ${message(error)}` }
@@ -295,111 +441,222 @@ export const register: Register = on => {
     return deny === undefined ? next(e) : { deny }
   }).catch(($, e, next) => (next.called ? next(e) : { deny: `${NAME}: its notes guard failed.` }))
 
+  // Queued replies go out ahead of the user's own Enter, and that turn is recorded in # Chat.
   // Compaction puts its summary in place of the first message, so a changed first message means one ran.
   // On this machine the managed-settings plugin bypasses classic.SessionStart, prompt.context and
   // session.compact for user plugins; prompt.submit is the hook that still reaches the model.
   on('prompt.submit', async ($, e, next) => {
     if (e.command !== undefined) return next(e)
+    const pending = e.origin.kind === 'composer' && e.isMeta !== true ? await read($, queue) : []
+    let text = e.text
+    if (pending.length > 0) {
+      text = [...pending.map(pair => chatPair(pair.agent, pair.user)), e.text].join('\n\n')
+      warn($, told('', await edit($, 'reply', md => addTurn(md, pending, e.text))))
+      await update($, queue, () => [])
+      showQueue($, 0)
+    }
     const path = await boundPath($)
-    if (path === undefined) return next(e)
+    const isResumed = resumed
+    resumed = false
+    if (path === undefined) return next({ ...e, text })
     const key = headKey(await $.session.id())
     const seen = await $.store.get(key)
     // Every summary opens with the same sentence, so the tail and the length tell two apart.
     const first = (await $.session.messages())[0]?.text ?? ''
     const head = `${first.length}:${first.slice(-HEAD_CHARS)}`
     await $.store.set(key, head)
-    if (typeof seen !== 'string' || seen === head) return next(e)
-    return next({ ...e, context: [...(e.context ?? []), inject(await readText($, path), path)] })
+    if (!isResumed && (typeof seen !== 'string' || seen === head)) return next({ ...e, text })
+    return next({ ...e, text, context: [...(e.context ?? []), inject(await readText($, path), path)] })
   })
 
+  // Under the prompt, beside the engine's hint: the Notes toggle, always drawn, pressed by click or chord.
+  on('ui.render', { component: 'PromptHint' }, async ($, e, next) => {
+    if (!isDrawn(e.surface)) return next(e)
+    const { Box, Button, Text } = $.ui.resolve(e)
+    const isOpen = await read($, isNotesOpen)
+    return (
+      <Box flexDirection="row" gap={2}>
+        <Text dimColor wrap="truncate-end">
+          {e.props.hint}
+        </Text>
+        <Button
+          key="notes-toggle"
+          plain
+          dimColor
+          action={ACTION}
+          label={`Notes: ${isOpen ? 'hide' : 'show'} (${CHORD})`}
+          onPress={() => toggleNotes($)}
+        />
+      </Box>
+    )
+  })
+
+  // The band carries the menu only when the selection pane could not be drawn (a narrow terminal).
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
-    const current = await read($, band)
-    if (e.props.hasSurvey || current === null || (e.surface !== 'terminal' && e.surface !== 'desktop')) return next(e)
-    bandId = e.requestId
-    const { Box, Button, Input, Text } = $.ui.resolve(e)
+    const current = await read($, select)
+    if (e.props.hasSurvey || current === null || current.mode !== 'menu' || current.isPlaced || !isDrawn(e.surface)) return next(e)
+    const { Box, Button, Text } = $.ui.resolve(e)
     const width = Math.max(10, (e.viewport?.columns ?? 80) - 40)
+    return (
+      <Box flexDirection="row" gap={1}>
+        <Text dimColor wrap="truncate-end">
+          Selected: {current.selection.replace(/\s+/g, ' ').slice(0, width)}
+        </Text>
+        <Button key="reply-open" plain hotkey="1" action={ACTION} label="Reply" onPress={() => openReply($, current.selection)} />
+        <Button
+          key="important"
+          plain
+          hotkey="2"
+          label="Important"
+          onPress={async () => {
+            warn($, await important($, current.selection, AGENT_TAG))
+            await finish($, current.selection)
+          }}
+        />
+        <Button key="dismiss" plain hotkey="3" label="Dismiss" onPress={() => finish($, current.selection)} />
+      </Box>
+    )
+  })
+
+  on('ui.render', { component: 'Pane', requestId: SELECT }, async ($, e) => {
+    const table = $.ui.resolve(e)
+    const { Box, Button, Text } = table
+    // The mobile app draws no field.
+    const Input = 'Input' in table ? table.Input : undefined
+    const current = await read($, select)
+    if (current === null) return <Text dimColor>Nothing selected.</Text>
     const preview = current.selection.replace(/\s+/g, ' ')
-    const dismiss = async () => {
-      await update($, handled, () => current.selection)
-      await update($, band, () => null)
-    }
     if (current.mode === 'reply') {
+      if (Input === undefined) return <Text dimColor>Reply from a terminal or desktop: this surface draws no field.</Text>
       return (
         <Box flexDirection="column">
           <Text dimColor wrap="truncate-end">
-            {AGENT_TAG} {preview.slice(0, width)}
+            {AGENT_TAG} {preview}
           </Text>
-          <Box flexDirection="row" gap={1}>
-            <Input
-              key="reply"
-              label={`${USER_TAG} `}
-              placeholder="your reply, Enter to keep it"
-              submitLabel="keep"
-              autoFocus
-              onSubmit={async value => warn($, await reply($, current.selection, value))}
-            />
-            <Button key="cancel" plain label="Cancel" onPress={dismiss} />
-          </Box>
+          <Input
+            key="reply"
+            label={USER_TAG}
+            placeholder="your reply; it goes out with your next message"
+            submitLabel="queue"
+            autoFocus
+            onSubmit={async (value: string) => {
+              if (value.trim() !== '') await queueReply($, current.selection, value.trim())
+            }}
+          />
         </Box>
       )
     }
     return (
-      <Box flexDirection="row" gap={1}>
+      <Box flexDirection="column">
         <Text dimColor wrap="truncate-end">
-          Selected: {preview.slice(0, width)}
+          {AGENT_TAG} {preview}
         </Text>
-        <Button
-          key="reply-open"
-          plain
-          hotkey="r"
-          label="Reply"
-          onPress={async () => {
-            await update($, band, () => ({ mode: 'reply', selection: current.selection }))
-            // The Input's autoFocus covers a surface that refuses the move.
-            if (bandId !== undefined) await $.ui.focus({ requestId: bandId, key: 'reply' }).catch(() => undefined)
-          }}
-        />
-        <Button
-          key="important"
-          plain
-          hotkey="i"
-          label="Important"
-          onPress={async () => {
-            warn($, await important($, current.selection, AGENT_TAG))
-            await dismiss()
-          }}
-        />
-        <Button key="dismiss" plain hotkey="x" label="Dismiss" onPress={dismiss} />
+        <Box flexDirection="row" gap={2}>
+          <Button key="reply-open" plain hotkey="r" action={ACTION} label="Reply" onPress={() => openReply($, current.selection)} />
+          <Button
+            key="important"
+            plain
+            hotkey="i"
+            label="Important"
+            onPress={async () => {
+              warn($, await important($, current.selection, AGENT_TAG))
+              await finish($, current.selection)
+            }}
+          />
+          <Button key="dismiss" plain hotkey="x" label="Dismiss" onPress={() => finish($, current.selection)} />
+        </Box>
+      </Box>
+    )
+  })
+
+  on('ui.render', { component: 'Pane', requestId: REPLIES }, async ($, e) => {
+    const { Box, Button, Text } = $.ui.resolve(e)
+    const list = await read($, queue)
+    const at = await read($, picked)
+    const pair = at === null ? undefined : list[at]
+    if (at !== null && pair !== undefined) {
+      return (
+        <Box flexDirection="column">
+          <Text>{chatPair(pair.agent, pair.user)}</Text>
+          <Box flexDirection="row" gap={2}>
+            <Button key="back" plain hotkey="b" label="Back" onPress={() => update($, picked, () => null)} />
+            <Button
+              key="remove"
+              plain
+              hotkey="d"
+              label="Remove"
+              onPress={async () => {
+                const next = await update($, queue, rows => rows.filter((_, i) => i !== at))
+                showQueue($, next.length)
+                await update($, picked, () => null)
+              }}
+            />
+          </Box>
+        </Box>
+      )
+    }
+    if (list.length === 0) return <Text dimColor>No replies queued.</Text>
+    return (
+      <Box flexDirection="column">
+        {list.map((row, i) => (
+          <Button key={`pair:${i}`} plain label={`${i + 1}. ${row.agent.replace(/\s+/g, ' ').slice(0, PREVIEW)} -> ${row.user.replace(/\s+/g, ' ').slice(0, PREVIEW)}`} onPress={() => update($, picked, () => i)} />
+        ))}
       </Box>
     )
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
-    const { Box, Text } = $.ui.resolve(e)
+    const table = $.ui.resolve(e)
+    const { Box, Button, Text } = table
+    // The mobile app draws no field.
+    const Input = 'Input' in table ? table.Input : undefined
     const current = await read($, notes)
-    if (current === null) {
+    const isEditing = await read($, editing)
+    const s = current?.sections
+    const hasObjectives = s !== undefined && s.objectives !== ''
+    const control = isEditing && Input !== undefined ? (
+      <Input
+        key="objectives"
+        label="Objectives"
+        placeholder={hasObjectives ? 'an update to the objectives' : 'the objectives of this session'}
+        submitLabel="keep"
+        autoFocus
+        onSubmit={async (value: string) => {
+          if (value.trim() !== '') warn($, await objectives($, value.trim()))
+          await update($, editing, () => false)
+        }}
+      />
+    ) : (
+      <Button
+        key="objectives"
+        plain
+        hotkey="o"
+        label={hasObjectives ? 'Update objectives' : 'Set objectives'}
+        onPress={() => update($, editing, () => true)}
+      />
+    )
+    if (current === null || s === undefined) {
       return (
         <Box flexDirection="column">
-          <Text dimColor>No notes for this session. Run /notes-keeping init.</Text>
+          <Text dimColor>No notes for this session yet; the first write starts them.</Text>
+          {control}
         </Box>
       )
     }
-    const s = current.sections
     const section = (key: string, title: string, body: string) => (
       <Box key={key} flexDirection="column" marginBottom={1}>
         <Text bold>{title}</Text>
         <Text dimColor={body === ''}>{body === '' ? '(empty)' : body}</Text>
       </Box>
     )
-    const initial = [s.continuation === undefined ? '' : `Continuation of: ${s.continuation}\n\n`, s.prompt]
-      .join('')
-      .trim()
+    const goals = [s.continuation === undefined ? '' : `Continuation of: ${s.continuation}\n\n`, s.objectives].join('').trim()
     return (
       <Box flexDirection="column">
         <Text dimColor wrap="truncate-start">
           {current.path}
         </Text>
-        {section('initial', 'Initial Prompt', initial)}
+        {control}
+        {section('objectives', 'Objectives', goals)}
         {section('updates', 'Updates', s.updates)}
         {section('important', 'Important', s.important)}
         {section('chat', 'Chat', s.chat)}

@@ -1,6 +1,6 @@
 import type { NameParts, Sections } from '../types'
 
-export const INITIAL = '# Initial Prompt'
+export const OBJECTIVES = '# Objectives'
 export const UPDATES = '## Updates'
 export const IMPORTANT = '# Important'
 export const CHAT = '# Chat'
@@ -9,7 +9,9 @@ export const USER_TAG = '[USER]'
 export const CONTINUATION = 'Continuation of:'
 export const SESSIONS = 'Sessions:'
 
-const HEADINGS = [INITIAL, UPDATES, IMPORTANT, CHAT]
+// Headings a file may open with: this mod's, a hand-written one, and the one files before Objectives used.
+const OBJECTIVE_HEADINGS = [OBJECTIVES, '# Goals', '# Initial Prompt']
+const HEADINGS = [...OBJECTIVE_HEADINGS, UPDATES, IMPORTANT, CHAT]
 const NAME = /^(\d{4})-(\d{2})-(\d{2})-(\d{2})-(\d{2})-(.+)-([0-9a-zA-Z]{8})(?:-(\d+))?\.md$/
 const HEAD_LINE = new RegExp(`^(${CONTINUATION}|${SESSIONS}) (.*)(?:\\n+|$)`)
 
@@ -61,22 +63,23 @@ function escapeHeadings(text: string): string {
     .join('\n')
 }
 
-export function create(prompt: string, sessionId: string): string {
-  return `${INITIAL}\n\n${SESSIONS} ${sessionId}\n\n${escapeHeadings(prompt.trim())}\n\n${UPDATES}\n\n${IMPORTANT}\n\n${CHAT}\n`
+export function create(objectives: string, sessionId: string): string {
+  const body = escapeHeadings(objectives.trim())
+  return `${OBJECTIVES}\n\n${SESSIONS} ${sessionId}\n\n${body === '' ? '' : `${body}\n\n`}${UPDATES}\n\n${IMPORTANT}\n\n${CHAT}\n`
 }
 
-type Initial = { continuation: string | undefined; sessions: string[]; prompt: string }
+type Initial = { continuation: string | undefined; sessions: string[]; body: string }
 
-// The Continuation of: and Sessions: lines open # Initial Prompt, before the prompt itself.
+// The Continuation of: and Sessions: lines open the objectives section, before its body.
 function readInitial(text: string): Initial {
-  const out: Initial = { continuation: undefined, sessions: [], prompt: '' }
+  const out: Initial = { continuation: undefined, sessions: [], body: '' }
   let rest = text
   for (let m = HEAD_LINE.exec(rest); m !== null; m = HEAD_LINE.exec(rest)) {
     if (m[1] === CONTINUATION) out.continuation = m[2]
     else out.sessions = (m[2] ?? '').split(',').map(id => id.trim()).filter(id => id !== '')
     rest = rest.slice(m[0].length)
   }
-  out.prompt = rest.trim()
+  out.body = rest.trim()
   return out
 }
 
@@ -84,7 +87,7 @@ function writeInitial(initial: Initial): string {
   return [
     initial.continuation === undefined ? '' : `${CONTINUATION} ${initial.continuation}`,
     initial.sessions.length === 0 ? '' : `${SESSIONS} ${initial.sessions.join(', ')}`,
-    initial.prompt,
+    initial.body,
   ]
     .filter(part => part !== '')
     .join('\n\n')
@@ -100,6 +103,12 @@ function lineStart(md: string, heading: string, from = 0): number {
   return -1
 }
 
+// The first objectives heading in the file, as written there.
+function objectivesStart(md: string): { start: number; heading: string } | undefined {
+  const found = OBJECTIVE_HEADINGS.map(heading => ({ start: lineStart(md, heading), heading })).filter(f => f.start >= 0)
+  return found.sort((a, b) => a.start - b.start)[0]
+}
+
 function sectionEnd(md: string, start: number, stops: readonly string[]): number {
   const ends = stops.map(h => lineStart(md, h, start + 1)).filter(i => i > start)
   return ends.length === 0 ? md.length : Math.min(...ends)
@@ -107,7 +116,7 @@ function sectionEnd(md: string, start: number, stops: readonly string[]): number
 
 function ensure(md: string): string {
   let out = md.trimEnd()
-  if (lineStart(out, INITIAL) < 0) out = `${INITIAL}\n\n${out}`.trimEnd()
+  if (objectivesStart(out) === undefined) out = `${OBJECTIVES}\n\n${out}`.trimEnd()
   if (lineStart(out, UPDATES) < 0) {
     const at = [IMPORTANT, CHAT].map(h => lineStart(out, h)).filter(i => i >= 0)
     const cut = at.length === 0 ? out.length : Math.min(...at)
@@ -146,12 +155,41 @@ export function addChat(md: string, agent: string, user: string): string {
   return appendTo(md, CHAT, [], chatPair(agent, user))
 }
 
+// One turn that carried replies: each pair, then the message the user typed with them.
+export function addTurn(md: string, pairs: readonly { agent: string; user: string }[], message: string): string {
+  const blocks = pairs.map(pair => chatPair(pair.agent, pair.user))
+  return appendTo(md, CHAT, [], [...blocks, `${USER_TAG} ${message.trim()}`].join('\n\n'))
+}
+
+function readObjectives(doc: string): Initial {
+  const { start, heading } = objectivesStart(doc) ?? { start: 0, heading: OBJECTIVES }
+  return readInitial(doc.slice(start + heading.length, sectionEnd(doc, start, [UPDATES, IMPORTANT, CHAT])).trim())
+}
+
+// Rewrites the objectives section under the heading the file already uses.
 function changeInitial(md: string, change: (initial: Initial) => Initial): string {
   const doc = ensure(md)
-  const start = lineStart(doc, INITIAL)
+  const { start, heading } = objectivesStart(doc) ?? { start: 0, heading: OBJECTIVES }
   const end = sectionEnd(doc, start, [UPDATES, IMPORTANT, CHAT])
-  const initial = writeInitial(change(readInitial(doc.slice(start + INITIAL.length, end).trim())))
-  return `${doc.slice(0, start)}${INITIAL}\n\n${initial === '' ? '' : `${initial}\n\n`}${doc.slice(end)}`
+  const initial = writeInitial(change(readObjectives(doc)))
+  return `${doc.slice(0, start)}${heading}\n\n${initial === '' ? '' : `${initial}\n\n`}${doc.slice(end)}`
+}
+
+// A hand-written file can stack two objective headings (# Initial Prompt over # Goals); the text under them counts.
+function objectivesText(body: string): string {
+  return body
+    .split('\n')
+    .filter(line => !OBJECTIVE_HEADINGS.includes(line.trimEnd()))
+    .join('\n')
+    .trim()
+}
+
+// A stacked heading (# Goals under # Initial Prompt) stays above the text.
+export function setObjectives(md: string, text: string): string {
+  return changeInitial(md, initial => {
+    const kept = initial.body.split('\n').filter(line => OBJECTIVE_HEADINGS.includes(line.trimEnd()))
+    return { ...initial, body: [...kept, escapeHeadings(text.trim())].join('\n\n') }
+  })
 }
 
 export function setContinuation(md: string, previous: string): string {
@@ -170,11 +208,11 @@ export function sections(md: string): Sections {
     const start = lineStart(doc, heading)
     return doc.slice(start + heading.length, sectionEnd(doc, start, stops)).trim()
   }
-  const initial = readInitial(cut(INITIAL, [UPDATES, IMPORTANT, CHAT]))
+  const initial = readObjectives(doc)
   return {
     continuation: initial.continuation,
     sessions: initial.sessions,
-    prompt: initial.prompt,
+    objectives: objectivesText(initial.body),
     updates: cut(UPDATES, [IMPORTANT, CHAT]),
     important: cut(IMPORTANT, [CHAT]),
     chat: cut(CHAT, []),
@@ -182,7 +220,7 @@ export function sections(md: string): Sections {
 }
 
 export function summary(md: string): string {
-  const first = sections(md).prompt.split('\n').find(line => line.trim() !== '')
+  const first = sections(md).objectives.split('\n').find(line => line.trim() !== '')
   return first?.trim() ?? '(empty)'
 }
 
