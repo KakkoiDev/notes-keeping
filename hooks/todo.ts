@@ -138,24 +138,27 @@ function head(lines: readonly string[]): string {
   return unquote(out)
 }
 
-type Block = { isNumbered: boolean; lines: string[] }
+type Block = { isNumbered: boolean; lines: string[]; first: number; last: number }
 
 // A numbered line opens a block that runs to the next numbered line, blank lines and bullets inside it; outside one, a
 // blank line ends a paragraph.
 function blocks(text: string): Block[] {
   const out: Block[] = []
   let isAfterBlank = false
-  for (const line of text.split('\n')) {
+  text.split('\n').forEach((line, at) => {
     if (line.trim() === '') {
       isAfterBlank = true
-      continue
+      return
     }
     const last = out[out.length - 1]
-    if (NUMBERED.test(line)) out.push({ isNumbered: true, lines: [line] })
-    else if (last === undefined || (isAfterBlank && !last.isNumbered)) out.push({ isNumbered: false, lines: [line] })
-    else last.lines.push(line)
+    if (NUMBERED.test(line)) out.push({ isNumbered: true, lines: [line], first: at, last: at })
+    else if (last === undefined || (isAfterBlank && !last.isNumbered)) out.push({ isNumbered: false, lines: [line], first: at, last: at })
+    else {
+      last.lines.push(line)
+      last.last = at
+    }
     isAfterBlank = false
-  }
+  })
   return out
 }
 
@@ -218,6 +221,19 @@ export function candidates(s: Pick<Sections, 'objectives' | 'updates'>): Candida
   )
   const updates = updateBlocks(s.updates).map(text => ({ text: oneLine(text), isSure: true }))
   return [...goals, ...updates]
+}
+
+// The objectives without the blocks whose items are all finished: a block is matched to its items by the text it yields as
+// a candidate, and one with no item in the list stays. Blank lines the cut leaves doubled are folded.
+export function openObjectives(objectives: string, list: readonly Item[]): string {
+  const status = new Map(list.map(item => [keyOf(item.text), item.status] as const))
+  const lines = objectives.split('\n')
+  const gone = new Set<number>()
+  for (const block of blocks(objectives)) {
+    const linked = candidates({ objectives: block.lines.join('\n'), updates: '' }).flatMap(c => keysOf(c.text).flatMap(key => status.get(key) ?? []))
+    if (linked.length > 0 && linked.every(s => s === 'done' || s === 'declined')) for (let i = block.first; i <= block.last; i++) gone.add(i)
+  }
+  return lines.filter((_, i) => !gone.has(i)).join('\n').replace(/\n{3,}/g, '\n\n').trim()
 }
 
 const stem = (word: string): string => word.replace(/(ing|ed|es|s)$/, '').replace(/y$/, 'i')

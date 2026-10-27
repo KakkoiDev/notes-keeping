@@ -1,5 +1,5 @@
 import type { NameParts, Sections } from '../types'
-import { format, items, keyOf, parse } from './todo'
+import { format, items, keyOf, openObjectives, parse } from './todo'
 
 export const OBJECTIVES = '# Objectives'
 export const UPDATES = '## Updates'
@@ -233,21 +233,22 @@ function updateEntries(updates: string): string[] {
   return entries.map(lines => lines.join('\n').trim()).filter(entry => entry !== '')
 }
 
-// Copies a linked file's objectives, updates and todo items (with their statuses) into this one, and names it on the
-// Continuation of: line. Text this file already holds is not copied twice; on a todo item both hold, this file's status stays.
+// Copies a linked file's objectives, updates and open todo items (with their statuses) into this one, and names it on the
+// Continuation of: line. Done and declined items, and objectives whose items are all done or declined, stay behind. Text this file already holds is not copied twice; on a todo item both hold, this file's status stays.
 export function carryOver(md: string, previous: string, name: string): string {
   const from = sections(previous)
   const here = sections(md)
   let out = setContinuation(md, name)
-  if (from.objectives !== '' && !here.objectives.includes(from.objectives)) {
-    out = setObjectives(out, [from.objectives, here.objectives].filter(text => text !== '').join('\n\n'))
+  const goals = openObjectives(from.objectives, items(from.todo))
+  if (goals !== '' && !here.objectives.includes(goals)) {
+    out = setObjectives(out, [goals, here.objectives].filter(text => text !== '').join('\n\n'))
   }
   const own = updateEntries(here.updates)
   const carried = updateEntries(from.updates).filter(entry => !own.includes(entry))
   if (carried.length > 0) out = setUpdates(out, [...carried, ...own].join('\n\n'))
   const lines = parse(here.todo)
   const have = new Set(items(here.todo).map(item => keyOf(item.text)))
-  const added = items(from.todo).filter(item => !have.has(keyOf(item.text)))
+  const added = items(from.todo).filter(item => item.status !== 'done' && item.status !== 'declined' && !have.has(keyOf(item.text)))
   if (added.length > 0) out = setTodo(out, format([...added.map(item => ({ item })), ...lines]))
   return out
 }

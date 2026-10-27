@@ -19,6 +19,9 @@ export type Pair = { agent: string; user: string }
 
 export type View = 'todos' | 'objectives' | 'important' | 'chat' | 'queue' | 'history'
 
+// The note the History view shows whole (preview) or is about to attach (confirm).
+export type Opened = { name: string; step: 'preview' | 'confirm' }
+
 export type Todo = { id: string; text: string; status: 'todo' | 'in-progress' | 'done' | 'declined' }
 
 declare module 'claude-code' {
@@ -31,6 +34,8 @@ declare module 'claude-code' {
       editing: boolean
       view: View
       isNotesOpen: boolean
+      picked: Opened | null
+      cursor: string | null
     }
   }
 }

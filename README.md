@@ -12,7 +12,7 @@ Session notes in `~/.notes-keeping/<date>-<time>-<project>-<session>.md`, commit
 | `reply <text>` | queue the selected text and your reply |
 | `replies` | open the panel at the queue view |
 | `todo [sync]` | show the todo list; `sync` runs Laya over the objectives and the last reply now |
-| `history [n\|file]` | list earlier notes; pick one to continue it here: its objectives, updates and todo items (statuses kept) are copied into this file under a `Continuation of:` line, and the picked file is never written |
+| `history [n\|file]` | list earlier notes; pick one to continue it here: its objectives, updates and open todo items (statuses kept) are copied into this file under a `Continuation of:` line, and the picked file is never written. Todo items marked done `[x]` or declined `[-]` are not copied, nor is an objective whose items are all done or declined (an objective with no item, or with one open, is copied) |
 | `show`, `hide` | open or close the panel |
 
 ## The panel
@@ -29,7 +29,7 @@ Toggle with ctrl+q (see below), `/notes-keeping show` / `hide`, or the `Notes` b
 | `i` | Important view |
 | `c` | Chat view |
 | `e` | Queue view: every queued reply in its own editable field |
-| `h` | History view: earlier notes, newest first; Tab to one, Enter copies its objectives, updates and todo items here (same copy as `/notes-keeping history <n\|file>`); the original is never written |
+| `h` | History view: earlier notes, newest first; Up and Down pick one, Enter opens a read-only preview of what it holds, `a` attaches the picked note after a `y` / `n` confirmation (same copy as `/notes-keeping history <n\|file>`, so done and declined items stay behind); the original is never written. `b` in a preview or the confirmation steps back |
 | `s` | Send queue: put every queued reply into the prompt box, clear the queue, record them in `# Chat`; you press Enter |
 | `b` | Back to the Todos view (shown in every view but Todos) |
 | `u` | in the Objectives view: opens an input; Enter appends the text as a new `[UPDATE]` under `## Updates` (while the objectives are still empty it sets them instead) |
@@ -40,7 +40,7 @@ Under the prompt, once a reply is queued: click `[send queue: n]` (same as `s`) 
 
 ## Selection pane
 
-Select text in the transcript and hold still. The Selection pane opens:
+Select text in the transcript and hold still. The Selection pane opens (text selected inside the notes panel or the Selection pane itself does not open it; a reply box left behind the Notes tab gives way to a new selection):
 
 | Key | Does |
 | --- | --- |
@@ -49,6 +49,8 @@ Select text in the transcript and hold still. The Selection pane opens:
 | `x` | Dismiss |
 
 Any other key hands the keyboard back to the prompt and closes the pane. The pane is opened by a timer, not by a key press, so the terminal seats it only from 144 columns (110 once you have opened it yourself and not closed it by hand). Below that the same actions are a bar above the prompt on keys `1` Reply, `2` Important, `3` Dismiss, and a toast says so once per session with the width it needs.
+
+Leaving the pane never blocks the next selection: Esc, the close mark, `x`, `i`, a sent reply, the Ctrl+q chord, switching tabs, and a click in the transcript (which also closes an open reply box) each leave the next selection free to open the menu. One exception: after Esc, selecting the very same text again does nothing while the terminal still holds that selection, because the plugin cannot tell a re-selection from a retained one; select other text first. An empty reply keeps the box open.
 
 Queued replies go out ahead of your next message when you press Enter, unless you moved them into the prompt first with `s`.
 

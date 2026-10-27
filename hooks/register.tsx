@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { Notes, Pair, Select, Todo, View } from '../types'
+import type { Notes, Opened, Pair, Select, Todo, View } from '../types'
 import {
   AGENT_TAG,
   USER_TAG,
@@ -41,6 +41,7 @@ const POLL_MS = 600
 const REFRESH_MS = 5_000
 const PREVIEW = 60
 const HISTORY_CAP = 20
+const NOTE = 'note:'
 const HEAD_CHARS = 200
 const NEAR = 2
 
@@ -64,7 +65,7 @@ const USAGE = [
   '  reply <text>               queue the selected text and your reply; they go out with your next message',
   '  replies                    open the panel at the queue: every reply editable, s moves all into the prompt',
   '  todo [sync]                show the todo list; sync runs Laya over the objectives and the last reply now',
-  '  history [n|file]           list earlier notes; pick one to copy its objectives, updates and todo items here',
+  '  history [n|file]           list earlier notes; pick one to copy its objectives, updates and open todo items here',
   `  show | hide                open or close the notes panel (also ${CHORD}) at the todo list; t todos, o objectives, i important, c chat, e queue, h history, s send queue`,
   `${CHORD} works once ~/.claude/keybindings.json binds it: { "bindings": [{ "context": "Global", "bindings": { "${CHORD}": "${ACTION}" } }] }`,
   'Every write starts the notes file when the session has none.',
@@ -77,6 +78,8 @@ const queue = atom({ plugin: 'notes-keeping', key: 'queue' } as const, [] as Pai
 const editing = atom({ plugin: 'notes-keeping', key: 'editing' } as const, false)
 const view = atom({ plugin: 'notes-keeping', key: 'view' } as const, 'todos' as View)
 const isNotesOpen = atom({ plugin: 'notes-keeping', key: 'isNotesOpen' } as const, false)
+const picked = atom({ plugin: 'notes-keeping', key: 'picked' } as const, null as Opened | null)
+const cursor = atom({ plugin: 'notes-keeping', key: 'cursor' } as const, null as string | null)
 
 function message(error: unknown): string {
   return (error instanceof Error ? error.message : String(error)).split('\n')[0] ?? 'unknown error'
@@ -496,7 +499,7 @@ async function history($: EngineInterface, args: string): Promise<{ text: string
   if (pick === undefined) return { text: `No earlier notes match "${args}".` }
   const { previous, said } = await attach($, pick)
   return {
-    text: told(`Continuing ${pick}: its objectives, updates and todo items are copied here; ${pick} is unchanged. The whole file is now in context.`, said),
+    text: told(`Continuing ${pick}: its objectives, updates and open todo items are copied here; ${pick} is unchanged. The whole file is now in context.`, said),
     context: [inject(previous, `${dir}/${pick}`)],
   }
 }
@@ -620,18 +623,26 @@ export const register: Register = on => {
     if (e.isInteractive) {
       $.clock.every(POLL_MS, async () => {
         const current = await read($, select)
-        if (current?.mode === 'reply') return
-        const selectPane = (await $.ui.panes()).find(pane => pane.id === SELECT)
+        const panes = await $.ui.panes()
+        const selectPane = panes.find(pane => pane.id === SELECT)
         const isFocused = selectPane?.isFocused === true
-        // A key that is none of r/i/x hands the keyboard back to the prompt: the menu goes with it.
+        // A key that is none of r/i/x, or a click in the transcript, hands the keyboard back to the prompt: the menu or the reply box goes with it.
         // A click on another tab hides the pane instead: it stays behind its tab until shown again.
         if (current !== null && current.hadFocus && !isFocused) {
           if (selectPane !== undefined && !selectPane.isShown) await update($, select, () => ({ ...current, hadFocus: false }))
-          else await finish($, current.selection)
+          else {
+            await finish($, current.selection)
+            isClosed = false
+          }
           return
         }
         if (current !== null && isFocused && !current.hadFocus) await update($, select, () => ({ ...current, hadFocus: true }))
-        const text = await selected($)
+        // A reply box in view is the one being typed in. Behind another tab, or after the keyboard left it, a new selection replaces it.
+        if (current?.mode === 'reply' && selectPane?.isShown !== false) return
+        // A selection with no transcript row lies in a pane or the prompt: while a pane of this plugin is shown it is the pane's text.
+        const picked = await $.ui.selection()
+        const isInPane = picked !== undefined && picked.requestId === undefined && panes.some(pane => (pane.id === PANE || pane.id === SELECT) && pane.isShown)
+        const text = isInPane ? '' : (picked?.text ?? '').trim()
         // The first selection read after a close is the old one, moved by the reflow: it counts as answered.
         if (isClosed) {
           isClosed = false
@@ -675,6 +686,12 @@ export const register: Register = on => {
       await update($, queue, () => [])
       showQueue($, 0)
     }
+    return next(e)
+  })
+
+  // The row the focus ring stands on is the note a, in the History list, attaches.
+  on('ui.focus', { requestId: PANE }, async ($, e, next) => {
+    if (e.element?.startsWith(NOTE) === true) await update($, cursor, () => e.element?.slice(NOTE.length) ?? null)
     return next(e)
   })
 
@@ -901,11 +918,16 @@ export const register: Register = on => {
     const hasObjectives = s !== undefined && s.objectives !== ''
     const go = (to: View) => async () => {
       await update($, editing, () => false)
+      await update($, picked, () => null)
       await update($, view, () => to)
     }
     const tab = (key: string, hotkey: string, label: string, to: View) => (
       <Button key={`view:${key}`} plain hotkey={hotkey} dimColor={at !== to} label={label} onPress={go(to)} />
     )
+    const step = await read($, picked)
+    const back = at === 'history' && step !== null ? async () => {
+          await update($, picked, () => (step.step === 'confirm' ? { ...step, step: 'preview' } : null))
+        } : go('todos')
     const nav = (
       <Box key="nav" flexDirection="row" gap={2} marginBottom={1}>
         {tab('todos', 't', 'Todos', 'todos')}
@@ -915,7 +937,7 @@ export const register: Register = on => {
         {tab('queue', 'e', `Queue (${list.length})`, 'queue')}
         {tab('history', 'h', 'History', 'history')}
         <Button key="send" plain hotkey="s" label="Send queue" onPress={() => sendQueue($)} />
-        {at === 'todos' ? null : <Button key="view:back" plain hotkey="b" label="Back" onPress={go('todos')} />}
+        {at === 'todos' ? null : <Button key="view:back" plain hotkey="b" label="Back" onPress={back} />}
       </Box>
     )
     const slot = (
@@ -944,33 +966,81 @@ export const register: Register = on => {
       const dir = await notesDir($)
       const own = current?.path
       const names = (await listNotes($)).filter(name => own === undefined || !own.endsWith(`/${name}`))
-      const rows = await Promise.all(
-        names.slice(0, HISTORY_CAP).map(async name => {
-          const line = summary(await readText($, `${dir}/${name}`).catch(() => ''))
-          const parts = nameParts(name)
-          return { name, label: `${parts === undefined ? name : `${parts.date} ${parts.time}  ${parts.project}  ${parts.shortId}`}  ${line.slice(0, PREVIEW)}` }
-        }),
-      )
-      content = (
-        <Box key="content" flexDirection="column">
-          <Text bold>Earlier notes ({names.length})</Text>
-          {rows.length === 0 ? <Text dimColor>No earlier notes.</Text> : null}
-          {rows.map(row => (
-            <Button
-              key={`attach:${row.name}`}
-              plain
-              label={row.label}
-              onPress={async () => {
-                warn($, told('', (await attach($, row.name)).said))
-                $.ui.toast(`Attached ${row.name}: its objectives, updates and todo items are copied here; the original is unchanged.`)
-                await go('todos')()
-              }}
-            />
-          ))}
-          {names.length > HISTORY_CAP ? <Text dimColor>{`(${names.length - HISTORY_CAP} older not listed)`}</Text> : null}
-          {hint('Tab to a file, Enter attaches a copy of it to this session. b goes back')}
-        </Box>
-      )
+      const open = (name: string, to: Opened['step']) => async () => {
+        await update($, cursor, () => name)
+        await update($, picked, () => ({ name, step: to }))
+      }
+      if (step !== null && step.step === 'confirm') {
+        content = (
+          <Box key="content" flexDirection="column">
+            <Text bold>Attach {step.name}?</Text>
+            <Text>Its objectives, updates and open todo items are copied into this session's notes. Done and declined items stay behind. The copy cannot be undone here; the original is not changed.</Text>
+            <Box flexDirection="row" gap={2}>
+              <Button
+                key="confirm"
+                plain
+                hotkey="y"
+                label="Yes, attach"
+                onPress={async () => {
+                  warn($, told('', (await attach($, step.name)).said))
+                  $.ui.toast(`Attached ${step.name}: its objectives, updates and open todo items are copied here; the original is unchanged.`)
+                  await update($, picked, () => null)
+                  await update($, view, () => 'todos')
+                }}
+              />
+              <Button key="cancel" plain hotkey="n" autoFocus label="No, cancel" onPress={() => update($, picked, () => ({ ...step, step: 'preview' }))} />
+            </Box>
+            {hint('y attaches, n or b cancels')}
+          </Box>
+        )
+      } else if (step !== null) {
+        const t = sections(await readText($, `${dir}/${step.name}`).catch(() => ''))
+        content = (
+          <Box key="content" flexDirection="column">
+            <Text bold>{step.name}</Text>
+            <Button key="attach" plain hotkey="a" label="Attach this note" onPress={open(step.name, 'confirm')} />
+            {body('Objectives', [t.continuation === undefined ? '' : `Continuation of: ${t.continuation}\n\n`, t.objectives].join('').trim())}
+            {body('Updates', t.updates)}
+            {body('Todo', t.todo)}
+            {body('Important', t.important)}
+            {body('Chat', t.chat)}
+            {hint('Read-only. a attaches it after a confirmation, b goes back to the list')}
+          </Box>
+        )
+      } else {
+        const rows = await Promise.all(
+          names.slice(0, HISTORY_CAP).map(async name => {
+            const line = summary(await readText($, `${dir}/${name}`).catch(() => ''))
+            const parts = nameParts(name)
+            return { name, label: `${parts === undefined ? name : `${parts.date} ${parts.time}  ${parts.project}  ${parts.shortId}`}  ${line.slice(0, PREVIEW)}` }
+          }),
+        )
+        const marked = await read($, cursor)
+        content = (
+          <Box key="content" flexDirection="column">
+            <Text bold>Earlier notes ({names.length})</Text>
+            {rows.length === 0 ? <Text dimColor>No earlier notes.</Text> : null}
+            {rows.map((row, i) => (
+              <Button key={`${NOTE}${row.name}`} plain autoFocus={i === 0 ? true : undefined} dimColor={marked !== row.name} label={row.label} onPress={open(row.name, 'preview')} />
+            ))}
+            {names.length > HISTORY_CAP ? <Text dimColor>{`(${names.length - HISTORY_CAP} older not listed)`}</Text> : null}
+            {rows.length === 0 ? null : (
+              <Button
+                key="attach"
+                plain
+                hotkey="a"
+                label="Attach selected"
+                onPress={async () => {
+                  const name = marked !== null && names.includes(marked) ? marked : undefined
+                  if (name === undefined) $.ui.toast('Select a note first: Up and Down move, Enter shows it.')
+                  else await update($, picked, () => ({ name, step: 'confirm' }))
+                }}
+              />
+            )}
+            {hint('Up and Down pick a note, Enter shows what it holds, a attaches the picked one after a confirmation. b goes back')}
+          </Box>
+        )
+      }
     } else if (at === 'queue') {
       content = (
         <Box key="content" flexDirection="column">

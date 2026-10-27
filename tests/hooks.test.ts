@@ -47,7 +47,7 @@ function engine(
   on: On,
   fs: Fs,
   store: Record<string, unknown> = {},
-  selection: () => string | undefined = () => undefined,
+  selection: () => string | { text: string } | undefined = () => undefined,
   head: { text: string } = { text: '' },
   session: { id: string } = { id: SESSION },
 ) {
@@ -114,8 +114,9 @@ function engine(
     }
   })
   on('ui.selection', () => {
-    const text = selection()
-    return { value: text === undefined ? undefined : { text } }
+    const picked = selection()
+    // A string lies in a transcript row; an object lies elsewhere (a pane, the prompt).
+    return { value: picked === undefined ? undefined : typeof picked === 'string' ? { text: picked, requestId: 'row-1' } : { text: picked.text } }
   })
   on('ui.open', (_$, e) => {
     const focus = e.focus === true
@@ -374,7 +375,7 @@ test('a session that ends by exit hands nothing to the next id: its first write 
 
 test('history lists earlier notes of every project newest first and continues the picked one whole', async ($, on) => {
   const old = `${DIR}/2026-10-24-09-00-firstmate-11111111.md`
-  const before = '# Initial Prompt\n\nOld plan\nA deleted line\n\n## Updates\n\n[UPDATE] 2026-10-24-10-00\nold change\n\n# Todo\n\n- [x] Old plan\n- [~] old change\n\n# Important\n\n[USER] old fact\n\n# Chat\n\n[AI_AGENT] q\n[USER] old chat\n'
+  const before = '# Initial Prompt\n\nOld plan\nA deleted line\n\n## Updates\n\n[UPDATE] 2026-10-24-10-00\nold change\n\n# Todo\n\n- [x] shipped\n- [~] old change\n\n# Important\n\n[USER] old fact\n\n# Chat\n\n[AI_AGENT] q\n[USER] old chat\n'
   const writes: string[] = []
   const fs: Fs = new Proxy<Fs>(
     { [old]: before, [`${DIR}/2026-10-25-18-30-dotfiles-22222222.md`]: '# Objectives\n\nYesterday plan\n' },
@@ -396,7 +397,8 @@ test('history lists earlier notes of every project newest first and continues th
   expect(picked.text).toContain('Continuing 2026-10-24-09-00-firstmate-11111111.md')
   expect(picked.context?.[0]).toContain(`Session notes kept by notes-keeping: ${old}`)
   expect(picked.context?.[0]).toContain((fs[old] ?? 'missing').trimEnd())
-  expect(fs[NOW]?.startsWith(`# Objectives\n\nContinuation of: 2026-10-24-09-00-firstmate-11111111.md\n\nSessions: ${SESSION}\n\nOld plan\nA deleted line\n\nToday plan\n\n## Updates\n\n[UPDATE] 2026-10-24-10-00\nold change\n\n# Todo\n\n- [x] Old plan\n- [~] old change\n`)).toBe(true)
+  expect(fs[NOW]?.startsWith(`# Objectives\n\nContinuation of: 2026-10-24-09-00-firstmate-11111111.md\n\nSessions: ${SESSION}\n\nOld plan\nA deleted line\n\nToday plan\n\n## Updates\n\n[UPDATE] 2026-10-24-10-00\nold change\n\n# Todo\n\n- [~] old change\n\n# Important`)).toBe(true)
+  expect(fs[NOW]).not.toContain('shipped')
   fs[PYTHON] = ''
   fakeLaya()
   await run($, 'todo sync')
@@ -411,10 +413,10 @@ test('history lists earlier notes of every project newest first and continues th
   expect(fs[NOW]?.match(/old change/g)?.length).toBe(2)
 })
 
-test('the panel History view lists other notes newest first; pressing one copies it here and leaves the original byte-identical', async ($, on) => {
+test('the panel History view lists other notes newest first; Enter previews one read-only, a asks before attaching, Enter alone never attaches', async ($, on) => {
   const old = `${DIR}/2026-10-24-09-00-firstmate-11111111.md`
   const newer = `${DIR}/2026-10-25-18-30-dotfiles-22222222.md`
-  const before = '# Objectives\n\nOld plan\n\n## Updates\n\n[UPDATE] 2026-10-24-10-00\nold change\n\n# Todo\n\n- [~] old change\n\n# Important\n\n# Chat\n'
+  const before = '# Objectives\n\nOld plan\n\n## Updates\n\n[UPDATE] 2026-10-24-10-00\nold change\n\n# Todo\n\n- [x] shipped\n- [-] dropped\n- [~] old change\n- [ ] not yet\n\n# Important\n\n[USER] old fact\n\n# Chat\n'
   const writes: string[] = []
   const fs: Fs = new Proxy<Fs>(
     { [BOUND]: NOTES, [old]: before, [newer]: '# Objectives\n\nYesterday plan\n' },
@@ -427,16 +429,45 @@ test('the panel History view lists other notes newest first; pressing one copies
   const pane = await $.ui.mount({ ...NOTES_PANE, surface: 'terminal' })
   expect((await pane.find({ key: 'view:history' }))?.props).toMatchObject({ hotkey: 'h', label: 'History' })
   await pane.press({ key: 'view:history' })
-  const first = await pane.find({ key: 'attach:2026-10-25-18-30-dotfiles-22222222.md' })
+  const first = await pane.find({ key: 'note:2026-10-25-18-30-dotfiles-22222222.md' })
   expect(first?.props.label).toBe('2026-10-25 18:30  dotfiles  22222222  Yesterday plan')
-  expect(await pane.find({ key: 'attach:2026-10-26-10-50-firstmate-abcdef12.md' })).toBeUndefined()
-  await pane.press({ key: 'attach:2026-10-24-09-00-firstmate-11111111.md' })
+  expect(first?.props.autoFocus).toBe(true)
+  expect(await pane.find({ key: 'note:2026-10-26-10-50-firstmate-abcdef12.md' })).toBeUndefined()
+
+  await flush()
+  const kept = fs[BOUND]
+  await pane.press({ key: 'attach' })
+  expect(ui.toasts.at(-1)).toContain('Select a note first')
+
+  await pane.press({ key: 'note:2026-10-24-09-00-firstmate-11111111.md' })
+  expect(fs[BOUND]).toBe(kept)
+  expect(await pane.find({ type: 'Text', text: 'Old plan' })).toBeDefined()
+  expect(await pane.find({ type: 'Text', text: /^- \[x\] shipped\n- \[-\] dropped/ })).toBeDefined()
+  expect((await pane.find({ key: 'attach' }))?.props).toMatchObject({ hotkey: 'a' })
+
+  await pane.press({ key: 'attach' })
+  expect(fs[BOUND]).toBe(kept)
+  expect(await pane.find({ type: 'Text', text: /^Attach 2026-10-24-09-00-firstmate-11111111.md\?/ })).toBeDefined()
+  expect((await pane.find({ key: 'confirm' }))?.props).toMatchObject({ hotkey: 'y' })
+  expect((await pane.find({ key: 'cancel' }))?.props).toMatchObject({ hotkey: 'n', autoFocus: true })
+
+  await pane.press({ key: 'cancel' })
+  expect(fs[BOUND]).toBe(kept)
+  expect(await pane.find({ key: 'confirm' })).toBeUndefined()
+  await pane.press({ key: 'view:back' })
+  await pane.press({ key: 'attach' })
+  expect(await pane.find({ key: 'confirm' })).toBeDefined()
+
+  await pane.press({ key: 'confirm' })
   expect(fs[old]).toBe(before)
   expect(writes).not.toContain(old)
   expect(fs[BOUND]).toContain('Continuation of: 2026-10-24-09-00-firstmate-11111111.md')
   expect(fs[BOUND]).toContain('Old plan')
   expect(fs[BOUND]).toContain('[UPDATE] 2026-10-24-10-00\nold change')
   expect(fs[BOUND]).toContain('- [~] old change')
+  expect(fs[BOUND]).toContain('- [ ] not yet')
+  expect(fs[BOUND]).not.toContain('shipped')
+  expect(fs[BOUND]).not.toContain('dropped')
   expect(fs[BOUND]).toContain('The plan')
   expect(ui.toasts.at(-1)).toContain('the original is unchanged')
   await pane.unmount()
@@ -525,6 +556,12 @@ function engineDraws(on: On) {
   on('ui.render', ($, e) => h($.ui.resolve(e).Text, {}, 'engine') as RenderElement)
 }
 
+// Esc and the close mark are the host's close: the pane is gone without the mod having asked.
+function hostClose(ui: ReturnType<typeof engine>['ui'], id: string) {
+  ui.panes.delete(id)
+  if (ui.shown === id) ui.shown = ui.panes.keys().next().value
+}
+
 test('a selection opens a focused pane: i keeps it, r queues a reply, x dismisses; each answered text stays down', async ($, on) => {
   const fs: Fs = { [BOUND]: '# Objectives\n\nPlan\n\n## Updates\n\n# Important\n\n# Chat\n' }
   let selection: string | undefined
@@ -592,6 +629,131 @@ test('a selection while the notes panel holds the keyboard shows the Selection p
   await clock.advance(1200)
   expect(ui.shown).toBe('notes-keeping-select')
   expect(ui.panes.get('notes-keeping-select')?.isFocused).toBe(true)
+})
+
+test('text selected inside the notes panel does not open the reply menu; text selected in the chat while it is open does', async ($, on) => {
+  let selection: string | { text: string } | undefined
+  const { clock, ui } = engine(on, { [BOUND]: NOTES }, { [`session:${SESSION}`]: BOUND }, () => selection)
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
+  await run($, 'show')
+  selection = { text: 'new goal' }
+  await clock.advance(2400)
+  expect(ui.opened.filter(open => open.id === 'notes-keeping-select')).toEqual([])
+  selection = 'Keep this fact'
+  await clock.advance(1800)
+  expect(ui.opened.filter(open => open.id === 'notes-keeping-select')).toEqual([{ id: 'notes-keeping-select', focus: true }])
+})
+
+test('after the reply box is left for the Notes tab, a new selection in the chat opens the menu again', async ($, on) => {
+  let selection: string | { text: string } | undefined
+  const { clock, ui } = engine(on, { [BOUND]: NOTES }, { [`session:${SESSION}`]: BOUND }, () => selection)
+  engineDraws(on)
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
+  selection = 'alpha'
+  await clock.advance(1200)
+  const menu = await $.ui.mount({ ...SELECT_PANE, surface: 'terminal' })
+  await menu.press({ key: 'reply-open' })
+  await menu.unmount()
+  await run($, 'show')
+  // The person clicks the Notes tab: it is shown and takes the keyboard; the reply box waits behind it.
+  ui.shown = 'notes-keeping'
+  ui.panes.set('notes-keeping', { isFocused: true })
+  ui.panes.set('notes-keeping-select', { isFocused: false })
+  const opens = ui.opened.length
+  selection = 'bravo'
+  await clock.advance(1800)
+  expect(ui.opened.slice(opens)).toEqual([{ id: 'notes-keeping-select', focus: true }])
+  expect(ui.shown).toBe('notes-keeping-select')
+})
+
+test('a click in the chat that selects a word while the reply box is open closes it and opens the menu for the new word', async ($, on) => {
+  let selection: string | undefined
+  const { clock, ui } = engine(on, { [BOUND]: NOTES }, { [`session:${SESSION}`]: BOUND }, () => selection)
+  engineDraws(on)
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
+  selection = 'alpha'
+  await clock.advance(1200)
+  const menu = await $.ui.mount({ ...SELECT_PANE, surface: 'terminal' })
+  await menu.press({ key: 'reply-open' })
+  await menu.unmount()
+  await clock.advance(1200)
+  const opens = ui.opened.length
+  ui.panes.set('notes-keeping-select', { isFocused: false })
+  selection = 'bravo'
+  await clock.advance(3000)
+  expect(ui.closed).toEqual(['notes-keeping-select'])
+  expect(ui.opened.slice(opens)).toEqual([{ id: 'notes-keeping-select', focus: true }])
+})
+
+test('Esc or the close mark on the menu, or on the reply box with or without a draft, leaves the next selection able to open the menu', async ($, on) => {
+  let selection: string | undefined
+  const { clock, ui } = engine(on, { [BOUND]: NOTES }, { [`session:${SESSION}`]: BOUND }, () => selection)
+  engineDraws(on)
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
+  const picks = ['alpha', 'bravo', 'charlie']
+  for (const [index, pick] of picks.entries()) {
+    const before = ui.opened.length
+    selection = pick
+    await clock.advance(1800)
+    expect(ui.opened.slice(before)).toEqual([{ id: 'notes-keeping-select', focus: true }])
+    if (index > 0) {
+      const menu = await $.ui.mount({ ...SELECT_PANE, surface: 'terminal' })
+      await menu.press({ key: 'reply-open' })
+      await menu.unmount()
+      await clock.advance(600)
+    }
+    hostClose(ui, 'notes-keeping-select')
+    selection = undefined
+    await clock.advance(1200)
+  }
+  selection = 'delta'
+  await clock.advance(1800)
+  expect(ui.panes.has('notes-keeping-select')).toBe(true)
+  const menu = await $.ui.mount({ ...SELECT_PANE, surface: 'terminal' })
+  expect(await menu.find({ key: 'reply-open' })).toBeDefined()
+  await menu.unmount()
+})
+
+test('the Ctrl+q chord with the reply box open leaves the reply box behind the Notes tab; the next selection replaces both', async ($, on) => {
+  let selection: string | undefined
+  const { clock, ui } = engine(on, { [BOUND]: NOTES }, { [`session:${SESSION}`]: BOUND }, () => selection)
+  engineDraws(on)
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
+  selection = 'alpha'
+  await clock.advance(1200)
+  const menu = await $.ui.mount({ ...SELECT_PANE, surface: 'terminal' })
+  await menu.press({ key: 'reply-open' })
+  await menu.unmount()
+  await clock.advance(600)
+  await run($, 'show')
+  expect([...ui.panes.keys()]).toEqual(['notes-keeping-select', 'notes-keeping'])
+  ui.panes.set('notes-keeping-select', { isFocused: false })
+  selection = 'bravo'
+  await clock.advance(3000)
+  const shown = await $.ui.mount({ ...SELECT_PANE, surface: 'terminal' })
+  expect(await shown.find({ key: 'reply-open' })).toBeDefined()
+  expect(ui.panes.has('notes-keeping')).toBe(false)
+  await shown.unmount()
+})
+
+test('Esc on the Notes panel and the chord toggle leave the next selection able to open the menu', async ($, on) => {
+  let selection: string | undefined
+  const { clock, ui } = engine(on, { [BOUND]: NOTES }, { [`session:${SESSION}`]: BOUND }, () => selection)
+  engineDraws(on)
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
+  await run($, 'show')
+  hostClose(ui, 'notes-keeping')
+  selection = 'alpha'
+  await clock.advance(1800)
+  expect(ui.opened.filter(open => open.id === 'notes-keeping-select')).toHaveLength(1)
+  hostClose(ui, 'notes-keeping-select')
+  selection = undefined
+  await clock.advance(1200)
+  await run($, 'show')
+  await run($, 'hide')
+  selection = 'bravo'
+  await clock.advance(1800)
+  expect(ui.opened.filter(open => open.id === 'notes-keeping-select')).toHaveLength(2)
 })
 
 test('a selection still changing between polls, as during a drag, opens nothing until it holds', async ($, on) => {

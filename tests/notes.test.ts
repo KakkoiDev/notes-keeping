@@ -137,17 +137,24 @@ describe('section writer', () => {
     expect(sections(md).objectives).toBe('Plan')
   })
 
-  test('carryOver copies objectives, updates and todo items with statuses; this file keeps its own status and nothing doubles', () => {
-    const previous = '# Objectives\n\nOld plan\n\n## Updates\n\n[UPDATE] 2026-10-24-10-00\nold change\n\n# Todo\n\n- [x] Old plan\n- [-] Dropped idea\n- [ ] Shared item\n\n# Important\n\n[USER] old fact\n\n# Chat\n'
+  test('carryOver copies objectives, updates and open todo items with statuses, leaves done and declined ones behind; this file keeps its own status and nothing doubles', () => {
+    const previous = '# Objectives\n\nOld plan\n\n## Updates\n\n[UPDATE] 2026-10-24-10-00\nold change\n\n# Todo\n\n- [x] Old plan\n- [-] Dropped idea\n- [~] Carried open\n- [ ] Shared item\n- [ ] Plain open\n\n# Important\n\n[USER] old fact\n\n# Chat\n'
     let md = setTodo(create('New plan', ID), '- [~] Shared item')
     md = carryOver(md, previous, 'old.md')
     md = carryOver(md, previous, 'old.md')
     const s = sections(md)
     expect(s.continuation).toBe('old.md')
-    expect(s.objectives).toBe('Old plan\n\nNew plan')
+    expect(s.objectives).toBe('New plan')
     expect(s.updates).toBe('[UPDATE] 2026-10-24-10-00\nold change')
-    expect(s.todo).toBe('- [x] Old plan\n- [-] Dropped idea\n- [~] Shared item')
+    expect(s.todo).toBe('- [~] Carried open\n- [ ] Plain open\n- [~] Shared item')
     expect(s.important).toBe('')
+  })
+
+  test('carryOver leaves behind an objective whose items are all done or declined, and keeps one with an open item or no item', () => {
+    const previous = '# Objectives\n\nBackground line with no item here\n\n1. Ship the exporter\n   See the notes\n\n2. Fix the login bug\n3. Drop the legacy path\n4. Wire the audit log\n\n# Todo\n\n- [x] Ship the exporter\n- [ ] Fix the login bug\n- [-] Drop the legacy path\n- [x] Wire the audit log\n- [ ] Wire the audit log extras\n\n# Important\n\n# Chat\n'
+    const md = carryOver(create('New plan', ID), previous, 'old.md')
+    expect(sections(md).objectives).toBe('Background line with no item here\n\n2. Fix the login bug\n\nNew plan')
+    expect(sections(md).todo).toBe('- [ ] Fix the login bug\n- [ ] Wire the audit log extras')
   })
 
   test('reads and writes the captain\'s example layout', () => {
