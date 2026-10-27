@@ -342,13 +342,16 @@ test('a session that ends by exit hands nothing to the next id: its first write 
 
 test('history lists earlier notes of every project newest first and continues the picked one whole', async ($, on) => {
   const old = `${DIR}/2026-10-24-09-00-firstmate-11111111.md`
-  const fs: Fs = {
-    [old]: '# Initial Prompt\n\nOld plan\n\n## Updates\n\n# Important\n\n[USER] old fact\n\n# Chat\n\n[AI_AGENT] q\n[USER] old chat\n',
-    [`${DIR}/2026-10-25-18-30-dotfiles-22222222.md`]: '# Objectives\n\nYesterday plan\n',
-  }
-  engine(on, fs)
+  const before = '# Initial Prompt\n\nOld plan\nA deleted line\n\n## Updates\n\n[UPDATE] 2026-10-24-10-00\nold change\n\n# Todo\n\n- [x] Old plan\n- [~] old change\n\n# Important\n\n[USER] old fact\n\n# Chat\n\n[AI_AGENT] q\n[USER] old chat\n'
+  const writes: string[] = []
+  const fs: Fs = new Proxy<Fs>(
+    { [old]: before, [`${DIR}/2026-10-25-18-30-dotfiles-22222222.md`]: '# Objectives\n\nYesterday plan\n' },
+    { set: (target, path, text) => (writes.push(String(path)), Reflect.set(target, path, text)) },
+  )
+  const store: Record<string, unknown> = { [`todo:${old}`]: { seen: ['old plan', 'a deleted line'], ai: {}, pins: [] } }
+  engine(on, fs, store)
   await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: false })
-  await run($, 'init Today')
+  await run($, 'init Today plan')
 
   const list = (await run($, 'history')).text ?? ''
   expect(list.split('\n').slice(0, 3)).toEqual([
@@ -361,7 +364,19 @@ test('history lists earlier notes of every project newest first and continues th
   expect(picked.text).toContain('Continuing 2026-10-24-09-00-firstmate-11111111.md')
   expect(picked.context?.[0]).toContain(`Session notes kept by notes-keeping: ${old}`)
   expect(picked.context?.[0]).toContain((fs[old] ?? 'missing').trimEnd())
-  expect(fs[NOW]?.startsWith(`# Objectives\n\nContinuation of: 2026-10-24-09-00-firstmate-11111111.md\n\nSessions: ${SESSION}\n\nToday\n`)).toBe(true)
+  expect(fs[NOW]?.startsWith(`# Objectives\n\nContinuation of: 2026-10-24-09-00-firstmate-11111111.md\n\nSessions: ${SESSION}\n\nOld plan\nA deleted line\n\nToday plan\n\n## Updates\n\n[UPDATE] 2026-10-24-10-00\nold change\n\n# Todo\n\n- [x] Old plan\n- [~] old change\n`)).toBe(true)
+  fs[PYTHON] = ''
+  fakeLaya()
+  await run($, 'todo sync')
+  const asked = laya.asks.flatMap(ask => ask.lines.map(line => line.text))
+  expect(asked).toContain('Today plan')
+  expect(asked).not.toContain('A deleted line')
+
+  await run($, 'update new requirement')
+  await run($, 'history 2')
+  expect(fs[old]).toBe(before)
+  expect(writes).not.toContain(old)
+  expect(fs[NOW]?.match(/old change/g)?.length).toBe(2)
 })
 
 const NOTES = '# Objectives\n\nThe plan\n\n## Updates\n\n[UPDATE] t\nnew goal\n\n# Important\n\n[USER] agreed X\n\n# Chat\n\n[AI_AGENT] q\n[USER] a\n'

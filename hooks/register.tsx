@@ -10,6 +10,7 @@ import {
   addSession,
   addTurn,
   addUpdate,
+  carryOver,
   chatPair,
   create,
   fileName,
@@ -18,7 +19,6 @@ import {
   newestFirst,
   projectName,
   sections,
-  setContinuation,
   setObjectives,
   setTodo,
   stamp,
@@ -59,7 +59,7 @@ const USAGE = [
   '  reply <text>               queue the selected text and your reply; they go out with your next message',
   '  replies                    open the panel at the queue: every reply editable, s moves all into the prompt',
   '  todo [sync]                show the todo list; sync runs Laya over the objectives and the last reply now',
-  '  history [n|file]           list earlier notes; pick one to continue it here',
+  '  history [n|file]           list earlier notes; pick one to copy its objectives, updates and todo items here',
   `  show | hide                open or close the notes panel (also ${CHORD}); o objectives, i important, c chat, e queue, s send queue`,
   `${CHORD} works once ~/.claude/keybindings.json binds it: { "bindings": [{ "context": "Global", "bindings": { "${CHORD}": "${ACTION}" } }] }`,
   'Every write starts the notes file when the session has none.',
@@ -368,9 +368,18 @@ async function history($: EngineInterface, args: string): Promise<{ text: string
   const pick = /^\d+$/.test(args) ? names[Number(args) - 1] : names.find(name => name === args || name === `${args}.md`)
   if (pick === undefined) return { text: `No earlier notes match "${args}".` }
   const previous = await readText($, `${dir}/${pick}`)
-  const said = await edit($, 'continue', text => setContinuation(text, pick))
+  const said = await edit($, 'continue', text => carryOver(text, previous, pick))
+  // Lines the linked file's todo run already judged are not asked again here.
+  const path = await boundPath($)
+  if (path !== undefined) {
+    await locked(async () => {
+      const mine = await readMemory($, path)
+      const seen = [...new Set([...mine.seen, ...(await readMemory($, `${dir}/${pick}`)).seen])]
+      await $.store.set(memoryKey(path), { ...mine, seen })
+    })
+  }
   return {
-    text: told(`Continuing ${pick}: the whole file is now in context.`, said),
+    text: told(`Continuing ${pick}: its objectives, updates and todo items are copied here; ${pick} is unchanged. The whole file is now in context.`, said),
     context: [inject(previous, `${dir}/${pick}`)],
   }
 }

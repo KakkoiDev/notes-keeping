@@ -12,7 +12,7 @@ Session notes in `~/.notes-keeping/<date>-<time>-<project>-<session>.md`, commit
 | `reply <text>` | queue the selected text and your reply |
 | `replies` | open the panel at the queue view |
 | `todo [sync]` | show the todo list; `sync` runs Laya over the objectives and the last reply now |
-| `history [n\|file]` | list earlier notes; pick one to continue it here |
+| `history [n\|file]` | list earlier notes; pick one to continue it here: its objectives, updates and todo items (statuses kept) are copied into this file under a `Continuation of:` line, and the picked file is never written |
 | `show`, `hide` | open or close the panel |
 
 ## The panel

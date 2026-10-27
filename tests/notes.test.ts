@@ -6,6 +6,7 @@ import {
   addImportant,
   addSession,
   addUpdate,
+  carryOver,
   create,
   fileName,
   inject,
@@ -15,6 +16,7 @@ import {
   sections,
   setContinuation,
   setObjectives,
+  setTodo,
   stamp,
   summary,
 } from '../hooks/notes'
@@ -133,6 +135,19 @@ describe('section writer', () => {
     expect(md.match(/Continuation of:/g)?.length).toBe(1)
     expect(sections(md).continuation).toBe('24-10-2026-09-00.md')
     expect(sections(md).objectives).toBe('Plan')
+  })
+
+  test('carryOver copies objectives, updates and todo items with statuses; this file keeps its own status and nothing doubles', () => {
+    const previous = '# Objectives\n\nOld plan\n\n## Updates\n\n[UPDATE] 2026-10-24-10-00\nold change\n\n# Todo\n\n- [x] Old plan\n- [-] Dropped idea\n- [ ] Shared item\n\n# Important\n\n[USER] old fact\n\n# Chat\n'
+    let md = setTodo(create('New plan', ID), '- [~] Shared item')
+    md = carryOver(md, previous, 'old.md')
+    md = carryOver(md, previous, 'old.md')
+    const s = sections(md)
+    expect(s.continuation).toBe('old.md')
+    expect(s.objectives).toBe('Old plan\n\nNew plan')
+    expect(s.updates).toBe('[UPDATE] 2026-10-24-10-00\nold change')
+    expect(s.todo).toBe('- [x] Old plan\n- [-] Dropped idea\n- [~] Shared item')
+    expect(s.important).toBe('')
   })
 
   test('reads and writes the captain\'s example layout', () => {

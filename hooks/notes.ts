@@ -1,4 +1,5 @@
 import type { NameParts, Sections } from '../types'
+import { format, items, keyOf, parse } from './todo'
 
 export const OBJECTIVES = '# Objectives'
 export const UPDATES = '## Updates'
@@ -213,6 +214,42 @@ export function setTodo(md: string, body: string): string {
     return `${doc.slice(0, at)}${TODO}\n\n${text}${doc.slice(at)}`
   }
   return `${doc.slice(0, start)}${TODO}\n\n${text}${doc.slice(sectionEnd(doc, start, [IMPORTANT, CHAT]))}`
+}
+
+function setUpdates(md: string, body: string): string {
+  const doc = ensure(md)
+  const start = lineStart(doc, UPDATES)
+  const text = body.trim() === '' ? '' : `${body.trim()}\n\n`
+  return `${doc.slice(0, start)}${UPDATES}\n\n${text}${doc.slice(sectionEnd(doc, start, [TODO, IMPORTANT, CHAT]))}`
+}
+
+// Each [UPDATE] line opens an entry; text before the first one is an entry too.
+function updateEntries(updates: string): string[] {
+  const entries: string[][] = [[]]
+  for (const line of updates.split('\n')) {
+    if (/^\[update\]/i.test(line.trim())) entries.push([])
+    entries[entries.length - 1]?.push(line)
+  }
+  return entries.map(lines => lines.join('\n').trim()).filter(entry => entry !== '')
+}
+
+// Copies a linked file's objectives, updates and todo items (with their statuses) into this one, and names it on the
+// Continuation of: line. Text this file already holds is not copied twice; on a todo item both hold, this file's status stays.
+export function carryOver(md: string, previous: string, name: string): string {
+  const from = sections(previous)
+  const here = sections(md)
+  let out = setContinuation(md, name)
+  if (from.objectives !== '' && !here.objectives.includes(from.objectives)) {
+    out = setObjectives(out, [from.objectives, here.objectives].filter(text => text !== '').join('\n\n'))
+  }
+  const own = updateEntries(here.updates)
+  const carried = updateEntries(from.updates).filter(entry => !own.includes(entry))
+  if (carried.length > 0) out = setUpdates(out, [...carried, ...own].join('\n\n'))
+  const lines = parse(here.todo)
+  const have = new Set(items(here.todo).map(item => keyOf(item.text)))
+  const added = items(from.todo).filter(item => !have.has(keyOf(item.text)))
+  if (added.length > 0) out = setTodo(out, format([...added.map(item => ({ item })), ...lines]))
+  return out
 }
 
 export function sections(md: string): Sections {
