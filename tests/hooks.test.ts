@@ -11,6 +11,15 @@ const NEXT_ID = 'fedcba98-0000-4000-8000-000000000000'
 const NOW = `${DIR}/2026-10-26-10-58-firstmate-abcdef12.md`
 const FILE = '2026-10-26-10-58-firstmate-abcdef12.md'
 const ACTION = 'app:cycleDiffBase'
+const PYTHON = `${HOME}/.laya-venv/bin/python`
+
+type Ask = { lines: { id: string; text: string }[]; statuses: { id: string; text: string }[]; answer: string }
+// What the fake Laya answers; left undefined, the call fails.
+const laya: { answer: ((ask: Ask) => unknown) | undefined; asks: Ask[] } = { answer: undefined, asks: [] }
+
+async function flush(): Promise<void> {
+  for (let i = 0; i < 5000; i++) await Promise.resolve()
+}
 
 type Fs = Record<string, string>
 type Git = { calls: string[][]; remotes: string }
@@ -35,6 +44,8 @@ function engine(
   head: { text: string } = { text: '' },
   session: { id: string } = { id: SESSION },
 ) {
+  laya.answer = undefined
+  laya.asks = []
   const clock = mock.clock(on, { now: new Date(2026, 9, 26, 10, 58).getTime() })
   mock.store(on, store)
   mock.env(on, { HOME })
@@ -43,6 +54,7 @@ function engine(
   on('session.start', (_$, e) => ({ cwd: e.cwd }))
   on('session.end', (_$, e) => ({ sessionId: e.sessionId }))
   on('command.register', (_$, e) => ({ value: { command: e.name } }))
+  on('turn.complete', (_$, e) => ({ text: e.answer }))
   on('session.id', () => ({ value: session.id }))
   on('session.root', () => ({ value: ROOT }))
   on('session.messages', () => ({ value: head.text === '' ? [] : [{ role: 'user', text: head.text, toolUses: [] }] }))
@@ -62,6 +74,12 @@ function engine(
       .map(path => ({ name: path.slice(e.path.length + 1), kind: 'file' as const, size: 0, mtimeMs: 0, isLink: false })),
   }))
   on('process.run', (_$, e) => {
+    if (e.argv[0] === PYTHON) {
+      const ask = JSON.parse(e.init?.stdin ?? '{}') as Ask
+      laya.asks.push(ask)
+      const stdout = laya.answer === undefined ? '' : JSON.stringify(laya.answer(ask))
+      return { value: { exitCode: laya.answer === undefined ? 1 : 0, stdout, stderr: laya.answer === undefined ? 'boom' : '', isStdoutTruncated: false, isStderrTruncated: false } }
+    }
     git.calls.push([...e.argv])
     if (e.argv[3] === 'init') fs[`${DIR}/.git/HEAD`] = 'ref: refs/heads/main\n'
     const stdout = e.argv[3] === 'remote' ? git.remotes : ''
@@ -161,6 +179,12 @@ test('init, objectives, update and important write the session notes file and co
       '[UPDATE] 2026-10-26-10-58',
       'Via init',
       '',
+      '# Todo',
+      '',
+      '- [ ] Change of plan',
+      '- [ ] Later goal',
+      '- [ ] Via init',
+      '',
       '# Important',
       '',
       '[AI_AGENT] Agent says merge?',
@@ -171,7 +195,7 @@ test('init, objectives, update and important write the session notes file and co
       '',
     ].join('\n'),
   )
-  expect(commits(git)).toEqual([
+  expect(commits(git).filter(subject => !subject.startsWith('todo:'))).toEqual([
     `init: ${FILE}`,
     `objectives: ${FILE}`,
     `update: ${FILE}`,
@@ -300,7 +324,7 @@ test('after /clear the new session id keeps the notes file and the reply queue i
   expect(fs[NOW]).toContain(`Sessions: ${SESSION}, ${NEXT_ID}\n\nPlan\n`)
   expect(fs[NOW]).toContain('after clear')
   expect(fs[NOW]).not.toContain('dropped')
-  expect(commits(git)).toEqual([`init: ${FILE}`, `session: ${FILE}`, `update: ${FILE}`])
+  expect(commits(git).filter(subject => !subject.startsWith('todo:'))).toEqual([`init: ${FILE}`, `session: ${FILE}`, `update: ${FILE}`])
 })
 
 test('a session that ends by exit hands nothing to the next id: its first write starts a new file', async ($, on) => {
@@ -367,10 +391,12 @@ test('a session continued with claude -c carries the notes on its first prompt, 
   const sent = submitting(on)
   engine(on, { [BOUND]: NOTES }, { [`session:${SESSION}`]: BOUND }, undefined, { text: 'Earlier prompt' })
   await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: false })
+  await flush()
   await submit($, 'back again')
   await submit($, 'and more')
-  expect(sent.map(row => row.context?.length ?? 0)).toEqual([1, 0])
-  expect(sent[0]?.context?.[0]).toContain(NOTES.trimEnd())
+  expect(sent.map(row => row.context?.length ?? 0)).toEqual([1, 1])
+  expect(sent[0]?.context?.[0]).toContain(NOTES.replace('# Important', '# Todo\n\n- [ ] new goal\n\n# Important').trimEnd())
+  expect(sent[1]?.context?.[0]).toContain('Work on: new goal')
 })
 
 test('a fresh session gets no notes on its first prompt', async ($, on) => {
@@ -724,3 +750,239 @@ test('u in the objectives view opens an input whose text lands as a new [UPDATE]
   expect(new Set(hotkeys).size).toBe(hotkeys.length)
   await pane.unmount()
 })
+
+// The captain's heading layout with his list shapes; the text is a stand-in.
+const CAPTAIN_NOTES = [
+  '# Objectives',
+  '',
+  'I want a todo list kept by the plugin',
+  'An objective can be of status:',
+  '- to-do: not started yet',
+  '- ongoing: being worked on',
+  '',
+  '## Updates',
+  '',
+  '[Update] 2026-10-17-02',
+  'I want to see it live in the sidepanel.',
+  'And keep it in the md file.',
+  '',
+  '# Important',
+  '',
+  '# Chat',
+  '',
+].join('\n')
+const SESSION_BOUND = { [`session:${SESSION}`]: BOUND }
+
+function complete($: Engine, answer: string) {
+  return $.turn.complete({ answer, durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer' })
+}
+
+// Laya reads an objective line as a task, as background for the to-do line and unsure for the ongoing one; replies are read by the table.
+function fakeLaya(replies: Record<string, { label: string; p: number }> = {}) {
+  laya.answer = ask => ({
+    lines: Object.fromEntries(ask.lines.map(line => [line.id, line.text.startsWith('to-do') ? 0.05 : line.text.startsWith('ongoing') ? 0.5 : 0.95])),
+    statuses: Object.fromEntries(ask.statuses.map(status => [status.id, replies[status.id] ?? { label: 'not-mentioned', p: 0.9 }])),
+    predictMs: 1,
+  })
+}
+
+test('at launch Laya picks items from the objectives and every update becomes one; judged lines are not asked twice', async ($, on) => {
+  const fs: Fs = { [BOUND]: CAPTAIN_NOTES, [PYTHON]: '' }
+  const { git } = engine(on, fs, { ...SESSION_BOUND })
+  fakeLaya()
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: false })
+  await flush()
+  expect(laya.asks).toHaveLength(1)
+  expect(laya.asks[0]?.lines.map(line => line.text)).toEqual(['I want a todo list kept by the plugin', 'to-do: not started yet', 'ongoing: being worked on'])
+  expect(laya.asks[0]?.statuses).toEqual([])
+  expect(fs[BOUND]).toBe(
+    CAPTAIN_NOTES.replace(
+      '# Important',
+      '# Todo\n\n- [ ] I want a todo list kept by the plugin\n- [ ] ongoing: being worked on\n- [ ] I want to see it live in the sidepanel.\n\n# Important',
+    ),
+  )
+  expect(commits(git)).toEqual([`todo: ${BOUND.split('/').pop()}`])
+
+  // The captain deletes a line; a new launch does not bring it back and asks nothing.
+  fs[BOUND] = (fs[BOUND] ?? '').replace('- [ ] ongoing: being worked on\n', '')
+  await run($, 'todo sync')
+  expect(laya.asks).toHaveLength(1)
+  expect(fs[BOUND]).not.toContain('- [ ] ongoing: being worked on')
+})
+
+test('/notes-keeping update adds an item with no Laya call for it, and todo lists the items', async ($, on) => {
+  const fs: Fs = { [PYTHON]: '' }
+  engine(on, fs)
+  fakeLaya()
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: false })
+  await run($, 'init')
+  await run($, 'objectives Plan the todo pane')
+  await flush()
+  await run($, 'update Add a Todo pane')
+  await flush()
+  expect(laya.asks.flatMap(ask => ask.lines)).toEqual([{ id: 'plan the todo pane', text: 'Plan the todo pane' }])
+  expect(fs[NOW]).toContain('\n# Todo\n\n- [ ] Plan the todo pane\n- [ ] Add a Todo pane\n\n# Important')
+  expect((await run($, 'todo')).text).toBe('[ ] Plan the todo pane\n[ ] Add a Todo pane')
+  expect((await run($, 'todo nonsense')).text).toBe('Usage: /notes-keeping todo [sync]')
+})
+
+test('without Laya installed the updates still become items, one toast says why, and the lines wait for Laya', async ($, on) => {
+  const fs: Fs = { [BOUND]: CAPTAIN_NOTES }
+  const { ui } = engine(on, fs, { ...SESSION_BOUND })
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: false })
+  await flush()
+  expect(fs[BOUND]).toContain('# Todo\n\n- [ ] I want to see it live in the sidepanel.\n\n# Important')
+  expect(ui.toasts.filter(text => text.includes('no Laya'))).toHaveLength(1)
+  expect(ui.toasts[0]).toContain(PYTHON)
+
+  fs[PYTHON] = ''
+  fakeLaya()
+  await run($, 'todo sync')
+  expect(fs[BOUND]).toContain('- [ ] I want a todo list kept by the plugin')
+})
+
+test('at the end of a turn Laya reads the reply: a reply that names an item and is sure moves it, an unrelated confident one does not', async ($, on) => {
+  const fs: Fs = { [BOUND]: setTodoFile('- [ ] Add a ctrl+q toggle\n- [ ] Write the docs\n- [ ] Rename the pane'), [PYTHON]: '' }
+  const { git } = engine(on, fs, { ...SESSION_BOUND })
+  fakeLaya({
+    'add a ctrl+q toggle': { label: 'finished', p: 0.9 },
+    'write the docs': { label: 'rejected', p: 0.95 },
+    'rename the pane': { label: 'started', p: 0.5 },
+  })
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: false })
+  await flush()
+  laya.asks.length = 0
+  await complete($, 'The ctrl+q toggle works and tests pass. Pushed the branch.')
+  await flush()
+  expect(laya.asks.at(-1)?.answer).toBe('The ctrl+q toggle works and tests pass. Pushed the branch.')
+  expect(fs[BOUND]).toContain('- [x] Add a ctrl+q toggle\n- [ ] Write the docs\n- [ ] Rename the pane')
+  expect(commits(git).at(-1)).toBe(`todo: ${BOUND.split('/').pop()}`)
+
+  // A done item is not asked about again.
+  await complete($, 'Nothing else.')
+  await flush()
+  expect(laya.asks.at(-1)?.statuses.map(status => status.id)).toEqual(expect.arrayContaining(['write the docs', 'rename the pane']))
+  expect(laya.asks.at(-1)?.statuses.map(status => status.id)).not.toContain('add a ctrl+q toggle')
+})
+
+const LOG = `${DIR}/todo-changes.log`
+
+test('Laya also updates a status the captain set by hand, above the same floor, and each change is logged', async ($, on) => {
+  const fs: Fs = { [BOUND]: setTodoFile('- [ ] Add a ctrl+q toggle\n- [ ] Write the docs\n- [ ] Rename the pane\n- [x] Fix the flicker'), [PYTHON]: '' }
+  const { git } = engine(on, fs, { ...SESSION_BOUND })
+  fakeLaya({
+    'add a ctrl+q toggle': { label: 'finished', p: 0.9 },
+    'write the docs': { label: 'finished', p: 0.9 },
+    'rename the pane': { label: 'finished', p: 0.5 },
+    'fix the flicker': { label: 'rejected', p: 0.95 },
+  })
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: false })
+  await flush()
+  laya.asks.length = 0
+  await complete($, 'Nothing yet.')
+  await flush()
+  // The captain sets two by hand; Laya reads the next reply.
+  fs[BOUND] = (fs[BOUND] ?? '').replace('- [ ] Write the docs', '- [~] Write the docs').replace('- [ ] Rename the pane', '- [~] Rename the pane')
+  await complete($, 'The ctrl+q toggle, the docs, the pane rename and the flicker fix are all finished.')
+  await flush()
+  expect(fs[BOUND]).toContain('- [x] Add a ctrl+q toggle\n- [x] Write the docs\n- [~] Rename the pane\n- [x] Fix the flicker')
+  expect(laya.asks.at(-1)?.statuses.map(status => status.id)).toEqual(expect.arrayContaining(['add a ctrl+q toggle', 'write the docs', 'rename the pane']))
+  expect(laya.asks.at(-1)?.statuses.map(status => status.id)).not.toContain('fix the flicker')
+  expect(fs[LOG]).toBe(
+    [
+      `2026-10-26-10-58 ${BOUND.split('/').pop()} | Add a ctrl+q toggle | todo -> done | laya finished 0.90`,
+      `2026-10-26-10-58 ${BOUND.split('/').pop()} | Write the docs | in-progress -> done | laya finished 0.90 | replaced a hand-set status`,
+      '',
+    ].join('\n'),
+  )
+  // The log is committed with the write that changed the statuses.
+  expect(git.calls.filter(argv => argv[3] === 'add').length).toBeGreaterThan(0)
+  expect(commits(git).at(-1)).toBe(`todo: ${BOUND.split('/').pop()}`)
+})
+
+test('a failed Laya call changes nothing and tells the user once per failure', async ($, on) => {
+  const body = '- [ ] Add a ctrl+q toggle'
+  const fs: Fs = { [BOUND]: setTodoFile(body), [PYTHON]: '' }
+  const { ui } = engine(on, fs, { ...SESSION_BOUND })
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: false })
+  await flush()
+  const before = fs[BOUND]
+  await complete($, 'The ctrl+q toggle works.')
+  await flush()
+  expect(fs[BOUND]).toBe(before)
+  expect(ui.toasts.at(-1)).toBe('notes-keeping todo: Laya failed: boom')
+})
+
+test('a subagent turn or an interrupted turn does not run Laya', async ($, on) => {
+  const fs: Fs = { [BOUND]: setTodoFile('- [ ] Add a ctrl+q toggle'), [PYTHON]: '' }
+  engine(on, fs, { ...SESSION_BOUND })
+  fakeLaya()
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: false })
+  await flush()
+  laya.asks.length = 0
+  await $.turn.complete({ answer: 'x', durationMs: 1, isAborted: true, turnId: 't2', reason: 'aborted' })
+  await $.turn.complete({ answer: 'x', durationMs: 1, isAborted: false, turnId: 't3', reason: 'answer', agentId: 'sub' })
+  await flush()
+  expect(laya.asks).toHaveLength(0)
+})
+
+test('every prompt carries the todo list; a prompt that carries the whole file does not repeat it', async ($, on) => {
+  const sent = submitting(on)
+  const fs: Fs = { [BOUND]: setTodoFile('- [ ] Add a ctrl+q toggle\n- [~] Write the docs') }
+  engine(on, fs, { ...SESSION_BOUND }, undefined, { text: 'Earlier prompt' })
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: false })
+  await flush()
+  await submit($, 'first')
+  await submit($, 'second')
+  await submit($, 'third')
+  expect(sent[0]?.context).toHaveLength(1)
+  expect(sent[0]?.context?.[0]).toContain('# Todo')
+  for (const row of sent.slice(1)) {
+    expect(row.context).toHaveLength(1)
+    expect(row.context?.[0]).toContain('Work on: Write the docs')
+    expect(row.context?.[0]).toContain('- [todo] Add a ctrl+q toggle\n- [in-progress] Write the docs')
+  }
+})
+
+test('a click on a todo item in the notes pane sets the next status and writes the file; Laya may change it afterwards, logged as hand-set', async ($, on) => {
+  const fs: Fs = { [BOUND]: setTodoFile('- [ ] Add a ctrl+q toggle'), [PYTHON]: '' }
+  const { git } = engine(on, fs, { ...SESSION_BOUND })
+  fakeLaya({ 'add a ctrl+q toggle': { label: 'finished', p: 0.9 } })
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: false })
+  await flush()
+  laya.asks.length = 0
+  const launched = commits(git).filter(subject => subject.startsWith('todo:')).length
+  await run($, 'show')
+  const pane = await $.ui.mount({ ...NOTES_PANE, surface: 'terminal' })
+  const key = 'todo:add a ctrl+q toggle'
+  expect((await pane.find({ key }))?.props.label).toBe('[ ] Add a ctrl+q toggle')
+  const seen: string[] = []
+  for (let i = 0; i < 4; i++) {
+    await pane.press({ key })
+    seen.push((fs[BOUND] ?? '').match(/- \[(.)\] Add/)?.[1] ?? '?')
+  }
+  expect(seen).toEqual(['~', 'x', '-', ' '])
+  expect(commits(git).filter(subject => subject.startsWith('todo:'))).toHaveLength(launched + 4)
+
+  // Clicked back to todo, it is the captain's; a sure reply that names it still moves it, and the log says so.
+  await complete($, 'The ctrl+q toggle works.')
+  await flush()
+  expect(fs[BOUND]).toContain('- [x] Add a ctrl+q toggle')
+  expect(fs[LOG]).toContain('| Add a ctrl+q toggle | todo -> done | laya finished 0.90 | replaced a hand-set status')
+  await pane.unmount()
+})
+
+test('the todo list is the first block of the notes pane', async ($, on) => {
+  const fs: Fs = { [BOUND]: setTodoFile('- [x] Done one\n- [-] Dropped one') }
+  engine(on, fs, { ...SESSION_BOUND })
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: false })
+  await run($, 'show')
+  const pane = await $.ui.mount({ ...NOTES_PANE, surface: 'terminal' })
+  expect((await pane.find({ key: 'todo:done one' }))?.props).toMatchObject({ label: '[x] Done one' })
+  expect((await pane.find({ key: 'todo:dropped one' }))?.props).toMatchObject({ label: '[-] Dropped one' })
+  await pane.unmount()
+})
+
+function setTodoFile(body: string): string {
+  return CAPTAIN_NOTES.replace('# Important', `# Todo\n\n${body}\n\n# Important`)
+}

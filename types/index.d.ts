@@ -3,6 +3,7 @@ export type Sections = {
   sessions: readonly string[]
   objectives: string
   updates: string
+  todo: string
   important: string
   chat: string
 }
@@ -29,7 +30,6 @@ declare module 'claude-code' {
       queue: Pair[]
       editing: boolean
       view: View
-      todos: Todo[]
       isNotesOpen: boolean
     }
   }

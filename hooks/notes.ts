@@ -2,6 +2,7 @@ import type { NameParts, Sections } from '../types'
 
 export const OBJECTIVES = '# Objectives'
 export const UPDATES = '## Updates'
+export const TODO = '# Todo'
 export const IMPORTANT = '# Important'
 export const CHAT = '# Chat'
 export const AGENT_TAG = '[AI_AGENT]'
@@ -11,7 +12,7 @@ export const SESSIONS = 'Sessions:'
 
 // Headings a file may open with: this mod's, a hand-written one, and the one files before Objectives used.
 const OBJECTIVE_HEADINGS = [OBJECTIVES, '# Goals', '# Initial Prompt']
-const HEADINGS = [...OBJECTIVE_HEADINGS, UPDATES, IMPORTANT, CHAT]
+const HEADINGS = [...OBJECTIVE_HEADINGS, UPDATES, TODO, IMPORTANT, CHAT]
 const NAME = /^(\d{4})-(\d{2})-(\d{2})-(\d{2})-(\d{2})-(.+)-([0-9a-zA-Z]{8})(?:-(\d+))?\.md$/
 const HEAD_LINE = new RegExp(`^(${CONTINUATION}|${SESSIONS}) (.*)(?:\\n+|$)`)
 
@@ -118,7 +119,7 @@ function ensure(md: string): string {
   let out = md.trimEnd()
   if (objectivesStart(out) === undefined) out = `${OBJECTIVES}\n\n${out}`.trimEnd()
   if (lineStart(out, UPDATES) < 0) {
-    const at = [IMPORTANT, CHAT].map(h => lineStart(out, h)).filter(i => i >= 0)
+    const at = [TODO, IMPORTANT, CHAT].map(h => lineStart(out, h)).filter(i => i >= 0)
     const cut = at.length === 0 ? out.length : Math.min(...at)
     out = `${out.slice(0, cut).trimEnd()}\n\n${UPDATES}\n\n${out.slice(cut)}`.trimEnd()
   }
@@ -140,7 +141,7 @@ function appendTo(md: string, heading: string, stops: readonly string[], block: 
 }
 
 export function addUpdate(md: string, when: string, text: string): string {
-  return appendTo(md, UPDATES, [IMPORTANT, CHAT], `[UPDATE] ${when}\n${text.trim()}`)
+  return appendTo(md, UPDATES, [TODO, IMPORTANT, CHAT], `[UPDATE] ${when}\n${text.trim()}`)
 }
 
 export function addImportant(md: string, tag: string, text: string): string {
@@ -163,14 +164,14 @@ export function addTurn(md: string, pairs: readonly { agent: string; user: strin
 
 function readObjectives(doc: string): Initial {
   const { start, heading } = objectivesStart(doc) ?? { start: 0, heading: OBJECTIVES }
-  return readInitial(doc.slice(start + heading.length, sectionEnd(doc, start, [UPDATES, IMPORTANT, CHAT])).trim())
+  return readInitial(doc.slice(start + heading.length, sectionEnd(doc, start, [UPDATES, TODO, IMPORTANT, CHAT])).trim())
 }
 
 // Rewrites the objectives section under the heading the file already uses.
 function changeInitial(md: string, change: (initial: Initial) => Initial): string {
   const doc = ensure(md)
   const { start, heading } = objectivesStart(doc) ?? { start: 0, heading: OBJECTIVES }
-  const end = sectionEnd(doc, start, [UPDATES, IMPORTANT, CHAT])
+  const end = sectionEnd(doc, start, [UPDATES, TODO, IMPORTANT, CHAT])
   const initial = writeInitial(change(readObjectives(doc)))
   return `${doc.slice(0, start)}${heading}\n\n${initial === '' ? '' : `${initial}\n\n`}${doc.slice(end)}`
 }
@@ -202,10 +203,23 @@ export function addSession(md: string, sessionId: string): string {
   )
 }
 
+// The todo list sits between ## Updates and # Important; a file without one gets it on the first write.
+export function setTodo(md: string, body: string): string {
+  const doc = ensure(md)
+  const text = body.trim() === '' ? '' : `${body.trim()}\n\n`
+  const start = lineStart(doc, TODO)
+  if (start < 0) {
+    const at = lineStart(doc, IMPORTANT)
+    return `${doc.slice(0, at)}${TODO}\n\n${text}${doc.slice(at)}`
+  }
+  return `${doc.slice(0, start)}${TODO}\n\n${text}${doc.slice(sectionEnd(doc, start, [IMPORTANT, CHAT]))}`
+}
+
 export function sections(md: string): Sections {
   const doc = ensure(md)
   const cut = (heading: string, stops: readonly string[]) => {
     const start = lineStart(doc, heading)
+    if (start < 0) return ''
     return doc.slice(start + heading.length, sectionEnd(doc, start, stops)).trim()
   }
   const initial = readObjectives(doc)
@@ -213,7 +227,8 @@ export function sections(md: string): Sections {
     continuation: initial.continuation,
     sessions: initial.sessions,
     objectives: objectivesText(initial.body),
-    updates: cut(UPDATES, [IMPORTANT, CHAT]),
+    updates: cut(UPDATES, [TODO, IMPORTANT, CHAT]),
+    todo: cut(TODO, [IMPORTANT, CHAT]),
     important: cut(IMPORTANT, [CHAT]),
     chat: cut(CHAT, []),
   }

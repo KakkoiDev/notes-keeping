@@ -20,10 +20,13 @@ import {
   sections,
   setContinuation,
   setObjectives,
+  setTodo,
   stamp,
   summary,
 } from './notes'
-import { TodoSlot, nextStatus } from './todos'
+import { EMPTY, candidates, context, cycleItem, format, isBackground, items, keyOf, label, moved, parse, pin, reconcile, settle } from './todo'
+import type { Applied, Item, Memory, Move, Verdict } from './todo'
+import { TodoSlot } from './todos'
 
 const NAME = 'notes-keeping'
 const PANE = 'notes-keeping'
@@ -41,7 +44,11 @@ const HISTORY_CAP = 20
 const HEAD_CHARS = 200
 const NEAR = 2
 
-const SUBCOMMANDS = ['init', 'objectives', 'update', 'important', 'reply', 'replies', 'history', 'show', 'hide']
+const LAYA_PYTHON = '.laya-venv/bin/python'
+const LAYA_MS = 60_000
+const LOG = 'todo-changes.log'
+
+const SUBCOMMANDS = ['init', 'objectives', 'update', 'important', 'reply', 'replies', 'todo', 'history', 'show', 'hide']
 
 const USAGE = [
   'Usage: /notes-keeping <subcommand>',
@@ -51,6 +58,7 @@ const USAGE = [
   '  important [text]           add text, or the selected text, to # Important',
   '  reply <text>               queue the selected text and your reply; they go out with your next message',
   '  replies                    open the panel at the queue: every reply editable, s moves all into the prompt',
+  '  todo [sync]                show the todo list; sync runs Laya over the objectives and the last reply now',
   '  history [n|file]           list earlier notes; pick one to continue it here',
   `  show | hide                open or close the notes panel (also ${CHORD}); o objectives, i important, c chat, e queue, s send queue`,
   `${CHORD} works once ~/.claude/keybindings.json binds it: { "bindings": [{ "context": "Global", "bindings": { "${CHORD}": "${ACTION}" } }] }`,
@@ -63,7 +71,6 @@ const handled = atom({ plugin: 'notes-keeping', key: 'handled' } as const, '')
 const queue = atom({ plugin: 'notes-keeping', key: 'queue' } as const, [] as Pair[])
 const editing = atom({ plugin: 'notes-keeping', key: 'editing' } as const, false)
 const view = atom({ plugin: 'notes-keeping', key: 'view' } as const, 'overview' as View)
-const todos = atom({ plugin: 'notes-keeping', key: 'todos' } as const, [] as Todo[])
 const isNotesOpen = atom({ plugin: 'notes-keeping', key: 'isNotesOpen' } as const, false)
 
 function message(error: unknown): string {
@@ -152,9 +159,134 @@ async function bound($: EngineInterface): Promise<{ path: string; said: string[]
   return started
 }
 
+// Read-modify-write jobs on the notes file run one at a time: the todo run lands beside the user's own writes.
+let lock: Promise<unknown> = Promise.resolve()
+
+function locked<T>(job: () => Promise<T>): Promise<T> {
+  const run = lock.then(job, job)
+  lock = run.catch(() => undefined)
+  return run
+}
+
 async function edit($: EngineInterface, subject: string, change: (text: string) => string): Promise<string[]> {
   const { path, said } = await bound($)
-  return [...said, ...(await save($, path, change(await readText($, path)), subject))]
+  return locked(async () => [...said, ...(await save($, path, change(await readText($, path)), subject))])
+}
+
+type Laya = { lines: Record<string, number>; statuses: Record<string, Verdict> }
+
+// A todo run in progress; the newest reply that arrived meanwhile runs after it.
+let isSyncing = false
+let waiting: string | undefined
+let isToldNoLaya = false
+
+function memoryKey(path: string): string {
+  return `todo:${path}`
+}
+
+async function readMemory($: EngineInterface, path: string): Promise<Memory> {
+  const saved = await $.store.get(memoryKey(path))
+  return typeof saved === 'object' && saved !== null ? { ...EMPTY, ...(saved as Partial<Memory>) } : EMPTY
+}
+
+// One process per call: Laya loads in about two seconds and answers each question in about fifteen milliseconds.
+async function askLaya($: EngineInterface, request: { lines: { id: string; text: string }[]; statuses: { id: string; text: string }[]; answer: string }): Promise<Laya | undefined> {
+  const python = (await $.env.get('NOTES_KEEPING_PYTHON')) || `${await $.env.get('HOME')}/${LAYA_PYTHON}`
+  if (!(await $.fs.exists(python))) {
+    if (!isToldNoLaya) $.ui.toast(`notes-keeping todo: no Laya at ${python}; set NOTES_KEEPING_PYTHON to a Python with laya-mlx. Updates still become items.`)
+    isToldNoLaya = true
+    return undefined
+  }
+  const done = await $.process.run([python, `${$.plugin.root}/hooks/laya_todo.py`], { stdin: JSON.stringify(request), timeoutMs: LAYA_MS, env: { HF_HUB_DISABLE_PROGRESS_BARS: '1' } })
+  if (done.exitCode !== 0) throw new Error(`Laya failed: ${done.stderr.trim().split('\n').pop() ?? done.exitCode}`)
+  return JSON.parse(done.stdout) as Laya
+}
+
+// One line per status Laya changed, committed with the file, so a change can be reviewed; a hand-set status it replaced says so.
+async function logMoves($: EngineInterface, path: string, moves: readonly Applied[], verdicts: Record<string, Verdict>): Promise<void> {
+  const log = `${await notesDir($)}/${LOG}`
+  const when = stamp(await $.clock.now())
+  const rows = moves.map(move => {
+    const verdict = verdicts[keyOf(move.text)]
+    const said = verdict === undefined ? '' : ` | laya ${verdict.label} ${verdict.p.toFixed(2)}`
+    return `${when} ${path.split('/').pop()} | ${move.text} | ${move.from} -> ${move.to}${said}${move.isHandSet ? ' | replaced a hand-set status' : ''}`
+  })
+  const before = (await $.fs.exists(log)) ? await readText($, log) : ''
+  await $.fs.write(log, `${before}${rows.join('\n')}\n`)
+}
+
+// Items from the objectives and updates Laya or the code accepts, and status moves from the last reply.
+async function runTodo($: EngineInterface, answer: string): Promise<void> {
+  const path = await boundPath($)
+  if (path === undefined) return
+  const s = sections(await readText($, path))
+  const list = items(s.todo)
+  const memory = settle(await readMemory($, path), list)
+  const have = new Set(list.map(item => keyOf(item.text)))
+  const fresh = candidates(s).filter(c => !memory.seen.includes(keyOf(c.text)))
+  const lines = fresh.filter(c => !c.isUpdate && !have.has(keyOf(c.text))).map(c => ({ id: keyOf(c.text), text: c.text }))
+  const open = list.filter(item => item.status === 'todo' || item.status === 'in-progress')
+  const statuses = answer.trim() === '' ? [] : open.map(item => ({ id: keyOf(item.text), text: item.text }))
+  const laya = lines.length + statuses.length === 0 ? undefined : await askLaya($, { lines, statuses, answer })
+  const add: Item[] = []
+  const seen: string[] = []
+  for (const c of fresh) {
+    const key = keyOf(c.text)
+    if (have.has(key) || c.isUpdate) {
+      seen.push(key)
+      if (!have.has(key)) add.push({ status: 'todo', text: c.text })
+      continue
+    }
+    const p = laya?.lines[key]
+    if (p === undefined) continue
+    seen.push(key)
+    if (!isBackground(p)) add.push({ status: 'todo', text: c.text })
+  }
+  const set: Record<string, Move> = {}
+  for (const item of statuses.length === 0 ? [] : open) {
+    const next = moved(item, answer, laya?.statuses[keyOf(item.text)])
+    if (next !== undefined) set[keyOf(item.text)] = { from: item.status, to: next }
+  }
+  // The file may have changed while Laya ran: apply onto what is there now.
+  const said = await locked(async () => {
+    const latest = await readText($, path)
+    const body = sections(latest).todo
+    const out = reconcile(body, await readMemory($, path), { add, set, seen })
+    await $.store.set(memoryKey(path), out.memory)
+    if (out.body === format(parse(body))) return []
+    if (out.applied.length > 0) await logMoves($, path, out.applied, laya?.statuses ?? {})
+    return await save($, path, setTodo(latest, out.body), 'todo')
+  })
+  warn($, told('', said))
+}
+
+async function syncTodo($: EngineInterface, answer: string): Promise<void> {
+  if (isSyncing) {
+    waiting = answer === '' ? waiting ?? '' : answer
+    return
+  }
+  isSyncing = true
+  try {
+    await runTodo($, answer)
+  } catch (error) {
+    $.ui.toast(`notes-keeping todo: ${message(error)}`)
+  } finally {
+    isSyncing = false
+  }
+  const next = waiting
+  waiting = undefined
+  if (next !== undefined) await syncTodo($, next)
+}
+
+// A click sets the next status. It counts as set by hand: the log says so when Laya later changes it.
+async function clickItem($: EngineInterface, key: string): Promise<void> {
+  const path = await boundPath($)
+  if (path === undefined) return
+  await locked(async () => {
+    await $.store.set(memoryKey(path), pin(await readMemory($, path), key))
+    const md = await readText($, path)
+    await save($, path, setTodo(md, cycleItem(sections(md).todo, key)), 'todo')
+  })
 }
 
 function told(text: string, said: readonly string[]): string {
@@ -184,12 +316,14 @@ async function listNotes($: EngineInterface): Promise<string[]> {
 // Sets the objectives while they are empty; after that each text is an [UPDATE] under ## Updates.
 async function objectives($: EngineInterface, text: string): Promise<string> {
   const { path, said } = await bound($)
-  const md = await readText($, path)
-  if (sections(md).objectives === '') {
-    return told('Objectives set.', [...said, ...(await save($, path, setObjectives(md, text), 'objectives'))])
-  }
   const when = stamp(await $.clock.now())
-  return told('Objectives updated under ## Updates.', [...said, ...(await save($, path, addUpdate(md, when, text), 'update'))])
+  const { isSet, written } = await locked(async () => {
+    const md = await readText($, path)
+    const isSet = sections(md).objectives === ''
+    return { isSet, written: await save($, path, isSet ? setObjectives(md, text) : addUpdate(md, when, text), isSet ? 'objectives' : 'update') }
+  })
+  void syncTodo($, '')
+  return told(isSet ? 'Objectives set.' : 'Objectives updated under ## Updates.', [...said, ...written])
 }
 
 async function init($: EngineInterface, args: string): Promise<string> {
@@ -202,6 +336,14 @@ async function init($: EngineInterface, args: string): Promise<string> {
   }
   const { path, said } = await start($, text)
   return told(`Notes started: ${path}`, said)
+}
+
+async function todoCommand($: EngineInterface, args: string): Promise<string> {
+  if (args === 'sync') await syncTodo($, '')
+  else if (args !== '') return 'Usage: /notes-keeping todo [sync]'
+  const path = await boundPath($)
+  const list = path === undefined ? [] : items(sections(await readText($, path)).todo)
+  return list.length === 0 ? 'No todo items yet.' : list.map(item => label(item)).join('\n')
 }
 
 async function history($: EngineInterface, args: string): Promise<{ text: string; context?: string[] }> {
@@ -340,6 +482,7 @@ export const register: Register = on => {
       argumentHint: 'init|objectives|update|important|reply|replies|history|show|hide [text]',
     })
     resumed = (await $.session.messages()).length > 0
+    void syncTodo($, '')
     if (e.isInteractive) {
       $.clock.every(POLL_MS, async () => {
         const current = await read($, select)
@@ -379,6 +522,13 @@ export const register: Register = on => {
       })
     }
     return next(e)
+  })
+
+  // Laya reads the reply after the turn and runs beside the next one; nothing waits for it.
+  on('turn.complete', async ($, e, next) => {
+    const done = await next(e)
+    if (e.agentId === undefined && e.reason === 'answer') void syncTodo($, e.answer)
+    return done
   })
 
   on('session.end', async ($, e, next) => {
@@ -433,6 +583,8 @@ export const register: Register = on => {
         case 'replies':
           await showNotes($, 'queue')
           return {}
+        case 'todo':
+          return { text: await todoCommand($, rest) }
         case 'history':
           return await history($, rest)
         case 'show':
@@ -485,8 +637,13 @@ export const register: Register = on => {
     const first = (await $.session.messages())[0]?.text ?? ''
     const head = `${first.length}:${first.slice(-HEAD_CHARS)}`
     await $.store.set(key, head)
-    if (!isResumed && (typeof seen !== 'string' || seen === head)) return next({ ...e, text })
-    return next({ ...e, text, context: [...(e.context ?? []), inject(await readText($, path), path)] })
+    const md = await readText($, path)
+    // The whole file carries the todo list; every other prompt carries the list alone.
+    const isWhole = isResumed || (typeof seen === 'string' && seen !== head)
+    const todo = isWhole || e.isMeta === true ? undefined : context(sections(md).todo)
+    const added = isWhole ? [inject(md, path)] : todo === undefined ? [] : [todo]
+    if (added.length === 0) return next({ ...e, text })
+    return next({ ...e, text, context: [...(e.context ?? []), ...added] })
   })
 
   // Under the prompt, beside the engine's hint: the Notes toggle, always drawn, pressed by click or chord.
@@ -601,8 +758,8 @@ export const register: Register = on => {
     const isEditing = await read($, editing)
     const at = await read($, view)
     const list = await read($, queue)
-    const items = await read($, todos)
     const s = current?.sections
+    const rows: Todo[] = s === undefined ? [] : items(s.todo).map(item => ({ id: keyOf(item.text), ...item }))
     const hasObjectives = s !== undefined && s.objectives !== ''
     const go = (to: View) => async () => {
       await update($, editing, () => false)
@@ -627,8 +784,8 @@ export const register: Register = on => {
         Box={Box}
         Button={Button}
         Text={Text}
-        todos={items}
-        onCycle={id => update($, todos, rows => rows.map(row => (row.id === id ? { ...row, status: nextStatus(row.status) } : row)))}
+        todos={rows}
+        onCycle={id => clickItem($, id)}
       />
     )
     const hint = (text: string) => (
