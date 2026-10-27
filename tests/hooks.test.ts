@@ -22,6 +22,8 @@ type Ui = {
   toasts: string[]
   isPlaced: boolean
   isFocusable: boolean
+  fills: { text: string; mode: string }[]
+  isFillable: boolean
 }
 
 function engine(
@@ -36,7 +38,7 @@ function engine(
   mock.store(on, store)
   mock.env(on, { HOME })
   const git: Git = { calls: [], remotes: '' }
-  const ui: Ui = { panes: new Map(), opened: [], closed: [], status: [], toasts: [], isPlaced: true, isFocusable: true }
+  const ui: Ui = { panes: new Map(), opened: [], closed: [], status: [], toasts: [], isPlaced: true, isFocusable: true, fills: [], isFillable: true }
   on('session.start', (_$, e) => ({ cwd: e.cwd }))
   on('session.end', (_$, e) => ({ sessionId: e.sessionId }))
   on('command.register', (_$, e) => ({ value: { command: e.name } }))
@@ -86,6 +88,10 @@ function engine(
   on('ui.status', (_$, e) => {
     ui.status.push(e.text)
     return { value: undefined }
+  })
+  on('prompt.fill', (_$, e) => {
+    ui.fills.push({ text: e.text, mode: e.mode })
+    return { isFilled: ui.isFillable }
   })
   on('ui.toast', (_$, e) => {
     ui.toasts.push(e.text)
@@ -621,6 +627,64 @@ test('o in the notes pane focuses an inline field that sets the objectives, then
   await pane.unmount()
 })
 
+test('the replies pane edits a queued reply in a field holding its text, and Back leaves the edit', async ($, on) => {
+  let selection = 'First question'
+  const { ui } = engine(on, {}, {}, () => selection)
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: false })
+  await run($, 'reply one')
+  selection = 'Second question'
+  await run($, 'reply two')
+  await run($, 'replies')
+  const pane = await $.ui.mount({ ...REPLIES_PANE, surface: 'terminal' })
+  await pane.press({ key: 'pair:1' })
+  expect((await pane.find({ key: 'edit' }))?.props).toMatchObject({ hotkey: 'e' })
+  await pane.press({ key: 'edit' })
+  expect((await pane.find({ key: 'revise' }))?.props).toMatchObject({ value: 'two', autoFocus: true })
+  await pane.press({ key: 'back' })
+  await pane.press({ key: 'pair:1' })
+  expect(await pane.find({ key: 'revise' })).toBeUndefined()
+  await pane.press({ key: 'edit' })
+  await pane.input({ key: 'revise', text: 'two, reworded' })
+  expect(await pane.find({ key: 'revise' })).toBeUndefined()
+  expect(await pane.find({ type: 'Text', text: '[AI_AGENT] Second question\n[USER] two, reworded' })).toBeDefined()
+  expect(ui.status.at(-1)).toBe('notes: 2 replies queued, sent with your next message')
+  await pane.press({ key: 'back' })
+  await pane.press({ key: 'pair:0' })
+  expect(await pane.find({ type: 'Text', text: '[AI_AGENT] First question\n[USER] one' })).toBeDefined()
+  await pane.unmount()
+})
+
+test('s in the replies pane and the send-queue button move every queued reply into the prompt, clear the queue and record the chat', async ($, on) => {
+  let selection = 'First question'
+  const fs: Fs = { [BOUND]: NOTES }
+  const { ui } = engine(on, fs, { [`session:${SESSION}`]: BOUND }, () => selection)
+  engineDraws(on)
+  const sent = submitting(on)
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: false })
+  await run($, 'reply one')
+  selection = 'Second question'
+  await run($, 'reply two')
+  const hint = await $.ui.mount({ ...HINT, surface: 'terminal' })
+  expect((await hint.find({ key: 'send-queue' }))?.props.label).toBe('[send queue: 2]')
+  await run($, 'replies')
+  const pane = await $.ui.mount({ ...REPLIES_PANE, surface: 'terminal' })
+  expect((await pane.find({ key: 'send' }))?.props).toMatchObject({ hotkey: 's' })
+  ui.isFillable = false
+  await pane.press({ key: 'send' })
+  expect((await pane.findAll({ type: 'Button' })).map(button => button.key)).toEqual(['send', 'pair:0', 'pair:1'])
+  ui.isFillable = true
+  await pane.press({ key: 'send' })
+  const text = '[AI_AGENT] First question\n[USER] one\n\n[AI_AGENT] Second question\n[USER] two'
+  expect(ui.fills.at(-1)).toEqual({ text, mode: 'insert' })
+  expect(ui.status.at(-1)).toBeUndefined()
+  expect(fs[BOUND]).toContain(text)
+  expect(await hint.find({ key: 'send-queue' })).toBeUndefined()
+  expect(await pane.find({ type: 'Text', text: 'No replies queued.' })).toBeDefined()
+  expect(sent).toEqual([])
+  await hint.unmount()
+  await pane.unmount()
+})
+
 test('the replies pane lists queued pairs, shows one whole, and removes it', async ($, on) => {
   let selection = 'First question'
   const { ui } = engine(on, {}, {}, () => selection)
@@ -630,11 +694,11 @@ test('the replies pane lists queued pairs, shows one whole, and removes it', asy
   await run($, 'reply two')
   await run($, 'replies')
   const pane = await $.ui.mount({ ...REPLIES_PANE, surface: 'terminal' })
-  expect((await pane.findAll({ type: 'Button' })).map(button => button.key)).toEqual(['pair:0', 'pair:1'])
+  expect((await pane.findAll({ type: 'Button' })).map(button => button.key)).toEqual(['send', 'pair:0', 'pair:1'])
   await pane.press({ key: 'pair:1' })
   expect(await pane.find({ type: 'Text', text: '[AI_AGENT] Second question\n[USER] two' })).toBeDefined()
   await pane.press({ key: 'remove' })
   expect(ui.status.at(-1)).toBe('notes: 1 reply queued, sent with your next message')
-  expect((await pane.findAll({ type: 'Button' })).map(button => button.key)).toEqual(['pair:0'])
+  expect((await pane.findAll({ type: 'Button' })).map(button => button.key)).toEqual(['send', 'pair:0'])
   await pane.unmount()
 })

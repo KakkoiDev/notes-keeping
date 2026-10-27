@@ -25,6 +25,7 @@ declare module 'claude-code' {
       queue: Pair[]
       editing: boolean
       picked: number | null
+      revising: boolean
       isNotesOpen: boolean
     }
   }

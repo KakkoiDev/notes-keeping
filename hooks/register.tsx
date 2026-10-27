@@ -5,6 +5,7 @@ import type { Notes, Pair, Select } from '../types'
 import {
   AGENT_TAG,
   USER_TAG,
+  addChat,
   addImportant,
   addSession,
   addTurn,
@@ -29,7 +30,7 @@ const SELECT = 'notes-keeping-select'
 const REPLIES = 'notes-keeping-replies'
 const TITLE = 'Notes'
 const DIR = '.notes-keeping'
-// An engine action with no handler mounted at the prompt; the user's ctrl+q binding, or its own ctrl+x b, presses it.
+// An engine action with no handler mounted at the prompt; a Global binding of the chord in the user's keybindings.json presses it.
 const ACTION = 'app:cycleDiffBase'
 const CHORD = 'ctrl+q'
 const GIT_MS = 10_000
@@ -49,9 +50,10 @@ const USAGE = [
   '  update <text>              same as objectives',
   '  important [text]           add text, or the selected text, to # Important',
   '  reply <text>               queue the selected text and your reply; they go out with your next message',
-  '  replies                    list queued replies; pick one to read or remove it',
+  '  replies                    list queued replies; s moves them all into the prompt, or pick one to read, edit or remove it',
   '  history [n|file]           list earlier notes; pick one to continue it here',
   `  show | hide                open or close the notes pane (also ${CHORD} and the Notes button under the prompt)`,
+  `${CHORD} works once ~/.claude/keybindings.json binds it: { "bindings": [{ "context": "Global", "bindings": { "${CHORD}": "${ACTION}" } }] }`,
   'Every write starts the notes file when the session has none.',
 ].join('\n')
 
@@ -61,6 +63,7 @@ const handled = atom({ plugin: 'notes-keeping', key: 'handled' } as const, '')
 const queue = atom({ plugin: 'notes-keeping', key: 'queue' } as const, [] as Pair[])
 const editing = atom({ plugin: 'notes-keeping', key: 'editing' } as const, false)
 const picked = atom({ plugin: 'notes-keeping', key: 'picked' } as const, null as number | null)
+const revising = atom({ plugin: 'notes-keeping', key: 'revising' } as const, false)
 const isNotesOpen = atom({ plugin: 'notes-keeping', key: 'isNotesOpen' } as const, false)
 
 function message(error: unknown): string {
@@ -272,6 +275,23 @@ async function queueReply($: EngineInterface, agent: string, user: string): Prom
   await finish($, agent)
 }
 
+// Moves every queued reply into the prompt box; the user presses Enter. Nothing is sent from here.
+async function sendQueue($: EngineInterface): Promise<void> {
+  const pending = await read($, queue)
+  if (pending.length === 0) {
+    $.ui.toast('No replies queued.')
+    return
+  }
+  const filled = await $.prompt.fill({ text: pending.map(pair => chatPair(pair.agent, pair.user)).join('\n\n'), mode: 'insert' })
+  if (!filled.isFilled) {
+    $.ui.toast('The prompt box cannot take the replies now; they stay queued.')
+    return
+  }
+  warn($, told('', await edit($, 'reply', md => pending.reduce((text, pair) => addChat(text, pair.agent, pair.user), md))))
+  await update($, queue, () => [])
+  showQueue($, 0)
+}
+
 async function openSelect($: EngineInterface, selection: string): Promise<void> {
   await update($, select, () => ({ mode: 'menu', selection, isPlaced: false, hadFocus: false }))
   const opened = await $.ui.open({ id: SELECT, title: 'Selection', focus: true, closeOnEscape: true, rows: 4 })
@@ -382,7 +402,10 @@ export const register: Register = on => {
       await update($, editing, () => false)
       await update($, isNotesOpen, () => false)
     }
-    if (e.id === REPLIES) await update($, picked, () => null)
+    if (e.id === REPLIES) {
+      await update($, picked, () => null)
+      await update($, revising, () => false)
+    }
     return next(e)
   })
 
@@ -474,6 +497,7 @@ export const register: Register = on => {
     if (!isDrawn(e.surface)) return next(e)
     const { Box, Button, Text } = $.ui.resolve(e)
     const isOpen = await read($, isNotesOpen)
+    const waiting = (await read($, queue)).length
     return (
       <Box flexDirection="row" gap={2}>
         <Text dimColor wrap="truncate-end">
@@ -487,6 +511,7 @@ export const register: Register = on => {
           label={`Notes: ${isOpen ? 'hide' : 'show'} (${CHORD})`}
           onPress={() => toggleNotes($)}
         />
+        {waiting === 0 ? null : <Button key="send-queue" plain dimColor label={`[send queue: ${waiting}]`} onPress={() => sendQueue($)} />}
       </Box>
     )
   })
@@ -570,16 +595,38 @@ export const register: Register = on => {
   })
 
   on('ui.render', { component: 'Pane', requestId: REPLIES }, async ($, e) => {
-    const { Box, Button, Text } = $.ui.resolve(e)
+    const table = $.ui.resolve(e)
+    const { Box, Button, Text } = table
+    // The mobile app draws no field.
+    const Input = 'Input' in table ? table.Input : undefined
     const list = await read($, queue)
     const at = await read($, picked)
+    const isRevising = await read($, revising)
     const pair = at === null ? undefined : list[at]
     if (at !== null && pair !== undefined) {
+      const leave = async () => {
+        await update($, revising, () => false)
+        await update($, picked, () => null)
+      }
       return (
         <Box flexDirection="column">
           <Text>{chatPair(pair.agent, pair.user)}</Text>
+          {isRevising && Input !== undefined ? (
+            <Input
+              key="revise"
+              label={USER_TAG}
+              value={pair.user}
+              submitLabel="keep"
+              autoFocus
+              onSubmit={async (value: string) => {
+                if (value.trim() !== '') await update($, queue, rows => rows.map((row, i) => (i === at ? { ...row, user: value.trim() } : row)))
+                await update($, revising, () => false)
+              }}
+            />
+          ) : null}
           <Box flexDirection="row" gap={2}>
-            <Button key="back" plain hotkey="b" label="Back" onPress={() => update($, picked, () => null)} />
+            <Button key="back" plain hotkey="b" label="Back" onPress={leave} />
+            {Input === undefined ? null : <Button key="edit" plain hotkey="e" label="Edit" onPress={() => update($, revising, () => true)} />}
             <Button
               key="remove"
               plain
@@ -588,7 +635,7 @@ export const register: Register = on => {
               onPress={async () => {
                 const next = await update($, queue, rows => rows.filter((_, i) => i !== at))
                 showQueue($, next.length)
-                await update($, picked, () => null)
+                await leave()
               }}
             />
           </Box>
@@ -598,6 +645,7 @@ export const register: Register = on => {
     if (list.length === 0) return <Text dimColor>No replies queued.</Text>
     return (
       <Box flexDirection="column">
+        <Button key="send" plain hotkey="s" label="Send queue to the prompt" onPress={() => sendQueue($)} />
         {list.map((row, i) => (
           <Button key={`pair:${i}`} plain label={`${i + 1}. ${row.agent.replace(/\s+/g, ' ').slice(0, PREVIEW)} -> ${row.user.replace(/\s+/g, ' ').slice(0, PREVIEW)}`} onPress={() => update($, picked, () => i)} />
         ))}
