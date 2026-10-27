@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { Notes, Pair, Select } from '../types'
+import type { Notes, Pair, Select, Todo, View } from '../types'
 import {
   AGENT_TAG,
   USER_TAG,
@@ -23,11 +23,11 @@ import {
   stamp,
   summary,
 } from './notes'
+import { TodoSlot, nextStatus } from './todos'
 
 const NAME = 'notes-keeping'
 const PANE = 'notes-keeping'
 const SELECT = 'notes-keeping-select'
-const REPLIES = 'notes-keeping-replies'
 const TITLE = 'Notes'
 const DIR = '.notes-keeping'
 // An engine action with no handler mounted at the prompt; a Global binding of the chord in the user's keybindings.json presses it.
@@ -50,9 +50,9 @@ const USAGE = [
   '  update <text>              same as objectives',
   '  important [text]           add text, or the selected text, to # Important',
   '  reply <text>               queue the selected text and your reply; they go out with your next message',
-  '  replies                    queued replies: 1-9 opens one (e edit, d remove, b back), s moves all into the prompt',
+  '  replies                    open the panel at the queue: every reply editable, s moves all into the prompt',
   '  history [n|file]           list earlier notes; pick one to continue it here',
-  `  show | hide                open or close the notes pane (also ${CHORD} and the Notes button under the prompt)`,
+  `  show | hide                open or close the notes panel (also ${CHORD}); o objectives, i important, c chat, e queue, s send queue`,
   `${CHORD} works once ~/.claude/keybindings.json binds it: { "bindings": [{ "context": "Global", "bindings": { "${CHORD}": "${ACTION}" } }] }`,
   'Every write starts the notes file when the session has none.',
 ].join('\n')
@@ -62,8 +62,8 @@ const select = atom({ plugin: 'notes-keeping', key: 'select' } as const, null as
 const handled = atom({ plugin: 'notes-keeping', key: 'handled' } as const, '')
 const queue = atom({ plugin: 'notes-keeping', key: 'queue' } as const, [] as Pair[])
 const editing = atom({ plugin: 'notes-keeping', key: 'editing' } as const, false)
-const picked = atom({ plugin: 'notes-keeping', key: 'picked' } as const, null as number | null)
-const revising = atom({ plugin: 'notes-keeping', key: 'revising' } as const, false)
+const view = atom({ plugin: 'notes-keeping', key: 'view' } as const, 'overview' as View)
+const todos = atom({ plugin: 'notes-keeping', key: 'todos' } as const, [] as Todo[])
 const isNotesOpen = atom({ plugin: 'notes-keeping', key: 'isNotesOpen' } as const, false)
 
 function message(error: unknown): string {
@@ -292,10 +292,6 @@ async function sendQueue($: EngineInterface): Promise<void> {
   showQueue($, 0)
 }
 
-async function openReplies($: EngineInterface): Promise<void> {
-  await $.ui.open({ id: REPLIES, title: 'Replies', focus: true, closeOnEscape: true, rows: 12 })
-}
-
 async function openSelect($: EngineInterface, selection: string): Promise<void> {
   await update($, select, () => ({ mode: 'menu', selection, isPlaced: false, hadFocus: false }))
   const opened = await $.ui.open({ id: SELECT, title: 'Selection', focus: true, closeOnEscape: true, rows: 4 })
@@ -313,8 +309,9 @@ async function refresh($: EngineInterface): Promise<void> {
   await publish($, path, await readText($, path))
 }
 
-async function showNotes($: EngineInterface): Promise<void> {
+async function showNotes($: EngineInterface, at: View = 'overview'): Promise<void> {
   await refresh($)
+  await update($, view, () => at)
   await $.ui.open({ id: PANE, title: TITLE, focus: true, closeOnEscape: true })
   await update($, isNotesOpen, () => true)
 }
@@ -406,10 +403,6 @@ export const register: Register = on => {
       await update($, editing, () => false)
       await update($, isNotesOpen, () => false)
     }
-    if (e.id === REPLIES) {
-      await update($, picked, () => null)
-      await update($, revising, () => false)
-    }
     return next(e)
   })
 
@@ -438,7 +431,7 @@ export const register: Register = on => {
           return { text: 'Reply queued; it goes out with your next message.' }
         }
         case 'replies':
-          await openReplies($)
+          await showNotes($, 'queue')
           return {}
         case 'history':
           return await history($, rest)
@@ -516,7 +509,7 @@ export const register: Register = on => {
           onPress={() => toggleNotes($)}
         />
         {waiting === 0 ? null : <Button key="send-queue" plain dimColor label={`[send queue: ${waiting}]`} onPress={() => sendQueue($)} />}
-        {waiting === 0 ? null : <Button key="edit-queue" plain dimColor label="[edit queue]" onPress={() => openReplies($)} />}
+        {waiting === 0 ? null : <Button key="edit-queue" plain dimColor label="[edit queue]" onPress={() => showNotes($, 'queue')} />}
       </Box>
     )
   })
@@ -599,72 +592,6 @@ export const register: Register = on => {
     )
   })
 
-  on('ui.render', { component: 'Pane', requestId: REPLIES }, async ($, e) => {
-    const table = $.ui.resolve(e)
-    const { Box, Button, Text } = table
-    // The mobile app draws no field.
-    const Input = 'Input' in table ? table.Input : undefined
-    const list = await read($, queue)
-    const at = await read($, picked)
-    const isRevising = await read($, revising)
-    const pair = at === null ? undefined : list[at]
-    if (at !== null && pair !== undefined) {
-      const leave = async () => {
-        await update($, revising, () => false)
-        await update($, picked, () => null)
-      }
-      return (
-        <Box flexDirection="column">
-          <Text>{chatPair(pair.agent, pair.user)}</Text>
-          {isRevising && Input !== undefined ? (
-            <Input
-              key="revise"
-              label={USER_TAG}
-              value={pair.user}
-              submitLabel="keep"
-              autoFocus
-              onSubmit={async (value: string) => {
-                if (value.trim() !== '') await update($, queue, rows => rows.map((row, i) => (i === at ? { ...row, user: value.trim() } : row)))
-                await update($, revising, () => false)
-              }}
-            />
-          ) : null}
-          <Box flexDirection="row" gap={2}>
-            <Button key="back" plain hotkey="b" label="Back" onPress={leave} />
-            {Input === undefined ? null : <Button key="edit" plain hotkey="e" label="Edit" onPress={() => update($, revising, () => true)} />}
-            <Button
-              key="remove"
-              plain
-              hotkey="d"
-              label="Remove"
-              onPress={async () => {
-                const next = await update($, queue, rows => rows.filter((_, i) => i !== at))
-                showQueue($, next.length)
-                await leave()
-              }}
-            />
-          </Box>
-        </Box>
-      )
-    }
-    if (list.length === 0) return <Text dimColor>No replies queued.</Text>
-    return (
-      <Box flexDirection="column">
-        <Text dimColor>1-9 open a reply to edit or remove it, s sends them all to the prompt, Esc closes</Text>
-        <Button key="send" plain hotkey="s" label="Send queue to the prompt" onPress={() => sendQueue($)} />
-        {list.map((row, i) => (
-          <Button
-            key={`pair:${i}`}
-            plain
-            hotkey={i < 9 ? String(i + 1) : undefined}
-            label={`${i < 9 ? '' : `${i + 1}. `}${row.agent.replace(/\s+/g, ' ').slice(0, PREVIEW)} -> ${row.user.replace(/\s+/g, ' ').slice(0, PREVIEW)}`}
-            onPress={() => update($, picked, () => i)}
-          />
-        ))}
-      </Box>
-    )
-  })
-
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const table = $.ui.resolve(e)
     const { Box, Button, Text } = table
@@ -672,54 +599,137 @@ export const register: Register = on => {
     const Input = 'Input' in table ? table.Input : undefined
     const current = await read($, notes)
     const isEditing = await read($, editing)
+    const at = await read($, view)
+    const list = await read($, queue)
+    const items = await read($, todos)
     const s = current?.sections
     const hasObjectives = s !== undefined && s.objectives !== ''
-    const control = isEditing && Input !== undefined ? (
-      <Input
-        key="objectives"
-        label="Objectives"
-        placeholder={hasObjectives ? 'an update to the objectives' : 'the objectives of this session'}
-        submitLabel="keep"
-        autoFocus
-        onSubmit={async (value: string) => {
-          if (value.trim() !== '') warn($, await objectives($, value.trim()))
-          await update($, editing, () => false)
-        }}
-      />
-    ) : (
-      <Button
-        key="objectives"
-        plain
-        hotkey="o"
-        label={hasObjectives ? 'Update objectives' : 'Set objectives'}
-        onPress={() => update($, editing, () => true)}
+    const go = (to: View) => async () => {
+      await update($, editing, () => false)
+      await update($, view, () => to)
+    }
+    const tab = (key: string, hotkey: string, label: string, to: View) => (
+      <Button key={`view:${key}`} plain hotkey={hotkey} dimColor={at !== to} label={label} onPress={go(to)} />
+    )
+    const nav = (
+      <Box key="nav" flexDirection="row" gap={2} marginBottom={1}>
+        {tab('objectives', 'o', 'Objectives', 'objectives')}
+        {tab('important', 'i', 'Important', 'important')}
+        {tab('chat', 'c', 'Chat', 'chat')}
+        {tab('queue', 'e', `Queue (${list.length})`, 'queue')}
+        <Button key="send" plain hotkey="s" label="Send queue" onPress={() => sendQueue($)} />
+        {at === 'overview' ? null : <Button key="view:overview" plain hotkey="b" label="Back" onPress={go('overview')} />}
+      </Box>
+    )
+    const slot = (
+      <TodoSlot
+        key="todos"
+        Box={Box}
+        Button={Button}
+        Text={Text}
+        todos={items}
+        onCycle={id => update($, todos, rows => rows.map(row => (row.id === id ? { ...row, status: nextStatus(row.status) } : row)))}
       />
     )
-    if (current === null || s === undefined) {
-      return (
-        <Box flexDirection="column">
-          <Text dimColor>No notes for this session yet; the first write starts them.</Text>
+    const hint = (text: string) => (
+      <Text key="hint" dimColor>
+        {text}
+      </Text>
+    )
+    const body = (title: string, text: string) => (
+      <Box key="body" flexDirection="column">
+        <Text bold>{title}</Text>
+        <Text dimColor={text === ''}>{text === '' ? '(empty)' : text}</Text>
+      </Box>
+    )
+    let content
+    if (at === 'queue') {
+      content = (
+        <Box key="content" flexDirection="column">
+          <Text bold>Queued replies ({list.length})</Text>
+          {list.length === 0 ? <Text dimColor>No replies queued.</Text> : null}
+          {list.map((pair, i) => (
+            <Box key={`queued:${i}`} flexDirection="column" marginBottom={1}>
+              <Text dimColor wrap="truncate-end">
+                {AGENT_TAG} {pair.agent.replace(/\s+/g, ' ')}
+              </Text>
+              {Input === undefined ? (
+                <Text>{`${USER_TAG} ${pair.user}`}</Text>
+              ) : (
+                <Input
+                  key={`reply:${i}`}
+                  label={USER_TAG}
+                  value={pair.user}
+                  submitLabel="keep"
+                  onSubmit={async (value: string) => {
+                    if (value.trim() !== '') await update($, queue, rows => rows.map((row, j) => (j === i ? { ...row, user: value.trim() } : row)))
+                  }}
+                />
+              )}
+              <Button
+                key={`remove:${i}`}
+                plain
+                dimColor
+                label="[remove]"
+                onPress={async () => {
+                  const next = await update($, queue, rows => rows.filter((_, j) => j !== i))
+                  showQueue($, next.length)
+                }}
+              />
+            </Box>
+          ))}
+          {hint('Tab to a reply, edit it, Enter keeps it. [remove] drops it. s sends all to the prompt, b goes back.')}
+        </Box>
+      )
+    } else if (at === 'objectives') {
+      const goals = s === undefined ? '' : [s.continuation === undefined ? '' : `Continuation of: ${s.continuation}\n\n`, s.objectives].join('').trim()
+      const control =
+        isEditing && Input !== undefined ? (
+          <Input
+            key="objectives"
+            label="Objectives"
+            placeholder={hasObjectives ? 'an update to the objectives' : 'the objectives of this session'}
+            submitLabel="keep"
+            autoFocus
+            onSubmit={async (value: string) => {
+              if (value.trim() !== '') warn($, await objectives($, value.trim()))
+              await update($, editing, () => false)
+            }}
+          />
+        ) : (
+          <Button
+            key="objectives"
+            plain
+            hotkey="u"
+            label={hasObjectives ? 'Update objectives' : 'Set objectives'}
+            onPress={() => update($, editing, () => true)}
+          />
+        )
+      content = (
+        <Box key="content" flexDirection="column">
           {control}
+          {body('Objectives', goals)}
+          {body('Updates', s?.updates ?? '')}
+          {hint(hasObjectives ? 'u adds an update under Updates, Enter keeps it, b goes back' : 'u sets the objectives, Enter keeps it, b goes back')}
+        </Box>
+      )
+    } else if (at === 'important') {
+      content = body('Important', s?.important ?? '')
+    } else if (at === 'chat') {
+      content = body('Chat', s?.chat ?? '')
+    } else {
+      content = (
+        <Box key="content" flexDirection="column">
+          {current === null ? <Text dimColor>No notes for this session yet; the first write starts them.</Text> : <Text dimColor wrap="truncate-start">{current.path}</Text>}
+          {hint('o objectives (u adds an update there), i important, c chat, e queue, s send queue, Esc closes')}
         </Box>
       )
     }
-    const section = (key: string, title: string, body: string) => (
-      <Box key={key} flexDirection="column" marginBottom={1}>
-        <Text bold>{title}</Text>
-        <Text dimColor={body === ''}>{body === '' ? '(empty)' : body}</Text>
-      </Box>
-    )
-    const goals = [s.continuation === undefined ? '' : `Continuation of: ${s.continuation}\n\n`, s.objectives].join('').trim()
     return (
       <Box flexDirection="column">
-        <Text dimColor wrap="truncate-start">
-          {current.path}
-        </Text>
-        {control}
-        {section('objectives', 'Objectives', goals)}
-        {section('updates', 'Updates', s.updates)}
-        {section('important', 'Important', s.important)}
-        {section('chat', 'Chat', s.chat)}
+        {slot}
+        {nav}
+        {content}
       </Box>
     )
   })

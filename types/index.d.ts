@@ -16,6 +16,10 @@ export type Select = { mode: 'menu' | 'reply'; selection: string; isPlaced: bool
 
 export type Pair = { agent: string; user: string }
 
+export type View = 'overview' | 'objectives' | 'important' | 'chat' | 'queue'
+
+export type Todo = { id: string; text: string; status: 'todo' | 'in-progress' | 'done' | 'declined' }
+
 declare module 'claude-code' {
   interface PluginState {
     'notes-keeping': {
@@ -24,8 +28,8 @@ declare module 'claude-code' {
       handled: string
       queue: Pair[]
       editing: boolean
-      picked: number | null
-      revising: boolean
+      view: View
+      todos: Todo[]
       isNotesOpen: boolean
     }
   }

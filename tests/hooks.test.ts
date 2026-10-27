@@ -1,6 +1,7 @@
 import { expect, mock, test } from 'claude-code/testing'
 import type { On, RenderElement } from 'claude-code'
 import type { Engine } from 'claude-code/testing'
+import { nextStatus } from '../hooks/todos'
 
 const HOME = '/home/me'
 const ROOT = '/work/firstmate'
@@ -608,13 +609,15 @@ test('the Notes toggle under the prompt carries the chord action and opens and c
   await hint.unmount()
 })
 
-test('o in the notes pane focuses an inline field that sets the objectives, then updates them', async ($, on) => {
+test('o opens the objectives view and u focuses an inline field that sets the objectives, then updates them', async ($, on) => {
   const fs: Fs = {}
   engine(on, fs)
   await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: false })
   await run($, 'show')
   const pane = await $.ui.mount({ ...NOTES_PANE, surface: 'terminal' })
-  expect((await pane.find({ key: 'objectives' }))?.props).toMatchObject({ hotkey: 'o', label: 'Set objectives' })
+  expect((await pane.find({ key: 'view:objectives' }))?.props).toMatchObject({ hotkey: 'o' })
+  await pane.press({ key: 'view:objectives' })
+  expect((await pane.find({ key: 'objectives' }))?.props).toMatchObject({ hotkey: 'u', label: 'Set objectives' })
   await pane.press({ key: 'objectives' })
   expect((await pane.find({ key: 'objectives' }))?.props).toMatchObject({ autoFocus: true })
   expect((await pane.find({ key: 'objectives' }))?.type).toBe('Input')
@@ -627,99 +630,97 @@ test('o in the notes pane focuses an inline field that sets the objectives, then
   await pane.unmount()
 })
 
-test('the replies pane edits a queued reply in a field holding its text, and Back leaves the edit', async ($, on) => {
-  let selection = 'First question'
-  const { ui } = engine(on, {}, {}, () => selection)
+
+test('the panel opens on an overview with the todo slot first, keys on screen, and a view per key', async ($, on) => {
+  const fs: Fs = { [BOUND]: '# Objectives\n\nSessions: s\n\nShip it\n\n## Updates\n\n# Important\n\n[AI_AGENT] a fact\n\n# Chat\n\n[USER] hello\n' }
+  engine(on, fs, { [`session:${SESSION}`]: BOUND })
   await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: false })
-  await run($, 'reply one')
-  selection = 'Second question'
-  await run($, 'reply two')
-  await run($, 'replies')
-  const pane = await $.ui.mount({ ...REPLIES_PANE, surface: 'terminal' })
-  await pane.press({ key: 'pair:1' })
-  expect((await pane.find({ key: 'edit' }))?.props).toMatchObject({ hotkey: 'e' })
-  await pane.press({ key: 'edit' })
-  expect((await pane.find({ key: 'revise' }))?.props).toMatchObject({ value: 'two', autoFocus: true })
-  await pane.press({ key: 'back' })
-  await pane.press({ key: 'pair:1' })
-  expect(await pane.find({ key: 'revise' })).toBeUndefined()
-  await pane.press({ key: 'edit' })
-  await pane.input({ key: 'revise', text: 'two, reworded' })
-  expect(await pane.find({ key: 'revise' })).toBeUndefined()
-  expect(await pane.find({ type: 'Text', text: '[AI_AGENT] Second question\n[USER] two, reworded' })).toBeDefined()
-  expect(ui.status.at(-1)).toBe('notes: 2 replies queued, sent with your next message. /notes-keeping replies: edit, remove, send')
-  await pane.press({ key: 'back' })
-  await pane.press({ key: 'pair:0' })
-  expect(await pane.find({ type: 'Text', text: '[AI_AGENT] First question\n[USER] one' })).toBeDefined()
+  await run($, 'show')
+  const pane = await $.ui.mount({ ...NOTES_PANE, surface: 'terminal' })
+  expect(await pane.find({ type: 'Text', text: 'Todo' })).toBeDefined()
+  expect(await pane.find({ type: 'Text', text: '(no todos yet)' })).toBeDefined()
+  expect((await pane.findAll({ type: 'Button' })).map(button => button.key)).toEqual(['view:objectives', 'view:important', 'view:chat', 'view:queue', 'send'])
+  expect(await pane.find({ type: 'Text', text: 'o objectives (u adds an update there), i important, c chat, e queue, s send queue, Esc closes' })).toBeDefined()
+  await pane.press({ key: 'view:important' })
+  expect(await pane.find({ type: 'Text', text: '[AI_AGENT] a fact' })).toBeDefined()
+  expect(await pane.find({ type: 'Text', text: '[USER] hello' })).toBeUndefined()
+  await pane.press({ key: 'view:chat' })
+  expect(await pane.find({ type: 'Text', text: '[USER] hello' })).toBeDefined()
+  expect((await pane.find({ key: 'view:overview' }))?.props).toMatchObject({ hotkey: 'b' })
+  await pane.press({ key: 'view:overview' })
+  expect(await pane.find({ key: 'view:overview' })).toBeUndefined()
   await pane.unmount()
 })
 
-test('s in the replies pane and the send-queue button move every queued reply into the prompt, clear the queue and record the chat', async ($, on) => {
+test('the queue view lists every queued reply in its own editable field, removes one, and s sends them all', async ($, on) => {
   let selection = 'First question'
   const fs: Fs = { [BOUND]: NOTES }
   const { ui } = engine(on, fs, { [`session:${SESSION}`]: BOUND }, () => selection)
   engineDraws(on)
-  const sent = submitting(on)
   await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: false })
   await run($, 'reply one')
   selection = 'Second question'
   await run($, 'reply two')
   const hint = await $.ui.mount({ ...HINT, surface: 'terminal' })
-  expect((await hint.find({ key: 'send-queue' }))?.props.label).toBe('[send queue: 2]')
-  await run($, 'replies')
-  const pane = await $.ui.mount({ ...REPLIES_PANE, surface: 'terminal' })
+  await hint.press({ key: 'edit-queue' })
+  expect(ui.opened.at(-1)).toEqual({ id: 'notes-keeping', focus: true })
+  const pane = await $.ui.mount({ ...NOTES_PANE, surface: 'terminal' })
+  expect((await pane.find({ key: 'view:queue' }))?.props).toMatchObject({ hotkey: 'e', label: 'Queue (2)' })
+  expect((await pane.find({ key: 'reply:0' }))?.props).toMatchObject({ value: 'one' })
+  expect((await pane.find({ key: 'reply:1' }))?.props).toMatchObject({ value: 'two' })
+  await pane.input({ key: 'reply:1', text: 'two, reworded' })
+  expect((await pane.find({ key: 'reply:1' }))?.props).toMatchObject({ value: 'two, reworded' })
+  await pane.press({ key: 'remove:0' })
+  expect(ui.status.at(-1)).toBe('notes: 1 reply queued, sent with your next message. /notes-keeping replies: edit, remove, send')
+  expect((await pane.find({ key: 'reply:0' }))?.props).toMatchObject({ value: 'two, reworded' })
+  expect(await pane.find({ key: 'reply:1' })).toBeUndefined()
   expect((await pane.find({ key: 'send' }))?.props).toMatchObject({ hotkey: 's' })
   ui.isFillable = false
   await pane.press({ key: 'send' })
-  expect((await pane.findAll({ type: 'Button' })).map(button => button.key)).toEqual(['send', 'pair:0', 'pair:1'])
+  expect(await pane.find({ key: 'reply:0' })).toBeDefined()
   ui.isFillable = true
   await pane.press({ key: 'send' })
-  const text = '[AI_AGENT] First question\n[USER] one\n\n[AI_AGENT] Second question\n[USER] two'
-  expect(ui.fills.at(-1)).toEqual({ text, mode: 'insert' })
-  expect(ui.status.at(-1)).toBeUndefined()
-  expect(fs[BOUND]).toContain(text)
-  expect(await hint.find({ key: 'send-queue' })).toBeUndefined()
+  expect(ui.fills.at(-1)).toEqual({ text: '[AI_AGENT] Second question\n[USER] two, reworded', mode: 'insert' })
+  expect(fs[BOUND]).toContain('[AI_AGENT] Second question\n[USER] two, reworded')
   expect(await pane.find({ type: 'Text', text: 'No replies queued.' })).toBeDefined()
-  expect(sent).toEqual([])
+  expect(await hint.find({ key: 'send-queue' })).toBeUndefined()
   await hint.unmount()
   await pane.unmount()
 })
 
-test('the queue shows its keys: the edit-queue button opens the replies pane, rows take digits, the pane names them', async ($, on) => {
-  const { ui } = engine(on, {}, {}, () => 'Question')
-  engineDraws(on)
+test('the replies command opens the panel at the queue view', async ($, on) => {
+  engine(on, {}, {}, () => 'Question one')
   await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: false })
-  const hint = await $.ui.mount({ ...HINT, surface: 'terminal' })
-  expect(await hint.find({ key: 'edit-queue' })).toBeUndefined()
   await run($, 'reply answer')
-  expect((await hint.find({ key: 'edit-queue' }))?.props.label).toBe('[edit queue]')
-  await hint.press({ key: 'edit-queue' })
-  expect(ui.opened.at(-1)).toEqual({ id: 'notes-keeping-replies', focus: true })
-  const pane = await $.ui.mount({ ...REPLIES_PANE, surface: 'terminal' })
-  expect(await pane.find({ type: 'Text', text: '1-9 open a reply to edit or remove it, s sends them all to the prompt, Esc closes' })).toBeDefined()
-  expect((await pane.find({ key: 'pair:0' }))?.props.hotkey).toBe('1')
-  await pane.press({ key: 'pair:0' })
-  expect((await pane.find({ key: 'edit' }))?.props).toMatchObject({ hotkey: 'e', label: 'Edit' })
-  expect((await pane.find({ key: 'remove' }))?.props).toMatchObject({ hotkey: 'd', label: 'Remove' })
-  expect((await run($, '')).text).toContain('1-9 opens one (e edit, d remove, b back), s moves all into the prompt')
-  await hint.unmount()
+  await run($, 'replies')
+  const pane = await $.ui.mount({ ...NOTES_PANE, surface: 'terminal' })
+  expect(await pane.find({ key: 'reply:0' })).toBeDefined()
+  expect((await run($, '')).text).toContain('open the panel at the queue: every reply editable')
   await pane.unmount()
 })
 
-test('the replies pane lists queued pairs, shows one whole, and removes it', async ($, on) => {
-  let selection = 'First question'
-  const { ui } = engine(on, {}, {}, () => selection)
+test('a todo status cycles todo, in-progress, done, declined and back', () => {
+  expect(nextStatus('todo')).toBe('in-progress')
+  expect(nextStatus('in-progress')).toBe('done')
+  expect(nextStatus('done')).toBe('declined')
+  expect(nextStatus('declined')).toBe('todo')
+})
+
+test('u in the objectives view opens an input whose text lands as a new [UPDATE] under ## Updates, and its hint is on screen', async ($, on) => {
+  const fs: Fs = { [BOUND]: '# Objectives\n\nSessions: s\n\nShip it\n\n## Updates\n\n# Important\n\n# Chat\n' }
+  engine(on, fs, { [`session:${SESSION}`]: BOUND })
   await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: false })
-  await run($, 'reply one')
-  selection = 'Second question'
-  await run($, 'reply two')
-  await run($, 'replies')
-  const pane = await $.ui.mount({ ...REPLIES_PANE, surface: 'terminal' })
-  expect((await pane.findAll({ type: 'Button' })).map(button => button.key)).toEqual(['send', 'pair:0', 'pair:1'])
-  await pane.press({ key: 'pair:1' })
-  expect(await pane.find({ type: 'Text', text: '[AI_AGENT] Second question\n[USER] two' })).toBeDefined()
-  await pane.press({ key: 'remove' })
-  expect(ui.status.at(-1)).toBe('notes: 1 reply queued, sent with your next message. /notes-keeping replies: edit, remove, send')
-  expect((await pane.findAll({ type: 'Button' })).map(button => button.key)).toEqual(['send', 'pair:0'])
+  await run($, 'show')
+  const pane = await $.ui.mount({ ...NOTES_PANE, surface: 'terminal' })
+  await pane.press({ key: 'view:objectives' })
+  expect(await pane.find({ type: 'Text', text: 'u adds an update under Updates, Enter keeps it, b goes back' })).toBeDefined()
+  expect((await pane.find({ key: 'objectives' }))?.props).toMatchObject({ hotkey: 'u', label: 'Update objectives' })
+  await pane.press({ key: 'objectives' })
+  expect((await pane.find({ key: 'objectives' }))?.type).toBe('Input')
+  await pane.input({ key: 'objectives', text: 'Add the todo slot' })
+  expect(fs[BOUND]).toContain('## Updates\n\n[UPDATE] 2026-10-26-10-58\nAdd the todo slot\n')
+  expect(fs[BOUND]).toContain('Ship it')
+  const hotkeys = (await pane.findAll({ type: 'Button' })).map(button => button.props.hotkey)
+  expect(new Set(hotkeys).size).toBe(hotkeys.length)
   await pane.unmount()
 })
