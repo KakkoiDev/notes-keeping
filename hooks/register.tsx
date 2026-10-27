@@ -50,7 +50,7 @@ const USAGE = [
   '  update <text>              same as objectives',
   '  important [text]           add text, or the selected text, to # Important',
   '  reply <text>               queue the selected text and your reply; they go out with your next message',
-  '  replies                    list queued replies; s moves them all into the prompt, or pick one to read, edit or remove it',
+  '  replies                    queued replies: 1-9 opens one (e edit, d remove, b back), s moves all into the prompt',
   '  history [n|file]           list earlier notes; pick one to continue it here',
   `  show | hide                open or close the notes pane (also ${CHORD} and the Notes button under the prompt)`,
   `${CHORD} works once ~/.claude/keybindings.json binds it: { "bindings": [{ "context": "Global", "bindings": { "${CHORD}": "${ACTION}" } }] }`,
@@ -258,7 +258,7 @@ async function important($: EngineInterface, text: string, tag: string): Promise
 }
 
 function showQueue($: EngineInterface, n: number): void {
-  $.ui.status(n === 0 ? undefined : `notes: ${n} repl${n === 1 ? 'y' : 'ies'} queued, sent with your next message`)
+  $.ui.status(n === 0 ? undefined : `notes: ${n} repl${n === 1 ? 'y' : 'ies'} queued, sent with your next message. /notes-keeping replies: edit, remove, send`)
 }
 
 // The selection is answered: the same text does not raise the pane again until it changes.
@@ -290,6 +290,10 @@ async function sendQueue($: EngineInterface): Promise<void> {
   warn($, told('', await edit($, 'reply', md => pending.reduce((text, pair) => addChat(text, pair.agent, pair.user), md))))
   await update($, queue, () => [])
   showQueue($, 0)
+}
+
+async function openReplies($: EngineInterface): Promise<void> {
+  await $.ui.open({ id: REPLIES, title: 'Replies', focus: true, closeOnEscape: true, rows: 12 })
 }
 
 async function openSelect($: EngineInterface, selection: string): Promise<void> {
@@ -434,7 +438,7 @@ export const register: Register = on => {
           return { text: 'Reply queued; it goes out with your next message.' }
         }
         case 'replies':
-          await $.ui.open({ id: REPLIES, title: 'Replies', focus: true, closeOnEscape: true, rows: 12 })
+          await openReplies($)
           return {}
         case 'history':
           return await history($, rest)
@@ -512,6 +516,7 @@ export const register: Register = on => {
           onPress={() => toggleNotes($)}
         />
         {waiting === 0 ? null : <Button key="send-queue" plain dimColor label={`[send queue: ${waiting}]`} onPress={() => sendQueue($)} />}
+        {waiting === 0 ? null : <Button key="edit-queue" plain dimColor label="[edit queue]" onPress={() => openReplies($)} />}
       </Box>
     )
   })
@@ -645,9 +650,16 @@ export const register: Register = on => {
     if (list.length === 0) return <Text dimColor>No replies queued.</Text>
     return (
       <Box flexDirection="column">
+        <Text dimColor>1-9 open a reply to edit or remove it, s sends them all to the prompt, Esc closes</Text>
         <Button key="send" plain hotkey="s" label="Send queue to the prompt" onPress={() => sendQueue($)} />
         {list.map((row, i) => (
-          <Button key={`pair:${i}`} plain label={`${i + 1}. ${row.agent.replace(/\s+/g, ' ').slice(0, PREVIEW)} -> ${row.user.replace(/\s+/g, ' ').slice(0, PREVIEW)}`} onPress={() => update($, picked, () => i)} />
+          <Button
+            key={`pair:${i}`}
+            plain
+            hotkey={i < 9 ? String(i + 1) : undefined}
+            label={`${i < 9 ? '' : `${i + 1}. `}${row.agent.replace(/\s+/g, ' ').slice(0, PREVIEW)} -> ${row.user.replace(/\s+/g, ' ').slice(0, PREVIEW)}`}
+            onPress={() => update($, picked, () => i)}
+          />
         ))}
       </Box>
     )

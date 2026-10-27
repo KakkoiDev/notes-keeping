@@ -252,7 +252,7 @@ test('a queued reply goes out with the next composer Enter, recorded as one turn
 
   expect((await run($, 'reply Merge it')).text).toBe('Reply queued; it goes out with your next message.')
   expect(fs[NOW]?.endsWith('# Chat\n')).toBe(true)
-  expect(ui.status.at(-1)).toBe('notes: 1 reply queued, sent with your next message')
+  expect(ui.status.at(-1)).toBe('notes: 1 reply queued, sent with your next message. /notes-keeping replies: edit, remove, send')
 
   await submit($, 'from a script', 'sdk')
   await $.prompt.submit({ text: 'meta', wait: false, isMeta: true, origin: { kind: 'composer' } })
@@ -453,7 +453,7 @@ test('a selection opens a focused pane: i keeps it, r queues a reply, x dismisse
   await second.input({ key: 'reply', text: '   ' })
   expect(await second.find({ key: 'reply' })).toBeDefined()
   await second.input({ key: 'reply', text: 'Push now' })
-  expect(ui.status.at(-1)).toBe('notes: 1 reply queued, sent with your next message')
+  expect(ui.status.at(-1)).toBe('notes: 1 reply queued, sent with your next message. /notes-keeping replies: edit, remove, send')
   expect(fs[BOUND]?.endsWith('# Chat\n')).toBe(true)
   await clock.advance(1200)
   expect(await second.find({ key: 'reply' })).toBeUndefined()
@@ -647,7 +647,7 @@ test('the replies pane edits a queued reply in a field holding its text, and Bac
   await pane.input({ key: 'revise', text: 'two, reworded' })
   expect(await pane.find({ key: 'revise' })).toBeUndefined()
   expect(await pane.find({ type: 'Text', text: '[AI_AGENT] Second question\n[USER] two, reworded' })).toBeDefined()
-  expect(ui.status.at(-1)).toBe('notes: 2 replies queued, sent with your next message')
+  expect(ui.status.at(-1)).toBe('notes: 2 replies queued, sent with your next message. /notes-keeping replies: edit, remove, send')
   await pane.press({ key: 'back' })
   await pane.press({ key: 'pair:0' })
   expect(await pane.find({ type: 'Text', text: '[AI_AGENT] First question\n[USER] one' })).toBeDefined()
@@ -685,6 +685,27 @@ test('s in the replies pane and the send-queue button move every queued reply in
   await pane.unmount()
 })
 
+test('the queue shows its keys: the edit-queue button opens the replies pane, rows take digits, the pane names them', async ($, on) => {
+  const { ui } = engine(on, {}, {}, () => 'Question')
+  engineDraws(on)
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: false })
+  const hint = await $.ui.mount({ ...HINT, surface: 'terminal' })
+  expect(await hint.find({ key: 'edit-queue' })).toBeUndefined()
+  await run($, 'reply answer')
+  expect((await hint.find({ key: 'edit-queue' }))?.props.label).toBe('[edit queue]')
+  await hint.press({ key: 'edit-queue' })
+  expect(ui.opened.at(-1)).toEqual({ id: 'notes-keeping-replies', focus: true })
+  const pane = await $.ui.mount({ ...REPLIES_PANE, surface: 'terminal' })
+  expect(await pane.find({ type: 'Text', text: '1-9 open a reply to edit or remove it, s sends them all to the prompt, Esc closes' })).toBeDefined()
+  expect((await pane.find({ key: 'pair:0' }))?.props.hotkey).toBe('1')
+  await pane.press({ key: 'pair:0' })
+  expect((await pane.find({ key: 'edit' }))?.props).toMatchObject({ hotkey: 'e', label: 'Edit' })
+  expect((await pane.find({ key: 'remove' }))?.props).toMatchObject({ hotkey: 'd', label: 'Remove' })
+  expect((await run($, '')).text).toContain('1-9 opens one (e edit, d remove, b back), s moves all into the prompt')
+  await hint.unmount()
+  await pane.unmount()
+})
+
 test('the replies pane lists queued pairs, shows one whole, and removes it', async ($, on) => {
   let selection = 'First question'
   const { ui } = engine(on, {}, {}, () => selection)
@@ -698,7 +719,7 @@ test('the replies pane lists queued pairs, shows one whole, and removes it', asy
   await pane.press({ key: 'pair:1' })
   expect(await pane.find({ type: 'Text', text: '[AI_AGENT] Second question\n[USER] two' })).toBeDefined()
   await pane.press({ key: 'remove' })
-  expect(ui.status.at(-1)).toBe('notes: 1 reply queued, sent with your next message')
+  expect(ui.status.at(-1)).toBe('notes: 1 reply queued, sent with your next message. /notes-keeping replies: edit, remove, send')
   expect((await pane.findAll({ type: 'Button' })).map(button => button.key)).toEqual(['send', 'pair:0'])
   await pane.unmount()
 })
