@@ -140,7 +140,8 @@ plugin's floors and word check):
 
 ## ctrl+q
 
-The Notes button's chord works only when `~/.claude/keybindings.json` binds it. The file is not managed by this repo:
+The Notes button's chord works only when `~/.claude/keybindings.json` binds it. This repo tracks it as
+`claude-profiles/main/keybindings.json`, linked from `packages/claude/.claude/keybindings.json`:
 
 ```json
 {
