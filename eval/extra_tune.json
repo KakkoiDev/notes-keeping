@@ -1,0 +1,82 @@
+{
+ "tune": {
+  "status": [
+   {
+    "todo": "Rename the export to CSV",
+    "reply": "The CSV renaming is complete; the exporter writes .csv now and the tests pass.",
+    "label": "finished"
+   },
+   {
+    "todo": "Rename the export to CSV",
+    "reply": "I'm partway through the CSV renaming: the writer is changed, the callers are not yet.",
+    "label": "started"
+   },
+   {
+    "todo": "Rename the export to CSV",
+    "reply": "I won't do the CSV renaming, the consumers all expect the old extension.",
+    "label": "rejected"
+   },
+   {
+    "todo": "Rename the export to CSV",
+    "reply": "The log stamping is done and verified.",
+    "label": "not-mentioned"
+   },
+   {
+    "todo": "Rename the export to CSV",
+    "reply": "Summary of today: three files changed and the suite is green.",
+    "label": "not-mentioned"
+   },
+   {
+    "todo": "Handle empty input files",
+    "reply": "The empty-file case now works: an empty file loads as no items. Test added.",
+    "label": "finished"
+   },
+   {
+    "todo": "Handle empty input files",
+    "reply": "Looking at the empty-file case now; I have a failing test and the fix is still open.",
+    "label": "started"
+   },
+   {
+    "todo": "Handle empty input files",
+    "reply": "Skipping the empty-file case; an empty file is already rejected earlier, so it is out of scope.",
+    "label": "rejected"
+   },
+   {
+    "todo": "Handle empty input files",
+    "reply": "The CSV renaming is done and the tests pass.",
+    "label": "not-mentioned"
+   },
+   {
+    "todo": "Handle empty input files",
+    "reply": "Pushed the branch and updated the status file.",
+    "label": "not-mentioned"
+   },
+   {
+    "todo": "Stamp the log with the session id",
+    "reply": "Stamping of the log with the session id is finished and committed.",
+    "label": "finished"
+   },
+   {
+    "todo": "Stamp the log with the session id",
+    "reply": "I started stamping the log; the session id is read but not written yet.",
+    "label": "started"
+   },
+   {
+    "todo": "Stamp the log with the session id",
+    "reply": "I'm leaving the log stamping out: you said logs stay anonymous.",
+    "label": "rejected"
+   },
+   {
+    "todo": "Stamp the log with the session id",
+    "reply": "The empty-file case works and its test passes.",
+    "label": "not-mentioned"
+   },
+   {
+    "todo": "Stamp the log with the session id",
+    "reply": "Nothing else changed this turn.",
+    "label": "not-mentioned"
+   }
+  ],
+  "lines": []
+ }
+}

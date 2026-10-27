@@ -1,0 +1,1198 @@
+{
+ "tune": {
+  "status": [
+   {
+    "todo": "Add a ctrl+q toggle for the notes pane",
+    "reply": "I added the ctrl+q toggle and the tests pass. The change is in hooks/register.tsx, committed on the branch.",
+    "label": "finished"
+   },
+   {
+    "todo": "Add a ctrl+q toggle for the notes pane",
+    "reply": "Done: the ctrl+q toggle is implemented and verified. Ran the suite, 67 pass, 0 fail.",
+    "label": "finished"
+   },
+   {
+    "todo": "Add a ctrl+q toggle for the notes pane",
+    "reply": "I started on the ctrl+q toggle. The first part is written but the rest is still open, so I'll continue next.",
+    "label": "started"
+   },
+   {
+    "todo": "Add a ctrl+q toggle for the notes pane",
+    "reply": "Working on the ctrl+q toggle now. I have read the relevant code and am partway through the change.",
+    "label": "started"
+   },
+   {
+    "todo": "Add a ctrl+q toggle for the notes pane",
+    "reply": "I won't do the ctrl+q toggle: it conflicts with the design you gave, so I left it out.",
+    "label": "rejected"
+   },
+   {
+    "todo": "Add a ctrl+q toggle for the notes pane",
+    "reply": "Skipping the ctrl+q toggle. It is out of scope for this PR and you said not to touch it.",
+    "label": "rejected"
+   },
+   {
+    "todo": "Add a ctrl+q toggle for the notes pane",
+    "reply": "I finished the selection pane flicker fix and its tests pass. Nothing else changed.",
+    "label": "not-mentioned"
+   },
+   {
+    "todo": "Add a ctrl+q toggle for the notes pane",
+    "reply": "Test suite is green, 67 pass. I pushed the branch and updated the status file.",
+    "label": "not-mentioned"
+   },
+   {
+    "todo": "Make queued replies editable before sending",
+    "reply": "I added editing of queued replies and the tests pass. The change is in hooks/register.tsx, committed on the branch.",
+    "label": "finished"
+   },
+   {
+    "todo": "Make queued replies editable before sending",
+    "reply": "Done: editing of queued replies is implemented and verified. Ran the suite, 67 pass, 0 fail.",
+    "label": "finished"
+   },
+   {
+    "todo": "Make queued replies editable before sending",
+    "reply": "I started on editing of queued replies. The first part is written but the rest is still open, so I'll continue next.",
+    "label": "started"
+   },
+   {
+    "todo": "Make queued replies editable before sending",
+    "reply": "Working on editing of queued replies now. I have read the relevant code and am partway through the change.",
+    "label": "started"
+   },
+   {
+    "todo": "Make queued replies editable before sending",
+    "reply": "I won't do editing of queued replies: it conflicts with the design you gave, so I left it out.",
+    "label": "rejected"
+   },
+   {
+    "todo": "Make queued replies editable before sending",
+    "reply": "Skipping editing of queued replies. It is out of scope for this PR and you said not to touch it.",
+    "label": "rejected"
+   },
+   {
+    "todo": "Make queued replies editable before sending",
+    "reply": "I finished struck-through declined items and its tests pass. Nothing else changed.",
+    "label": "not-mentioned"
+   },
+   {
+    "todo": "Make queued replies editable before sending",
+    "reply": "Test suite is green, 67 pass. I pushed the branch and updated the status file.",
+    "label": "not-mentioned"
+   },
+   {
+    "todo": "Write docs next to the existing plugin docs",
+    "reply": "I added the plugin docs and the tests pass. The change is in hooks/register.tsx, committed on the branch.",
+    "label": "finished"
+   },
+   {
+    "todo": "Write docs next to the existing plugin docs",
+    "reply": "Done: the plugin docs is implemented and verified. Ran the suite, 67 pass, 0 fail.",
+    "label": "finished"
+   },
+   {
+    "todo": "Write docs next to the existing plugin docs",
+    "reply": "I started on the plugin docs. The first part is written but the rest is still open, so I'll continue next.",
+    "label": "started"
+   },
+   {
+    "todo": "Write docs next to the existing plugin docs",
+    "reply": "Working on the plugin docs now. I have read the relevant code and am partway through the change.",
+    "label": "started"
+   },
+   {
+    "todo": "Write docs next to the existing plugin docs",
+    "reply": "I won't do the plugin docs: it conflicts with the design you gave, so I left it out.",
+    "label": "rejected"
+   },
+   {
+    "todo": "Write docs next to the existing plugin docs",
+    "reply": "Skipping the plugin docs. It is out of scope for this PR and you said not to touch it.",
+    "label": "rejected"
+   },
+   {
+    "todo": "Write docs next to the existing plugin docs",
+    "reply": "I finished the todo section in the notes file and its tests pass. Nothing else changed.",
+    "label": "not-mentioned"
+   },
+   {
+    "todo": "Write docs next to the existing plugin docs",
+    "reply": "Test suite is green, 67 pass. I pushed the branch and updated the status file.",
+    "label": "not-mentioned"
+   },
+   {
+    "todo": "Fix the selection pane flicker on narrow terminals",
+    "reply": "I added the selection pane flicker fix and the tests pass. The change is in hooks/register.tsx, committed on the branch.",
+    "label": "finished"
+   },
+   {
+    "todo": "Fix the selection pane flicker on narrow terminals",
+    "reply": "Done: the selection pane flicker fix is implemented and verified. Ran the suite, 67 pass, 0 fail.",
+    "label": "finished"
+   },
+   {
+    "todo": "Fix the selection pane flicker on narrow terminals",
+    "reply": "I started on the selection pane flicker fix. The first part is written but the rest is still open, so I'll continue next.",
+    "label": "started"
+   },
+   {
+    "todo": "Fix the selection pane flicker on narrow terminals",
+    "reply": "Working on the selection pane flicker fix now. I have read the relevant code and am partway through the change.",
+    "label": "started"
+   },
+   {
+    "todo": "Fix the selection pane flicker on narrow terminals",
+    "reply": "I won't do the selection pane flicker fix: it conflicts with the design you gave, so I left it out.",
+    "label": "rejected"
+   },
+   {
+    "todo": "Fix the selection pane flicker on narrow terminals",
+    "reply": "Skipping the selection pane flicker fix. It is out of scope for this PR and you said not to touch it.",
+    "label": "rejected"
+   },
+   {
+    "todo": "Fix the selection pane flicker on narrow terminals",
+    "reply": "I finished the Laya latency measurement and its tests pass. Nothing else changed.",
+    "label": "not-mentioned"
+   },
+   {
+    "todo": "Fix the selection pane flicker on narrow terminals",
+    "reply": "Test suite is green, 67 pass. I pushed the branch and updated the status file.",
+    "label": "not-mentioned"
+   },
+   {
+    "todo": "Show declined items struck through in the panel",
+    "reply": "I added struck-through declined items and the tests pass. The change is in hooks/register.tsx, committed on the branch.",
+    "label": "finished"
+   },
+   {
+    "todo": "Show declined items struck through in the panel",
+    "reply": "Done: struck-through declined items is implemented and verified. Ran the suite, 67 pass, 0 fail.",
+    "label": "finished"
+   },
+   {
+    "todo": "Show declined items struck through in the panel",
+    "reply": "I started on struck-through declined items. The first part is written but the rest is still open, so I'll continue next.",
+    "label": "started"
+   },
+   {
+    "todo": "Show declined items struck through in the panel",
+    "reply": "Working on struck-through declined items now. I have read the relevant code and am partway through the change.",
+    "label": "started"
+   },
+   {
+    "todo": "Show declined items struck through in the panel",
+    "reply": "I won't do struck-through declined items: it conflicts with the design you gave, so I left it out.",
+    "label": "rejected"
+   },
+   {
+    "todo": "Show declined items struck through in the panel",
+    "reply": "Skipping struck-through declined items. It is out of scope for this PR and you said not to touch it.",
+    "label": "rejected"
+   },
+   {
+    "todo": "Show declined items struck through in the panel",
+    "reply": "I finished the pull request and its tests pass. Nothing else changed.",
+    "label": "not-mentioned"
+   },
+   {
+    "todo": "Show declined items struck through in the panel",
+    "reply": "Test suite is green, 67 pass. I pushed the branch and updated the status file.",
+    "label": "not-mentioned"
+   },
+   {
+    "todo": "Store the todo list in the notes md file",
+    "reply": "I added the todo section in the notes file and the tests pass. The change is in hooks/register.tsx, committed on the branch.",
+    "label": "finished"
+   },
+   {
+    "todo": "Store the todo list in the notes md file",
+    "reply": "Done: the todo section in the notes file is implemented and verified. Ran the suite, 67 pass, 0 fail.",
+    "label": "finished"
+   },
+   {
+    "todo": "Store the todo list in the notes md file",
+    "reply": "I started on the todo section in the notes file. The first part is written but the rest is still open, so I'll continue next.",
+    "label": "started"
+   },
+   {
+    "todo": "Store the todo list in the notes md file",
+    "reply": "Working on the todo section in the notes file now. I have read the relevant code and am partway through the change.",
+    "label": "started"
+   },
+   {
+    "todo": "Store the todo list in the notes md file",
+    "reply": "I won't do the todo section in the notes file: it conflicts with the design you gave, so I left it out.",
+    "label": "rejected"
+   },
+   {
+    "todo": "Store the todo list in the notes md file",
+    "reply": "Skipping the todo section in the notes file. It is out of scope for this PR and you said not to touch it.",
+    "label": "rejected"
+   },
+   {
+    "todo": "Store the todo list in the notes md file",
+    "reply": "I finished the ctrl+q toggle and its tests pass. Nothing else changed.",
+    "label": "not-mentioned"
+   },
+   {
+    "todo": "Store the todo list in the notes md file",
+    "reply": "Test suite is green, 67 pass. I pushed the branch and updated the status file.",
+    "label": "not-mentioned"
+   },
+   {
+    "todo": "Measure Laya latency per call and report it",
+    "reply": "I added the Laya latency measurement and the tests pass. The change is in hooks/register.tsx, committed on the branch.",
+    "label": "finished"
+   },
+   {
+    "todo": "Measure Laya latency per call and report it",
+    "reply": "Done: the Laya latency measurement is implemented and verified. Ran the suite, 67 pass, 0 fail.",
+    "label": "finished"
+   },
+   {
+    "todo": "Measure Laya latency per call and report it",
+    "reply": "I started on the Laya latency measurement. The first part is written but the rest is still open, so I'll continue next.",
+    "label": "started"
+   },
+   {
+    "todo": "Measure Laya latency per call and report it",
+    "reply": "Working on the Laya latency measurement now. I have read the relevant code and am partway through the change.",
+    "label": "started"
+   },
+   {
+    "todo": "Measure Laya latency per call and report it",
+    "reply": "I won't do the Laya latency measurement: it conflicts with the design you gave, so I left it out.",
+    "label": "rejected"
+   },
+   {
+    "todo": "Measure Laya latency per call and report it",
+    "reply": "Skipping the Laya latency measurement. It is out of scope for this PR and you said not to touch it.",
+    "label": "rejected"
+   },
+   {
+    "todo": "Measure Laya latency per call and report it",
+    "reply": "I finished editing of queued replies and its tests pass. Nothing else changed.",
+    "label": "not-mentioned"
+   },
+   {
+    "todo": "Measure Laya latency per call and report it",
+    "reply": "Test suite is green, 67 pass. I pushed the branch and updated the status file.",
+    "label": "not-mentioned"
+   },
+   {
+    "todo": "Branch from master and open the PR to dotfiles",
+    "reply": "I added the pull request and the tests pass. The change is in hooks/register.tsx, committed on the branch.",
+    "label": "finished"
+   },
+   {
+    "todo": "Branch from master and open the PR to dotfiles",
+    "reply": "Done: the pull request is implemented and verified. Ran the suite, 67 pass, 0 fail.",
+    "label": "finished"
+   },
+   {
+    "todo": "Branch from master and open the PR to dotfiles",
+    "reply": "I started on the pull request. The first part is written but the rest is still open, so I'll continue next.",
+    "label": "started"
+   },
+   {
+    "todo": "Branch from master and open the PR to dotfiles",
+    "reply": "Working on the pull request now. I have read the relevant code and am partway through the change.",
+    "label": "started"
+   },
+   {
+    "todo": "Branch from master and open the PR to dotfiles",
+    "reply": "I won't do the pull request: it conflicts with the design you gave, so I left it out.",
+    "label": "rejected"
+   },
+   {
+    "todo": "Branch from master and open the PR to dotfiles",
+    "reply": "Skipping the pull request. It is out of scope for this PR and you said not to touch it.",
+    "label": "rejected"
+   },
+   {
+    "todo": "Branch from master and open the PR to dotfiles",
+    "reply": "I finished the plugin docs and its tests pass. Nothing else changed.",
+    "label": "not-mentioned"
+   },
+   {
+    "todo": "Branch from master and open the PR to dotfiles",
+    "reply": "Test suite is green, 67 pass. I pushed the branch and updated the status file.",
+    "label": "not-mentioned"
+   },
+   {
+    "todo": "ctrl+qのトグルを追加する",
+    "reply": "ctrl+qのトグルを実装し、テストも通りました。",
+    "label": "finished"
+   },
+   {
+    "todo": "ctrl+qのトグルを追加する",
+    "reply": "ctrl+qのトグルは完了しました。確認済みです。",
+    "label": "finished"
+   },
+   {
+    "todo": "ctrl+qのトグルを追加する",
+    "reply": "ctrl+qのトグルに着手しました。まだ途中です。",
+    "label": "started"
+   },
+   {
+    "todo": "ctrl+qのトグルを追加する",
+    "reply": "ctrl+qのトグルを進めています。半分ほど終わりました。",
+    "label": "started"
+   },
+   {
+    "todo": "ctrl+qのトグルを追加する",
+    "reply": "ctrl+qのトグルはやらないことにしました。範囲外です。",
+    "label": "rejected"
+   },
+   {
+    "todo": "ctrl+qのトグルを追加する",
+    "reply": "ctrl+qのトグルは見送ります。方針と合わないためです。",
+    "label": "rejected"
+   },
+   {
+    "todo": "ctrl+qのトグルを追加する",
+    "reply": "ドキュメントが完了しました。それ以外は変更していません。",
+    "label": "not-mentioned"
+   },
+   {
+    "todo": "ctrl+qのトグルを追加する",
+    "reply": "今日はテストをすべて実行しました。変更はありません。",
+    "label": "not-mentioned"
+   },
+   {
+    "todo": "ドキュメントを書く",
+    "reply": "ドキュメントを実装し、テストも通りました。",
+    "label": "finished"
+   },
+   {
+    "todo": "ドキュメントを書く",
+    "reply": "ドキュメントは完了しました。確認済みです。",
+    "label": "finished"
+   },
+   {
+    "todo": "ドキュメントを書く",
+    "reply": "ドキュメントに着手しました。まだ途中です。",
+    "label": "started"
+   },
+   {
+    "todo": "ドキュメントを書く",
+    "reply": "ドキュメントを進めています。半分ほど終わりました。",
+    "label": "started"
+   },
+   {
+    "todo": "ドキュメントを書く",
+    "reply": "ドキュメントはやらないことにしました。範囲外です。",
+    "label": "rejected"
+   },
+   {
+    "todo": "ドキュメントを書く",
+    "reply": "ドキュメントは見送ります。方針と合わないためです。",
+    "label": "rejected"
+   },
+   {
+    "todo": "ドキュメントを書く",
+    "reply": "ペインのちらつき修正が完了しました。それ以外は変更していません。",
+    "label": "not-mentioned"
+   },
+   {
+    "todo": "ドキュメントを書く",
+    "reply": "今日はテストをすべて実行しました。変更はありません。",
+    "label": "not-mentioned"
+   },
+   {
+    "todo": "ペインのちらつきを直す",
+    "reply": "ペインのちらつき修正を実装し、テストも通りました。",
+    "label": "finished"
+   },
+   {
+    "todo": "ペインのちらつきを直す",
+    "reply": "ペインのちらつき修正は完了しました。確認済みです。",
+    "label": "finished"
+   },
+   {
+    "todo": "ペインのちらつきを直す",
+    "reply": "ペインのちらつき修正に着手しました。まだ途中です。",
+    "label": "started"
+   },
+   {
+    "todo": "ペインのちらつきを直す",
+    "reply": "ペインのちらつき修正を進めています。半分ほど終わりました。",
+    "label": "started"
+   },
+   {
+    "todo": "ペインのちらつきを直す",
+    "reply": "ペインのちらつき修正はやらないことにしました。範囲外です。",
+    "label": "rejected"
+   },
+   {
+    "todo": "ペインのちらつきを直す",
+    "reply": "ペインのちらつき修正は見送ります。方針と合わないためです。",
+    "label": "rejected"
+   },
+   {
+    "todo": "ペインのちらつきを直す",
+    "reply": "ctrl+qのトグルが完了しました。それ以外は変更していません。",
+    "label": "not-mentioned"
+   },
+   {
+    "todo": "ペインのちらつきを直す",
+    "reply": "今日はテストをすべて実行しました。変更はありません。",
+    "label": "not-mentioned"
+   }
+  ],
+  "lines": [
+   {
+    "text": "I want a todo list generated and kept by the plugin",
+    "task": 1
+   },
+   {
+    "text": "Add a ctrl+q toggle for the notes pane",
+    "task": 1
+   },
+   {
+    "text": "Queued replies must be editable before sending",
+    "task": 1
+   },
+   {
+    "text": "Fix the flicker when the selection pane opens",
+    "task": 1
+   },
+   {
+    "text": "Please write docs next to the plugin docs",
+    "task": 1
+   },
+   {
+    "text": "the tasks should be kept in the md file",
+    "task": 1
+   },
+   {
+    "text": "Use the captain's status names everywhere",
+    "task": 1
+   },
+   {
+    "text": "Rename the panel to Todo",
+    "task": 1
+   },
+   {
+    "text": "ctrl+q does not open the pane, investigate",
+    "task": 1
+   },
+   {
+    "text": "Never write to the production notes file",
+    "task": 1
+   },
+   {
+    "text": "Measure the latency of each call and report it",
+    "task": 1
+   },
+   {
+    "text": "Make the panel show the list at the top",
+    "task": 1
+   },
+   {
+    "text": "Add tests in the existing style",
+    "task": 1
+   },
+   {
+    "text": "Open a PR against master when done",
+    "task": 1
+   },
+   {
+    "text": "Show declined items struck through",
+    "task": 1
+   },
+   {
+    "text": "It should refresh live when the file changes",
+    "task": 1
+   },
+   {
+    "text": "メモのパネルにタスク一覧を表示してほしい",
+    "task": 1
+   },
+   {
+    "text": "ドキュメントも書いてください",
+    "task": 1
+   },
+   {
+    "text": "Context: the plugin lives in the dotfiles repo.",
+    "task": 0
+   },
+   {
+    "text": "PR 9 and PR 10 are merged.",
+    "task": 0
+   },
+   {
+    "text": "The captain's notes file is hand-edited.",
+    "task": 0
+   },
+   {
+    "text": "An objective can be of status:",
+    "task": 0
+   },
+   {
+    "text": "The build takes about two minutes on my laptop.",
+    "task": 0
+   },
+   {
+    "text": "I was in a meeting this morning.",
+    "task": 0
+   },
+   {
+    "text": "Thanks, that looks nice.",
+    "task": 0
+   },
+   {
+    "text": "This is just background for later.",
+    "task": 0
+   },
+   {
+    "text": "The old layout used # Initial Prompt.",
+    "task": 0
+   },
+   {
+    "text": "Laya is a local classifier.",
+    "task": 0
+   },
+   {
+    "text": "The branch is called fm/notes-todo.",
+    "task": 0
+   },
+   {
+    "text": "We talked about this yesterday.",
+    "task": 0
+   },
+   {
+    "text": "The file has four headings.",
+    "task": 0
+   },
+   {
+    "text": "It was working on Friday.",
+    "task": 0
+   },
+   {
+    "text": "今日は天気がいいですね",
+    "task": 0
+   },
+   {
+    "text": "これは背景の説明です",
+    "task": 0
+   },
+   {
+    "text": "Statuses are todo, in progress, done and declined.",
+    "task": 0
+   },
+   {
+    "text": "My laptop is an M3.",
+    "task": 0
+   },
+   {
+    "text": "The panel is owned by another worker.",
+    "task": 0
+   },
+   {
+    "text": "Note: the weights download once.",
+    "task": 0
+   }
+  ]
+ },
+ "heldout": {
+  "status": [
+   {
+    "todo": "Inject the todo list into Claude's context each turn",
+    "reply": "All set. The per-turn todo context now works end to end; I checked it by running the plugin tests, and the new case fails on revert. One file touched, plus tests.",
+    "label": "finished"
+   },
+   {
+    "todo": "Inject the todo list into Claude's context each turn",
+    "reply": "That's complete. The per-turn todo context landed in the last commit, and the usual checks (validate, tsc, tests) are clean.",
+    "label": "finished"
+   },
+   {
+    "todo": "Inject the todo list into Claude's context each turn",
+    "reply": "Got partway: the per-turn todo context is half wired up. The data side works, the UI side is not hooked up yet. Continuing.",
+    "label": "started"
+   },
+   {
+    "todo": "Inject the todo list into Claude's context each turn",
+    "reply": "I'm in the middle of the per-turn todo context: the scaffolding is in, the behaviour is not yet. More to do.",
+    "label": "started"
+   },
+   {
+    "todo": "Inject the todo list into Claude's context each turn",
+    "reply": "I decided against the per-turn todo context. The existing behaviour already covers it, so adding it would only duplicate code.",
+    "label": "rejected"
+   },
+   {
+    "todo": "Inject the todo list into Claude's context each turn",
+    "reply": "The per-turn todo context is not something I can do safely here, so I'm leaving it undone and flagging it for you.",
+    "label": "rejected"
+   },
+   {
+    "todo": "Inject the todo list into Claude's context each turn",
+    "reply": "On a separate note, the per-write commit is now in place and verified.",
+    "label": "not-mentioned"
+   },
+   {
+    "todo": "Inject the todo list into Claude's context each turn",
+    "reply": "Here is how the module is laid out: hooks/ holds the engine code, tests/ the fixtures, README.md the docs. No code changed in this turn.",
+    "label": "not-mentioned"
+   },
+   {
+    "todo": "Add a history command to continue earlier notes",
+    "reply": "All set. The history command now works end to end; I checked it by running the plugin tests, and the new case fails on revert. One file touched, plus tests.",
+    "label": "finished"
+   },
+   {
+    "todo": "Add a history command to continue earlier notes",
+    "reply": "That's complete. The history command landed in the last commit, and the usual checks (validate, tsc, tests) are clean.",
+    "label": "finished"
+   },
+   {
+    "todo": "Add a history command to continue earlier notes",
+    "reply": "Got partway: the history command is half wired up. The data side works, the UI side is not hooked up yet. Continuing.",
+    "label": "started"
+   },
+   {
+    "todo": "Add a history command to continue earlier notes",
+    "reply": "I'm in the middle of the history command: the scaffolding is in, the behaviour is not yet. More to do.",
+    "label": "started"
+   },
+   {
+    "todo": "Add a history command to continue earlier notes",
+    "reply": "I decided against the history command. The existing behaviour already covers it, so adding it would only duplicate code.",
+    "label": "rejected"
+   },
+   {
+    "todo": "Add a history command to continue earlier notes",
+    "reply": "The history command is not something I can do safely here, so I'm leaving it undone and flagging it for you.",
+    "label": "rejected"
+   },
+   {
+    "todo": "Add a history command to continue earlier notes",
+    "reply": "On a separate note, the pane rename is now in place and verified.",
+    "label": "not-mentioned"
+   },
+   {
+    "todo": "Add a history command to continue earlier notes",
+    "reply": "Here is how the module is laid out: hooks/ holds the engine code, tests/ the fixtures, README.md the docs. No code changed in this turn.",
+    "label": "not-mentioned"
+   },
+   {
+    "todo": "Deny Claude's Edit and Write on the notes folder",
+    "reply": "All set. The notes folder guard now works end to end; I checked it by running the plugin tests, and the new case fails on revert. One file touched, plus tests.",
+    "label": "finished"
+   },
+   {
+    "todo": "Deny Claude's Edit and Write on the notes folder",
+    "reply": "That's complete. The notes folder guard landed in the last commit, and the usual checks (validate, tsc, tests) are clean.",
+    "label": "finished"
+   },
+   {
+    "todo": "Deny Claude's Edit and Write on the notes folder",
+    "reply": "Got partway: the notes folder guard is half wired up. The data side works, the UI side is not hooked up yet. Continuing.",
+    "label": "started"
+   },
+   {
+    "todo": "Deny Claude's Edit and Write on the notes folder",
+    "reply": "I'm in the middle of the notes folder guard: the scaffolding is in, the behaviour is not yet. More to do.",
+    "label": "started"
+   },
+   {
+    "todo": "Deny Claude's Edit and Write on the notes folder",
+    "reply": "I decided against the notes folder guard. The existing behaviour already covers it, so adding it would only duplicate code.",
+    "label": "rejected"
+   },
+   {
+    "todo": "Deny Claude's Edit and Write on the notes folder",
+    "reply": "The notes folder guard is not something I can do safely here, so I'm leaving it undone and flagging it for you.",
+    "label": "rejected"
+   },
+   {
+    "todo": "Deny Claude's Edit and Write on the notes folder",
+    "reply": "On a separate note, the file naming is now in place and verified.",
+    "label": "not-mentioned"
+   },
+   {
+    "todo": "Deny Claude's Edit and Write on the notes folder",
+    "reply": "Here is how the module is laid out: hooks/ holds the engine code, tests/ the fixtures, README.md the docs. No code changed in this turn.",
+    "label": "not-mentioned"
+   },
+   {
+    "todo": "Commit every notes write in the notes repository",
+    "reply": "All set. The per-write commit now works end to end; I checked it by running the plugin tests, and the new case fails on revert. One file touched, plus tests.",
+    "label": "finished"
+   },
+   {
+    "todo": "Commit every notes write in the notes repository",
+    "reply": "That's complete. The per-write commit landed in the last commit, and the usual checks (validate, tsc, tests) are clean.",
+    "label": "finished"
+   },
+   {
+    "todo": "Commit every notes write in the notes repository",
+    "reply": "Got partway: the per-write commit is half wired up. The data side works, the UI side is not hooked up yet. Continuing.",
+    "label": "started"
+   },
+   {
+    "todo": "Commit every notes write in the notes repository",
+    "reply": "I'm in the middle of the per-write commit: the scaffolding is in, the behaviour is not yet. More to do.",
+    "label": "started"
+   },
+   {
+    "todo": "Commit every notes write in the notes repository",
+    "reply": "I decided against the per-write commit. The existing behaviour already covers it, so adding it would only duplicate code.",
+    "label": "rejected"
+   },
+   {
+    "todo": "Commit every notes write in the notes repository",
+    "reply": "The per-write commit is not something I can do safely here, so I'm leaving it undone and flagging it for you.",
+    "label": "rejected"
+   },
+   {
+    "todo": "Commit every notes write in the notes repository",
+    "reply": "On a separate note, the missing-heading case is now in place and verified.",
+    "label": "not-mentioned"
+   },
+   {
+    "todo": "Commit every notes write in the notes repository",
+    "reply": "Here is how the module is laid out: hooks/ holds the engine code, tests/ the fixtures, README.md the docs. No code changed in this turn.",
+    "label": "not-mentioned"
+   },
+   {
+    "todo": "Rename the pane title to Todo",
+    "reply": "All set. The pane rename now works end to end; I checked it by running the plugin tests, and the new case fails on revert. One file touched, plus tests.",
+    "label": "finished"
+   },
+   {
+    "todo": "Rename the pane title to Todo",
+    "reply": "That's complete. The pane rename landed in the last commit, and the usual checks (validate, tsc, tests) are clean.",
+    "label": "finished"
+   },
+   {
+    "todo": "Rename the pane title to Todo",
+    "reply": "Got partway: the pane rename is half wired up. The data side works, the UI side is not hooked up yet. Continuing.",
+    "label": "started"
+   },
+   {
+    "todo": "Rename the pane title to Todo",
+    "reply": "I'm in the middle of the pane rename: the scaffolding is in, the behaviour is not yet. More to do.",
+    "label": "started"
+   },
+   {
+    "todo": "Rename the pane title to Todo",
+    "reply": "I decided against the pane rename. The existing behaviour already covers it, so adding it would only duplicate code.",
+    "label": "rejected"
+   },
+   {
+    "todo": "Rename the pane title to Todo",
+    "reply": "The pane rename is not something I can do safely here, so I'm leaving it undone and flagging it for you.",
+    "label": "rejected"
+   },
+   {
+    "todo": "Rename the pane title to Todo",
+    "reply": "On a separate note, the cost report is now in place and verified.",
+    "label": "not-mentioned"
+   },
+   {
+    "todo": "Rename the pane title to Todo",
+    "reply": "Here is how the module is laid out: hooks/ holds the engine code, tests/ the fixtures, README.md the docs. No code changed in this turn.",
+    "label": "not-mentioned"
+   },
+   {
+    "todo": "Keep the notes file name stamped with date and session id",
+    "reply": "All set. The file naming now works end to end; I checked it by running the plugin tests, and the new case fails on revert. One file touched, plus tests.",
+    "label": "finished"
+   },
+   {
+    "todo": "Keep the notes file name stamped with date and session id",
+    "reply": "That's complete. The file naming landed in the last commit, and the usual checks (validate, tsc, tests) are clean.",
+    "label": "finished"
+   },
+   {
+    "todo": "Keep the notes file name stamped with date and session id",
+    "reply": "Got partway: the file naming is half wired up. The data side works, the UI side is not hooked up yet. Continuing.",
+    "label": "started"
+   },
+   {
+    "todo": "Keep the notes file name stamped with date and session id",
+    "reply": "I'm in the middle of the file naming: the scaffolding is in, the behaviour is not yet. More to do.",
+    "label": "started"
+   },
+   {
+    "todo": "Keep the notes file name stamped with date and session id",
+    "reply": "I decided against the file naming. The existing behaviour already covers it, so adding it would only duplicate code.",
+    "label": "rejected"
+   },
+   {
+    "todo": "Keep the notes file name stamped with date and session id",
+    "reply": "The file naming is not something I can do safely here, so I'm leaving it undone and flagging it for you.",
+    "label": "rejected"
+   },
+   {
+    "todo": "Keep the notes file name stamped with date and session id",
+    "reply": "On a separate note, the per-turn todo context is now in place and verified.",
+    "label": "not-mentioned"
+   },
+   {
+    "todo": "Keep the notes file name stamped with date and session id",
+    "reply": "Here is how the module is laid out: hooks/ holds the engine code, tests/ the fixtures, README.md the docs. No code changed in this turn.",
+    "label": "not-mentioned"
+   },
+   {
+    "todo": "Handle a notes file with no Updates heading",
+    "reply": "All set. The missing-heading case now works end to end; I checked it by running the plugin tests, and the new case fails on revert. One file touched, plus tests.",
+    "label": "finished"
+   },
+   {
+    "todo": "Handle a notes file with no Updates heading",
+    "reply": "That's complete. The missing-heading case landed in the last commit, and the usual checks (validate, tsc, tests) are clean.",
+    "label": "finished"
+   },
+   {
+    "todo": "Handle a notes file with no Updates heading",
+    "reply": "Got partway: the missing-heading case is half wired up. The data side works, the UI side is not hooked up yet. Continuing.",
+    "label": "started"
+   },
+   {
+    "todo": "Handle a notes file with no Updates heading",
+    "reply": "I'm in the middle of the missing-heading case: the scaffolding is in, the behaviour is not yet. More to do.",
+    "label": "started"
+   },
+   {
+    "todo": "Handle a notes file with no Updates heading",
+    "reply": "I decided against the missing-heading case. The existing behaviour already covers it, so adding it would only duplicate code.",
+    "label": "rejected"
+   },
+   {
+    "todo": "Handle a notes file with no Updates heading",
+    "reply": "The missing-heading case is not something I can do safely here, so I'm leaving it undone and flagging it for you.",
+    "label": "rejected"
+   },
+   {
+    "todo": "Handle a notes file with no Updates heading",
+    "reply": "On a separate note, the history command is now in place and verified.",
+    "label": "not-mentioned"
+   },
+   {
+    "todo": "Handle a notes file with no Updates heading",
+    "reply": "Here is how the module is laid out: hooks/ holds the engine code, tests/ the fixtures, README.md the docs. No code changed in this turn.",
+    "label": "not-mentioned"
+   },
+   {
+    "todo": "Report the cost of one Jev call per turn end",
+    "reply": "All set. The cost report now works end to end; I checked it by running the plugin tests, and the new case fails on revert. One file touched, plus tests.",
+    "label": "finished"
+   },
+   {
+    "todo": "Report the cost of one Jev call per turn end",
+    "reply": "That's complete. The cost report landed in the last commit, and the usual checks (validate, tsc, tests) are clean.",
+    "label": "finished"
+   },
+   {
+    "todo": "Report the cost of one Jev call per turn end",
+    "reply": "Got partway: the cost report is half wired up. The data side works, the UI side is not hooked up yet. Continuing.",
+    "label": "started"
+   },
+   {
+    "todo": "Report the cost of one Jev call per turn end",
+    "reply": "I'm in the middle of the cost report: the scaffolding is in, the behaviour is not yet. More to do.",
+    "label": "started"
+   },
+   {
+    "todo": "Report the cost of one Jev call per turn end",
+    "reply": "I decided against the cost report. The existing behaviour already covers it, so adding it would only duplicate code.",
+    "label": "rejected"
+   },
+   {
+    "todo": "Report the cost of one Jev call per turn end",
+    "reply": "The cost report is not something I can do safely here, so I'm leaving it undone and flagging it for you.",
+    "label": "rejected"
+   },
+   {
+    "todo": "Report the cost of one Jev call per turn end",
+    "reply": "On a separate note, the notes folder guard is now in place and verified.",
+    "label": "not-mentioned"
+   },
+   {
+    "todo": "Report the cost of one Jev call per turn end",
+    "reply": "Here is how the module is laid out: hooks/ holds the engine code, tests/ the fixtures, README.md the docs. No code changed in this turn.",
+    "label": "not-mentioned"
+   },
+   {
+    "todo": "履歴コマンドを追加する",
+    "reply": "履歴コマンドの対応が済みました。動作を確認しています、問題ありません。",
+    "label": "finished"
+   },
+   {
+    "todo": "履歴コマンドを追加する",
+    "reply": "履歴コマンドを仕上げてコミットしました。",
+    "label": "finished"
+   },
+   {
+    "todo": "履歴コマンドを追加する",
+    "reply": "履歴コマンドを始めたところです。骨組みだけ入りました。",
+    "label": "started"
+   },
+   {
+    "todo": "履歴コマンドを追加する",
+    "reply": "履歴コマンドは作業の途中です。続けます。",
+    "label": "started"
+   },
+   {
+    "todo": "履歴コマンドを追加する",
+    "reply": "履歴コマンドは行わないと判断しました。既存の動作で足りるためです。",
+    "label": "rejected"
+   },
+   {
+    "todo": "履歴コマンドを追加する",
+    "reply": "履歴コマンドは安全にできないので、手を付けません。",
+    "label": "rejected"
+   },
+   {
+    "todo": "履歴コマンドを追加する",
+    "reply": "ところで、テストは終わっています。",
+    "label": "not-mentioned"
+   },
+   {
+    "todo": "履歴コマンドを追加する",
+    "reply": "構成を説明します。コードは変更していません。",
+    "label": "not-mentioned"
+   },
+   {
+    "todo": "テストを書く",
+    "reply": "テストの対応が済みました。動作を確認しています、問題ありません。",
+    "label": "finished"
+   },
+   {
+    "todo": "テストを書く",
+    "reply": "テストを仕上げてコミットしました。",
+    "label": "finished"
+   },
+   {
+    "todo": "テストを書く",
+    "reply": "テストを始めたところです。骨組みだけ入りました。",
+    "label": "started"
+   },
+   {
+    "todo": "テストを書く",
+    "reply": "テストは作業の途中です。続けます。",
+    "label": "started"
+   },
+   {
+    "todo": "テストを書く",
+    "reply": "テストは行わないと判断しました。既存の動作で足りるためです。",
+    "label": "rejected"
+   },
+   {
+    "todo": "テストを書く",
+    "reply": "テストは安全にできないので、手を付けません。",
+    "label": "rejected"
+   },
+   {
+    "todo": "テストを書く",
+    "reply": "ところで、README の更新は終わっています。",
+    "label": "not-mentioned"
+   },
+   {
+    "todo": "テストを書く",
+    "reply": "構成を説明します。コードは変更していません。",
+    "label": "not-mentioned"
+   },
+   {
+    "todo": "README を更新する",
+    "reply": "README の更新の対応が済みました。動作を確認しています、問題ありません。",
+    "label": "finished"
+   },
+   {
+    "todo": "README を更新する",
+    "reply": "README の更新を仕上げてコミットしました。",
+    "label": "finished"
+   },
+   {
+    "todo": "README を更新する",
+    "reply": "README の更新を始めたところです。骨組みだけ入りました。",
+    "label": "started"
+   },
+   {
+    "todo": "README を更新する",
+    "reply": "README の更新は作業の途中です。続けます。",
+    "label": "started"
+   },
+   {
+    "todo": "README を更新する",
+    "reply": "README の更新は行わないと判断しました。既存の動作で足りるためです。",
+    "label": "rejected"
+   },
+   {
+    "todo": "README を更新する",
+    "reply": "README の更新は安全にできないので、手を付けません。",
+    "label": "rejected"
+   },
+   {
+    "todo": "README を更新する",
+    "reply": "ところで、履歴コマンドは終わっています。",
+    "label": "not-mentioned"
+   },
+   {
+    "todo": "README を更新する",
+    "reply": "構成を説明します。コードは変更していません。",
+    "label": "not-mentioned"
+   }
+  ],
+  "lines": [
+   {
+    "text": "Inject the list into Claude's context each turn",
+    "task": 1
+   },
+   {
+    "text": "Add a history command to continue earlier notes",
+    "task": 1
+   },
+   {
+    "text": "Deny Claude's edits to the notes folder",
+    "task": 1
+   },
+   {
+    "text": "Commit every write in the notes repo",
+    "task": 1
+   },
+   {
+    "text": "The pane title should say Todo",
+    "task": 1
+   },
+   {
+    "text": "Handle a notes file that has no Updates heading",
+    "task": 1
+   },
+   {
+    "text": "Report the cost of the model call per turn",
+    "task": 1
+   },
+   {
+    "text": "Please keep the README next to the code",
+    "task": 1
+   },
+   {
+    "text": "Run the tests before you push",
+    "task": 1
+   },
+   {
+    "text": "Make clicking an item cycle its status",
+    "task": 1
+   },
+   {
+    "text": "Don't overwrite what I wrote by hand without logging it",
+    "task": 1
+   },
+   {
+    "text": "Stop the turn from waiting on the classifier",
+    "task": 1
+   },
+   {
+    "text": "Add more realistic fixtures and a held-out set",
+    "task": 1
+   },
+   {
+    "text": "Propose a safer confidence floor from the data",
+    "task": 1
+   },
+   {
+    "text": "Fix the crash when the file is empty",
+    "task": 1
+   },
+   {
+    "text": "履歴コマンドを追加してほしい",
+    "task": 1
+   },
+   {
+    "text": "テストを書いてください",
+    "task": 1
+   },
+   {
+    "text": "Update the PR body when the rules change",
+    "task": 1
+   },
+   {
+    "text": "The notes folder is a git repository.",
+    "task": 0
+   },
+   {
+    "text": "Jev is the decision model in firstmate.",
+    "task": 0
+   },
+   {
+    "text": "The first release was in October.",
+    "task": 0
+   },
+   {
+    "text": "Here is the list of statuses:",
+    "task": 0
+   },
+   {
+    "text": "I think the old design was fine.",
+    "task": 0
+   },
+   {
+    "text": "The weights are 322M parameters.",
+    "task": 0
+   },
+   {
+    "text": "Great, thanks for the update.",
+    "task": 0
+   },
+   {
+    "text": "Background: Laya was used in the other harness.",
+    "task": 0
+   },
+   {
+    "text": "The test suite has 68 tests.",
+    "task": 0
+   },
+   {
+    "text": "We are on macOS 15.",
+    "task": 0
+   },
+   {
+    "text": "That was the plan last week.",
+    "task": 0
+   },
+   {
+    "text": "The pane is drawn by the engine.",
+    "task": 0
+   },
+   {
+    "text": "It is a classifier, not a language model.",
+    "task": 0
+   },
+   {
+    "text": "Yesterday's run took two seconds.",
+    "task": 0
+   },
+   {
+    "text": "今日は雨です",
+    "task": 0
+   },
+   {
+    "text": "これは過去の経緯です",
+    "task": 0
+   },
+   {
+    "text": "The log lives in the notes folder.",
+    "task": 0
+   },
+   {
+    "text": "Notes are kept per session.",
+    "task": 0
+   },
+   {
+    "text": "The helper is a Python script.",
+    "task": 0
+   },
+   {
+    "text": "Both PRs are open.",
+    "task": 0
+   }
+  ]
+ }
+}

@@ -1,0 +1,189 @@
+{
+ "blind": {
+  "status": [
+   {
+    "todo": "Let the captain pin an item so Laya never moves it",
+    "reply": "Pinning is in. I added a pin marker, wired the click to it, and the guard in reconcile now skips pinned items. Ran the plugin tests: 71 pass.",
+    "label": "finished"
+   },
+   {
+    "todo": "Archive finished items after a day",
+    "reply": "The archive step is finished and merged into the branch; finished items older than a day now move out of the list. Tests cover it.",
+    "label": "finished"
+   },
+   {
+    "todo": "Show how many items are open in the status line",
+    "reply": "I began the open count: the status line call exists, but it still shows a placeholder, and I have not connected the count. Next I will read the list in the render hook.",
+    "label": "started"
+   },
+   {
+    "todo": "Sort the list by status",
+    "reply": "Sorting is underway. The comparator is written; wiring it into the render and tests is left.",
+    "label": "started"
+   },
+   {
+    "todo": "Export the todo list as a checklist in the PR body",
+    "reply": "I am not going to build the export. Your PR template already lists the checks, and a second list in the body would drift from it.",
+    "label": "rejected"
+   },
+   {
+    "todo": "日本語のラベルに対応する",
+    "reply": "Not doing the Japanese labels in this PR; the panel has no label strings to translate yet, so I dropped it from this branch.",
+    "label": "rejected"
+   },
+   {
+    "todo": "Let the captain pin an item so Laya never moves it",
+    "reply": "Quick status: CI is green on the branch and the review comments are answered. Nothing else changed this turn.",
+    "label": "not-mentioned"
+   },
+   {
+    "todo": "Let the captain pin an item so Laya never moves it",
+    "reply": "Here is the cost summary: one process per turn end, about 1.5 s wall, nothing blocks the turn. No code changed.",
+    "label": "not-mentioned"
+   },
+   {
+    "todo": "Archive finished items after a day",
+    "reply": "Quick status: CI is green on the branch and the review comments are answered. Nothing else changed this turn.",
+    "label": "not-mentioned"
+   },
+   {
+    "todo": "Archive finished items after a day",
+    "reply": "Here is the cost summary: one process per turn end, about 1.5 s wall, nothing blocks the turn. No code changed.",
+    "label": "not-mentioned"
+   },
+   {
+    "todo": "Show how many items are open in the status line",
+    "reply": "Quick status: CI is green on the branch and the review comments are answered. Nothing else changed this turn.",
+    "label": "not-mentioned"
+   },
+   {
+    "todo": "Sort the list by status",
+    "reply": "Here is the cost summary: one process per turn end, about 1.5 s wall, nothing blocks the turn. No code changed.",
+    "label": "not-mentioned"
+   },
+   {
+    "todo": "Export the todo list as a checklist in the PR body",
+    "reply": "Quick status: CI is green on the branch and the review comments are answered. Nothing else changed this turn.",
+    "label": "not-mentioned"
+   },
+   {
+    "todo": "日本語のラベルに対応する",
+    "reply": "Here is the cost summary: one process per turn end, about 1.5 s wall, nothing blocks the turn. No code changed.",
+    "label": "not-mentioned"
+   },
+   {
+    "todo": "Show how many items are open in the status line",
+    "reply": "Pinning is in. I added a pin marker, wired the click to it, and the guard in reconcile now skips pinned items. Ran the plugin tests: 71 pass.",
+    "label": "not-mentioned"
+   },
+   {
+    "todo": "Sort the list by status",
+    "reply": "I am not going to build the export. Your PR template already lists the checks, and a second list in the body would drift from it.",
+    "label": "not-mentioned"
+   },
+   {
+    "todo": "Let the captain pin an item so Laya never moves it",
+    "reply": "Sorting is underway. The comparator is written; wiring it into the render and tests is left.",
+    "label": "not-mentioned"
+   }
+  ],
+  "lines": [
+   {
+    "text": "Make the panel show which items Laya changed",
+    "task": 1
+   },
+   {
+    "text": "Please keep the log readable by a person",
+    "task": 1
+   },
+   {
+    "text": "The captain should be able to turn Laya off",
+    "task": 1
+   },
+   {
+    "text": "Ship the accuracy work as a separate PR",
+    "task": 1
+   },
+   {
+    "text": "Compare the two models on the same cases",
+    "task": 1
+   },
+   {
+    "text": "Avoid adding a dependency",
+    "task": 1
+   },
+   {
+    "text": "Cache the model between turns if latency matters",
+    "task": 1
+   },
+   {
+    "text": "日本語の返信にも対応してください",
+    "task": 1
+   },
+   {
+    "text": "Write the held-out set before tuning",
+    "task": 1
+   },
+   {
+    "text": "Tell me when the PR is mergeable",
+    "task": 1
+   },
+   {
+    "text": "Count how often Laya was wrong",
+    "task": 1
+   },
+   {
+    "text": "It needs a regression test",
+    "task": 1
+   },
+   {
+    "text": "The weights are cached in the hugging face folder.",
+    "task": 0
+   },
+   {
+    "text": "We discussed this on Friday and agreed to wait.",
+    "task": 0
+   },
+   {
+    "text": "PR 14 was the queue editor.",
+    "task": 0
+   },
+   {
+    "text": "It is slow on the first call.",
+    "task": 0
+   },
+   {
+    "text": "Nice work on the panel.",
+    "task": 0
+   },
+   {
+    "text": "The model is trained on classification tasks.",
+    "task": 0
+   },
+   {
+    "text": "My notes file has five sections.",
+    "task": 0
+   },
+   {
+    "text": "昨日の会議で決まりました",
+    "task": 0
+   },
+   {
+    "text": "That was the plan before the rename.",
+    "task": 0
+   },
+   {
+    "text": "Two workers touched this file.",
+    "task": 0
+   },
+   {
+    "text": "The statuses are the same as in the other PR.",
+    "task": 0
+   },
+   {
+    "text": "Laya returns a probability for every option.",
+    "task": 0
+   }
+  ]
+ }
+}

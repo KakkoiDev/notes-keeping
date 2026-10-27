@@ -4,8 +4,11 @@ export type Status = 'todo' | 'in-progress' | 'done' | 'declined'
 // label: the short name the model wrote for the item, shown in its place; the text stays whole beside it.
 export type Item = { status: Status; text: string; label?: string }
 export type Line = { item: Item } | { raw: string }
-export type Candidate = { text: string; isUpdate: boolean }
-export type Verdict = { label: string; p: number }
+// A candidate with isSure is an item as written (an update, a numbered objective); the others wait for Laya.
+export type Candidate = { text: string; isSure: boolean }
+// What Laya answered for one item and one reply: its top label and the probability of every option.
+export type Verdict = { label: string; p: number; probs: Record<string, number> }
+export type Decision = { status: Status; label: string; p: number }
 // What the todo list remembers between runs: candidate lines already judged, the status the AI last wrote
 // per item, the items whose status the captain set (by hand or click), which the log flags when Laya changes them,
 // the items a label was asked for, each asked once, and the status the bridge last reported per linked item.
@@ -15,8 +18,14 @@ export const STATUSES: readonly Status[] = ['todo', 'in-progress', 'done', 'decl
 export const EMPTY: Memory = { seen: [], ai: {}, pins: [], labeled: [], bridge: {} }
 // A line is dropped as background only when Laya is this sure it is not a task.
 export const BACKGROUND_FLOOR = 0.8
-// A status moves only when Laya is this sure of what the reply says.
-export const CHANGE_FLOOR = 0.6
+// A status moves when Laya, with the reply's cue added, reaches CHANGE_FLOOR on the option the cue names, or CUELESS_FLOOR
+// on any other option; a status the captain set by hand needs HAND_FLOOR. Laya alone is not calibrated: its confidence
+// did not rise with its precision.
+export const CHANGE_FLOOR = 0.5
+export const CUELESS_FLOOR = 0.9
+export const HAND_FLOOR = 0.9
+// How many nats a cue word in the reply adds to the option it names.
+const CUE_WEIGHT = 8
 
 const MARKS: Record<Status, string> = { todo: ' ', 'in-progress': '~', done: 'x', declined: '-' }
 const ITEM = /^\s*[-*]\s+\[([ ~xX-])\]\s+(\S.*?)\s*$/
@@ -29,6 +38,12 @@ const MAX_LABEL_WORDS = 6
 const RANK: Record<Status, number> = { todo: 0, 'in-progress': 1, done: 2, declined: 2 }
 // Laya's option names; its question says "refused or dropped" for rejected.
 const REPLY: Record<string, Status> = { started: 'in-progress', finished: 'done', rejected: 'declined' }
+// Checked in this order, so a refusal wins over a start and a start over a finish.
+const CUES: [string, RegExp][] = [
+  ['rejected', /\b(rejected|won't|will not|not (do|doing|build|building|write|writing|add|adding|worth|something)|(was|were|is|are|been|being|be|i|we|got|get) (\w+ )?skipp(ed|ing)|decided against|leav(e|ing) (it )?(out|undone|as it is)|leav(e|ing) .{0,30} out|out of scope|dropp(ed|ing)|refus\w+|declin\w+)\b|見送|やらない|行わない|手を付けません|範囲外|しません/i],
+  ['started', /\b(started|starting|begun|began|begin|beginning|working on|in progress|under ?way|partway|partly|half|in the middle|continu\w+|still|more (to do|remains|is open)|not (yet|drawn|hooked|connected|wired))\b|着手|始め|途中|進めて|半分/i],
+  ['finished', /\b(done|finish\w*|complete[d]?|implemented|landed|committed|fixed|verified|works|written|added|merged|in and)\b|完了|実装し|済み|仕上げ|通りました/i],
+]
 const STOP = new Set(['this', 'that', 'with', 'from', 'have', 'will', 'your', 'should', 'must', 'into', 'also', 'then', 'than', 'when', 'what', 'they', 'them', 'their', 'there', 'here', 'just', 'make', 'been', 'were', 'does', 'done'])
 
 export function keyOf(text: string): string {
@@ -97,16 +112,75 @@ function stripBullet(line: string): string {
   return line.replace(/^\s*(?:[-*]|\d+[.)])\s+/, '').trim()
 }
 
-// Each [UPDATE] block is one candidate: its first line of text. Text before the first tag is a block too.
-function updateBlocks(updates: string): string[] {
-  const blocks: string[][] = [[]]
-  for (const line of updates.split('\n')) {
-    if (UPDATE_TAG.test(line.trim())) blocks.push([])
-    else blocks[blocks.length - 1]?.push(line)
+const NUMBERED = /^\s*\d+[.)]\s+/
+const BULLET = /^\s*[-*]\s+/
+const LINK = /^\s*https?:\/\//
+const SENTENCE_END = /[.!?:。！？]$/
+// A one-line "Name: value" label at the top of an update, not a task.
+const LABEL = /^\w+(?: \w+)?: \S+$/
+
+function isDetail(line: string): boolean {
+  return BULLET.test(line) || NUMBERED.test(line) || LINK.test(line)
+}
+
+function unquote(text: string): string {
+  return text.replace(/^["'“「](.*)["'”」]$/, '$1')
+}
+
+// The first sentence of a block: its first line plus the wrapped lines under it, which carry on in lower case or digits
+// until a line ends a sentence. Bullets, numbers and links under it are details, not part of it.
+function head(lines: readonly string[]): string {
+  let out = stripBullet(lines[0] ?? '')
+  for (const next of lines.slice(1)) {
+    if (SENTENCE_END.test(out) || isDetail(next) || !/^[a-z0-9]/.test(next.trim())) break
+    out = `${out} ${next.trim()}`
   }
-  return blocks.flatMap(block => {
-    const first = block.map(stripBullet).find(line => line !== '')
-    return first === undefined ? [] : [first]
+  return unquote(out)
+}
+
+type Block = { isNumbered: boolean; lines: string[] }
+
+// A numbered line opens a block that runs to the next numbered line, blank lines and bullets inside it; outside one, a
+// blank line ends a paragraph.
+function blocks(text: string): Block[] {
+  const out: Block[] = []
+  let isAfterBlank = false
+  for (const line of text.split('\n')) {
+    if (line.trim() === '') {
+      isAfterBlank = true
+      continue
+    }
+    const last = out[out.length - 1]
+    if (NUMBERED.test(line)) out.push({ isNumbered: true, lines: [line] })
+    else if (last === undefined || (isAfterBlank && !last.isNumbered)) out.push({ isNumbered: false, lines: [line] })
+    else last.lines.push(line)
+    isAfterBlank = false
+  }
+  return out
+}
+
+// A paragraph of bullets is a list of items; a paragraph that opens with text and then lists is one item, its bullets details.
+function objectiveHeads(block: Block): string[] {
+  if (block.isNumbered || !BULLET.test(block.lines[0] ?? '')) return [head(block.lines)]
+  const lists: string[][] = []
+  for (const line of block.lines) {
+    if (BULLET.test(line)) lists.push([line])
+    else lists[lists.length - 1]?.push(line)
+  }
+  return lists.map(head)
+}
+
+// Each [UPDATE] block is one candidate: its first line of text, past a "Project: x" label. Text before the first tag is a block too.
+function updateBlocks(updates: string): string[] {
+  const parts: string[][] = [[]]
+  for (const line of updates.split('\n')) {
+    if (UPDATE_TAG.test(line.trim())) parts.push([])
+    else parts[parts.length - 1]?.push(line)
+  }
+  return parts.flatMap(part => {
+    const lines = part.filter(line => line.trim() !== '')
+    const at = lines.findIndex(line => !LABEL.test(stripBullet(line)))
+    return at < 0 ? [] : [head(lines.slice(at))]
   })
 }
 
@@ -132,28 +206,60 @@ export function cleanLabel(reply: string): string | undefined {
   return bare.split(/\s+/).length > MAX_LABEL_WORDS ? undefined : bare
 }
 
-// The objectives' lines, minus list introductions ending in a colon and headings, then the updates.
+// Numbered objectives and updates are items as written; any other objective paragraph or bullet waits for Laya, unless it
+// introduces a list (ends in a colon), is a heading or is a single word.
 export function candidates(s: Pick<Sections, 'objectives' | 'updates'>): Candidate[] {
-  const lines = s.objectives
-    .split('\n')
-    .map(stripBullet)
-    .filter(line => line !== '' && !line.endsWith(':') && !line.startsWith('#') && isPhrase(line))
-    .map(text => ({ text: oneLine(text), isUpdate: false }))
-  const updates = updateBlocks(s.updates).map(text => ({ text: oneLine(text), isUpdate: true }))
-  return [...lines, ...updates]
+  const goals = blocks(s.objectives).flatMap(block =>
+    objectiveHeads(block).flatMap(text => {
+      const clean = block.isNumbered ? text.replace(/:$/, '') : text
+      if (clean === '' || text.startsWith('#') || !isPhrase(clean) || (!block.isNumbered && text.endsWith(':'))) return []
+      return [{ text: oneLine(clean), isSure: block.isNumbered }]
+    }),
+  )
+  const updates = updateBlocks(s.updates).map(text => ({ text: oneLine(text), isSure: true }))
+  return [...goals, ...updates]
 }
+
+const stem = (word: string): string => word.replace(/(ing|ed|es|s)$/, '').replace(/y$/, 'i')
 
 function tokens(text: string): Set<string> {
   const lower = text.toLowerCase()
-  const words = (lower.match(/[a-z0-9][a-z0-9-]{3,}/g) ?? []).filter(word => !STOP.has(word))
+  const words = (lower.match(/[a-z0-9]+/g) ?? []).filter(word => word.length >= 4 && !STOP.has(word)).map(stem)
   const bigrams = (lower.match(/[぀-ヿ㐀-鿿]{2,}/g) ?? []).flatMap(run => Array.from({ length: run.length - 1 }, (_, i) => run.slice(i, i + 2)))
   return new Set([...words, ...bigrams])
 }
 
-// Laya answers with confidence on any pair, related or not: a reply must share a word with the item to move it.
-export function mentions(item: string, answer: string): boolean {
-  const reply = tokens(answer)
-  return [...tokens(item)].some(token => reply.has(token))
+const same = (a: string, b: string): boolean => a === b || (Math.min(a.length, b.length) >= 3 && (a.startsWith(b) || b.startsWith(a)))
+const shares = (words: Iterable<string>, reply: ReadonlySet<string>): boolean => [...words].some(word => [...reply].some(other => same(word, other)))
+
+// Items of one list share domain words ("notes", "pane"); a reply must share a word only this item has to move it.
+// An item with no word of its own falls back to all its words. Words match by stem and by prefix.
+export function mentions(item: string, answer: string, siblings: readonly string[] = []): boolean {
+  const all = tokens(item)
+  const others = [...new Set(siblings.filter(text => text !== item).flatMap(text => [...tokens(text)]))]
+  const own = [...all].filter(token => !others.some(other => same(token, other)))
+  return shares(own.length === 0 ? all : own, tokens(answer))
+}
+
+// The cue the reply gives for this item, read only from the sentences about it and the ones that carry on from them,
+// with the item's own words removed so that "skipped-move counter" does not read as a refusal.
+function cueFor(item: string, answer: string, siblings: readonly string[]): string | undefined {
+  const sentences = answer.split(/(?<=[.!?。！？])\s+|\n+|;\s+/).filter(s => s.trim() !== '')
+  const about = sentences.map(s => mentions(item, s, siblings))
+  const other = sentences.map(s => siblings.some(text => text !== item && mentions(text, s, siblings)))
+  const own = tokens(item)
+  const text = sentences
+    .filter((_, i) => about[i] || (i > 0 && about[i - 1] && !other[i]))
+    .map(s => (s.match(/[\p{L}\p{N}_']+/gu) ?? []).filter(word => ![...own].some(token => same(stem(word.toLowerCase()), token))).join(' '))
+    .join(' ')
+  return CUES.find(([, rx]) => rx.test(text))?.[0]
+}
+
+// Laya's probabilities with the option the cue names raised, as a distribution over the options.
+function posterior(probs: Record<string, number>, cue: string | undefined): Record<string, number> {
+  const scores = Object.entries(probs).map(([label, p]) => [label, Math.log(Math.max(p, 1e-4)) + (label === cue ? CUE_WEIGHT : 0)] as const)
+  const total = scores.reduce((sum, [, score]) => sum + Math.exp(score), 0)
+  return Object.fromEntries(scores.map(([label, score]) => [label, Math.exp(score) / total]))
 }
 
 export function isBackground(pTask: number): boolean {
@@ -161,11 +267,16 @@ export function isBackground(pTask: number): boolean {
 }
 
 // The status a reply moves an item to, or undefined to leave it. Statuses only move forward.
-export function moved(item: Item, answer: string, verdict: Verdict | undefined): Status | undefined {
-  if (verdict === undefined || verdict.p < CHANGE_FLOOR) return undefined
-  const next = REPLY[verdict.label]
-  if (next === undefined || RANK[next] <= RANK[item.status] || !mentions(item.text, answer)) return undefined
-  return next
+export function moved(item: Item, answer: string, verdict: Verdict | undefined, siblings: readonly string[] = [], isHandSet = false): Decision | undefined {
+  if (verdict === undefined || !mentions(item.text, answer, siblings)) return undefined
+  const cue = cueFor(item.text, answer, siblings)
+  const odds = posterior(verdict.probs, cue)
+  const label = Object.keys(odds).reduce((best, key) => ((odds[key] ?? 0) > (odds[best] ?? 0) ? key : best))
+  const next = REPLY[label]
+  const p = odds[label] ?? 0
+  const floor = Math.max(label === cue ? CHANGE_FLOOR : CUELESS_FLOOR, isHandSet ? HAND_FLOOR : 0)
+  if (next === undefined || RANK[next] <= RANK[item.status] || p < floor) return undefined
+  return { status: next, label, p }
 }
 
 // Pins every item whose status is not the one the AI last wrote, and forgets items that left the list.

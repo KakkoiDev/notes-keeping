@@ -1,0 +1,207 @@
+{
+ "heldout3": {
+  "status": [
+   {
+    "todo": "Add a button to clear all declined items",
+    "reply": "The clear-declined button is in; clicking it removes every declined line. Covered by a test.",
+    "label": "finished"
+   },
+   {
+    "todo": "Add a button to clear all declined items",
+    "reply": "Clear-declined is partly there: the button renders, the removal is not wired.",
+    "label": "started"
+   },
+   {
+    "todo": "Add a button to clear all declined items",
+    "reply": "I'm not adding the clear-declined button; deleting a line by hand already does that.",
+    "label": "rejected"
+   },
+   {
+    "todo": "Add a button to clear all declined items",
+    "reply": "The status marker for declined items now renders as [-].",
+    "label": "not-mentioned"
+   },
+   {
+    "todo": "Add a button to clear all declined items",
+    "reply": "I pushed the branch.",
+    "label": "not-mentioned"
+   },
+   {
+    "todo": "Warn when the notes folder has a remote",
+    "reply": "The remote warning is done: adding a remote makes the next write toast a notice, verified by test.",
+    "label": "finished"
+   },
+   {
+    "todo": "Warn when the notes folder has a remote",
+    "reply": "Remote warning in progress. The check for a remote exists; the toast is not shown yet.",
+    "label": "started"
+   },
+   {
+    "todo": "Warn when the notes folder has a remote",
+    "reply": "No remote warning from me: you said the folder is yours to manage.",
+    "label": "rejected"
+   },
+   {
+    "todo": "Warn when the notes folder has a remote",
+    "reply": "The notes folder is committed after every write.",
+    "label": "not-mentioned"
+   },
+   {
+    "todo": "Warn when the notes folder has a remote",
+    "reply": "Reading the plugin docs again, nothing changed.",
+    "label": "not-mentioned"
+   },
+   {
+    "todo": "Truncate long replies before sending them to Laya",
+    "reply": "Reply truncation is finished. Replies over 4000 characters are cut before the call, and a test covers the edge.",
+    "label": "finished"
+   },
+   {
+    "todo": "Truncate long replies before sending them to Laya",
+    "reply": "I have started on truncating replies: a constant is defined, the cut is not applied.",
+    "label": "started"
+   },
+   {
+    "todo": "Truncate long replies before sending them to Laya",
+    "reply": "Truncating replies is not worth it, a long reply costs little to score.",
+    "label": "rejected"
+   },
+   {
+    "todo": "Truncate long replies before sending them to Laya",
+    "reply": "Replies are now read once per turn instead of once per item.",
+    "label": "not-mentioned"
+   },
+   {
+    "todo": "Truncate long replies before sending them to Laya",
+    "reply": "The cost note in the README was reworded.",
+    "label": "not-mentioned"
+   },
+   {
+    "todo": "Show the last Laya error in the pane",
+    "reply": "The last error is shown at the bottom of the pane now. Done and tested.",
+    "label": "finished"
+   },
+   {
+    "todo": "Show the last Laya error in the pane",
+    "reply": "Showing the last error is underway; the message is stored but the pane does not draw it.",
+    "label": "started"
+   },
+   {
+    "todo": "Show the last Laya error in the pane",
+    "reply": "I decided to leave the last-error display out; toasts already show it.",
+    "label": "rejected"
+   },
+   {
+    "todo": "Show the last Laya error in the pane",
+    "reply": "A failed call now toasts once per failure.",
+    "label": "not-mentioned"
+   },
+   {
+    "todo": "Show the last Laya error in the pane",
+    "reply": "Rebased on master, no conflicts.",
+    "label": "not-mentioned"
+   },
+   {
+    "todo": "Make item text editable from the pane",
+    "reply": "Editing item text in the pane is complete: Enter saves the new text into the file.",
+    "label": "finished"
+   },
+   {
+    "todo": "Make item text editable from the pane",
+    "reply": "Item editing is half built: the input opens, saving is not hooked up.",
+    "label": "started"
+   },
+   {
+    "todo": "Make item text editable from the pane",
+    "reply": "I won't build item editing, since the md file is meant to be edited by hand.",
+    "label": "rejected"
+   },
+   {
+    "todo": "Make item text editable from the pane",
+    "reply": "Clicking an item still cycles its status.",
+    "label": "not-mentioned"
+   },
+   {
+    "todo": "Make item text editable from the pane",
+    "reply": "All 80 tests pass.",
+    "label": "not-mentioned"
+   },
+   {
+    "todo": "Keep a count of moves Laya declined to make",
+    "reply": "The skipped-move counter is finished and shows in the log.",
+    "label": "finished"
+   },
+   {
+    "todo": "Keep a count of moves Laya declined to make",
+    "reply": "The counter for skipped moves is begun; I added the field but nothing increments it.",
+    "label": "started"
+   },
+   {
+    "todo": "Keep a count of moves Laya declined to make",
+    "reply": "I'm skipping the skipped-move counter. Nothing would read it.",
+    "label": "rejected"
+   },
+   {
+    "todo": "Keep a count of moves Laya declined to make",
+    "reply": "Moves that Laya makes are logged with their probability.",
+    "label": "not-mentioned"
+   },
+   {
+    "todo": "Keep a count of moves Laya declined to make",
+    "reply": "Nothing else to report.",
+    "label": "not-mentioned"
+   },
+   {
+    "todo": "日本語の返信にも対応する",
+    "reply": "日本語の返信への対応が完了しました。テストも通ります。",
+    "label": "finished"
+   },
+   {
+    "todo": "日本語の返信にも対応する",
+    "reply": "日本語の返信への対応に着手しました。まだ途中です。",
+    "label": "started"
+   },
+   {
+    "todo": "日本語の返信にも対応する",
+    "reply": "日本語の返信への対応は見送ります。範囲外のためです。",
+    "label": "rejected"
+   },
+   {
+    "todo": "日本語の返信にも対応する",
+    "reply": "英語の返信の判定は終わっています。",
+    "label": "not-mentioned"
+   },
+   {
+    "todo": "日本語の返信にも対応する",
+    "reply": "変更はありません。",
+    "label": "not-mentioned"
+   },
+   {
+    "todo": "Release notes for the todo list feature",
+    "reply": "The release notes are written and committed with the PR.",
+    "label": "finished"
+   },
+   {
+    "todo": "Release notes for the todo list feature",
+    "reply": "Release notes are in progress; I have the outline and not the text.",
+    "label": "started"
+   },
+   {
+    "todo": "Release notes for the todo list feature",
+    "reply": "Release notes will not be written, the PR body covers them.",
+    "label": "rejected"
+   },
+   {
+    "todo": "Release notes for the todo list feature",
+    "reply": "The PR body was updated with the measured numbers.",
+    "label": "not-mentioned"
+   },
+   {
+    "todo": "Release notes for the todo list feature",
+    "reply": "Pushed.",
+    "label": "not-mentioned"
+   }
+  ],
+  "lines": []
+ }
+}

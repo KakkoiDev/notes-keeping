@@ -900,7 +900,7 @@ const CAPTAIN_NOTES = [
   '# Objectives',
   '',
   'I want a todo list kept by the plugin',
-  'An objective can be of status:',
+  '',
   '- to-do: not started yet',
   '- ongoing: being worked on',
   '',
@@ -921,11 +921,18 @@ function complete($: Engine, answer: string) {
   return $.turn.complete({ answer, durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer' })
 }
 
+// The top label at p, the other options sharing the rest.
+function verdict(said: { label: string; p: number }) {
+  const labels = ['not-mentioned', 'started', 'finished', 'rejected']
+  const rest = (1 - said.p) / (labels.length - 1)
+  return { ...said, probs: Object.fromEntries(labels.map(label => [label, label === said.label ? said.p : rest])) }
+}
+
 // Laya reads an objective line as a task, as background for the to-do line and unsure for the ongoing one; replies are read by the table.
 function fakeLaya(replies: Record<string, { label: string; p: number }> = {}) {
   laya.answer = ask => ({
     lines: Object.fromEntries(ask.lines.map(line => [line.id, line.text.startsWith('to-do') ? 0.05 : line.text.startsWith('ongoing') ? 0.5 : 0.95])),
-    statuses: Object.fromEntries(ask.statuses.map(status => [status.id, replies[status.id] ?? { label: 'not-mentioned', p: 0.9 }])),
+    statuses: Object.fromEntries(ask.statuses.map(status => [status.id, verdict(replies[status.id] ?? { label: 'not-mentioned', p: 0.9 })])),
     predictMs: 1,
   })
 }
@@ -1011,13 +1018,13 @@ test('at the end of a turn Laya reads the reply: a reply that names an item and 
 
 const LOG = `${DIR}/todo-changes.log`
 
-test('Laya also updates a status the captain set by hand, above the same floor, and each change is logged', async ($, on) => {
+test('Laya also updates a status the captain set by hand, above a higher floor, and each change is logged', async ($, on) => {
   const fs: Fs = { [BOUND]: setTodoFile('- [ ] Add a ctrl+q toggle\n- [ ] Write the docs\n- [ ] Rename the pane\n- [x] Fix the flicker'), [PYTHON]: '' }
   const { git } = engine(on, fs, { ...SESSION_BOUND })
   fakeLaya({
-    'add a ctrl+q toggle': { label: 'finished', p: 0.9 },
-    'write the docs': { label: 'finished', p: 0.9 },
-    'rename the pane': { label: 'finished', p: 0.5 },
+    'add a ctrl+q toggle': { label: 'finished', p: 0.96 },
+    'write the docs': { label: 'finished', p: 0.97 },
+    'rename the pane': { label: 'finished', p: 0.89 },
     'fix the flicker': { label: 'rejected', p: 0.95 },
   })
   await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: false })
@@ -1027,15 +1034,15 @@ test('Laya also updates a status the captain set by hand, above the same floor, 
   await flush()
   // The captain sets two by hand; Laya reads the next reply.
   fs[BOUND] = (fs[BOUND] ?? '').replace('- [ ] Write the docs', '- [~] Write the docs').replace('- [ ] Rename the pane', '- [~] Rename the pane')
-  await complete($, 'The ctrl+q toggle, the docs, the pane rename and the flicker fix are all finished.')
+  await complete($, 'The ctrl+q toggle, the docs, the pane rename and the flicker fix were reworked.')
   await flush()
   expect(fs[BOUND]).toContain('- [x] Add a ctrl+q toggle\n- [x] Write the docs\n- [~] Rename the pane\n- [x] Fix the flicker')
   expect(laya.asks.at(-1)?.statuses.map(status => status.id)).toEqual(expect.arrayContaining(['add a ctrl+q toggle', 'write the docs', 'rename the pane']))
   expect(laya.asks.at(-1)?.statuses.map(status => status.id)).not.toContain('fix the flicker')
   expect(fs[LOG]).toBe(
     [
-      `2026-10-26-10-58 ${BOUND.split('/').pop()} | Add a ctrl+q toggle | todo -> done | laya finished 0.90`,
-      `2026-10-26-10-58 ${BOUND.split('/').pop()} | Write the docs | in-progress -> done | laya finished 0.90 | replaced a hand-set status`,
+      `2026-10-26-10-58 ${BOUND.split('/').pop()} | Add a ctrl+q toggle | todo -> done | laya finished 0.96`,
+      `2026-10-26-10-58 ${BOUND.split('/').pop()} | Write the docs | in-progress -> done | laya finished 0.97 | replaced a hand-set status`,
       '',
     ].join('\n'),
   )
@@ -1091,7 +1098,7 @@ test('every prompt carries the todo list; a prompt that carries the whole file d
 test('a click on a todo item in the notes pane sets the next status and writes the file; Laya may change it afterwards, logged as hand-set', async ($, on) => {
   const fs: Fs = { [BOUND]: setTodoFile('- [ ] Add a ctrl+q toggle'), [PYTHON]: '' }
   const { git } = engine(on, fs, { ...SESSION_BOUND })
-  fakeLaya({ 'add a ctrl+q toggle': { label: 'finished', p: 0.9 } })
+  fakeLaya({ 'add a ctrl+q toggle': { label: 'finished', p: 0.96 } })
   await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: false })
   await flush()
   laya.asks.length = 0
@@ -1109,10 +1116,10 @@ test('a click on a todo item in the notes pane sets the next status and writes t
   expect(commits(git).filter(subject => subject.startsWith('todo:'))).toHaveLength(launched + 4)
 
   // Clicked back to todo, it is the captain's; a sure reply that names it still moves it, and the log says so.
-  await complete($, 'The ctrl+q toggle works.')
+  await complete($, 'The ctrl+q toggle was reworked.')
   await flush()
   expect(fs[BOUND]).toContain('- [x] Add a ctrl+q toggle')
-  expect(fs[LOG]).toContain('| Add a ctrl+q toggle | todo -> done | laya finished 0.90 | replaced a hand-set status')
+  expect(fs[LOG]).toContain('| Add a ctrl+q toggle | todo -> done | laya finished 0.96 | replaced a hand-set status')
   await pane.unmount()
 })
 

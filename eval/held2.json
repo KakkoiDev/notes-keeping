@@ -1,0 +1,207 @@
+{
+ "heldout2": {
+  "status": [
+   {
+    "todo": "Show a count of open items in the pane header",
+    "reply": "The header count is done: the pane header shows 3 open and the render test passes.",
+    "label": "finished"
+   },
+   {
+    "todo": "Show a count of open items in the pane header",
+    "reply": "I've begun the header count; the number is computed but not drawn yet.",
+    "label": "started"
+   },
+   {
+    "todo": "Show a count of open items in the pane header",
+    "reply": "I decided against the header count, the pane title is already crowded.",
+    "label": "rejected"
+   },
+   {
+    "todo": "Show a count of open items in the pane header",
+    "reply": "The pane header was restyled and the plugin tests pass.",
+    "label": "not-mentioned"
+   },
+   {
+    "todo": "Show a count of open items in the pane header",
+    "reply": "Docs updated and the branch pushed.",
+    "label": "not-mentioned"
+   },
+   {
+    "todo": "Skip objective lines that are links only",
+    "reply": "Link-only filtering landed: a line that is just a URL is no longer a candidate. Tested.",
+    "label": "finished"
+   },
+   {
+    "todo": "Skip objective lines that are links only",
+    "reply": "Link-only filtering is half done: the regex exists, the candidate filter does not use it yet.",
+    "label": "started"
+   },
+   {
+    "todo": "Skip objective lines that are links only",
+    "reply": "Not doing link-only filtering; a link on its own can be a task and Laya already judges it.",
+    "label": "rejected"
+   },
+   {
+    "todo": "Skip objective lines that are links only",
+    "reply": "Objective lines are now joined across wraps and tested.",
+    "label": "not-mentioned"
+   },
+   {
+    "todo": "Skip objective lines that are links only",
+    "reply": "The queue editor still works as before.",
+    "label": "not-mentioned"
+   },
+   {
+    "todo": "Log every Laya call with its latency",
+    "reply": "Latency logging is complete; each call appends its milliseconds to the usage log.",
+    "label": "finished"
+   },
+   {
+    "todo": "Log every Laya call with its latency",
+    "reply": "I'm adding latency logging: the timer wraps the call, the log line is still missing.",
+    "label": "started"
+   },
+   {
+    "todo": "Log every Laya call with its latency",
+    "reply": "I will not add latency logging, the helper already reports it in its output.",
+    "label": "rejected"
+   },
+   {
+    "todo": "Log every Laya call with its latency",
+    "reply": "The usage log format was changed to JSON lines.",
+    "label": "not-mentioned"
+   },
+   {
+    "todo": "Log every Laya call with its latency",
+    "reply": "Reviewed the README wording, no code change.",
+    "label": "not-mentioned"
+   },
+   {
+    "todo": "Let the captain turn the todo list off",
+    "reply": "The off switch is in and works: setting the env var stops every todo run.",
+    "label": "finished"
+   },
+   {
+    "todo": "Let the captain turn the todo list off",
+    "reply": "Working on the off switch: the flag is read but the runs do not check it yet.",
+    "label": "started"
+   },
+   {
+    "todo": "Let the captain turn the todo list off",
+    "reply": "The off switch is not something I'll build; the plugin can be disabled in settings.",
+    "label": "rejected"
+   },
+   {
+    "todo": "Let the captain turn the todo list off",
+    "reply": "Todo runs now skip when no notes file is bound.",
+    "label": "not-mentioned"
+   },
+   {
+    "todo": "Let the captain turn the todo list off",
+    "reply": "Tests are green, 80 pass.",
+    "label": "not-mentioned"
+   },
+   {
+    "todo": "Remove items whose text was deleted from the notes file",
+    "reply": "Cleanup of deleted items is finished: removing a line drops its memory too.",
+    "label": "finished"
+   },
+   {
+    "todo": "Remove items whose text was deleted from the notes file",
+    "reply": "Cleanup of deleted items is underway; the memory pass is written, the removal is not.",
+    "label": "started"
+   },
+   {
+    "todo": "Remove items whose text was deleted from the notes file",
+    "reply": "I dropped the cleanup of deleted items: deleted lines should stay remembered so they are never re-added.",
+    "label": "rejected"
+   },
+   {
+    "todo": "Remove items whose text was deleted from the notes file",
+    "reply": "Items remembered in memory are now keyed by lowercase text.",
+    "label": "not-mentioned"
+   },
+   {
+    "todo": "Remove items whose text was deleted from the notes file",
+    "reply": "One more pass on the README, nothing else.",
+    "label": "not-mentioned"
+   },
+   {
+    "todo": "Support a priority marker on an item",
+    "reply": "Priorities are done: a ! prefix marks an item and the pane sorts it first.",
+    "label": "finished"
+   },
+   {
+    "todo": "Support a priority marker on an item",
+    "reply": "Priorities are started: the marker parses, sorting is next.",
+    "label": "started"
+   },
+   {
+    "todo": "Support a priority marker on an item",
+    "reply": "Priorities are rejected for now, the list is short enough without them.",
+    "label": "rejected"
+   },
+   {
+    "todo": "Support a priority marker on an item",
+    "reply": "The pane now sorts done items last.",
+    "label": "not-mentioned"
+   },
+   {
+    "todo": "Support a priority marker on an item",
+    "reply": "The branch is rebased and pushed.",
+    "label": "not-mentioned"
+   },
+   {
+    "todo": "Write the evaluation fixtures to the repo",
+    "reply": "The fixtures are written and committed under eval/.",
+    "label": "finished"
+   },
+   {
+    "todo": "Write the evaluation fixtures to the repo",
+    "reply": "The fixtures are in progress: the tune set exists, the held-out set does not.",
+    "label": "started"
+   },
+   {
+    "todo": "Write the evaluation fixtures to the repo",
+    "reply": "I'm not writing the fixtures to the repo; they stay in the data folder.",
+    "label": "rejected"
+   },
+   {
+    "todo": "Write the evaluation fixtures to the repo",
+    "reply": "The evaluation script reports precision per threshold.",
+    "label": "not-mentioned"
+   },
+   {
+    "todo": "Write the evaluation fixtures to the repo",
+    "reply": "Latency numbers measured again: 1.5 s.",
+    "label": "not-mentioned"
+   },
+   {
+    "todo": "Keep done items out of the prompt context",
+    "reply": "Trimming done items from the context is complete; the prompt shows open ones only.",
+    "label": "finished"
+   },
+   {
+    "todo": "Keep done items out of the prompt context",
+    "reply": "Trimming done items from the context is under way, the filter is written but untested.",
+    "label": "started"
+   },
+   {
+    "todo": "Keep done items out of the prompt context",
+    "reply": "Declined: trimming done items would hide what was finished, so I left the context as it is.",
+    "label": "rejected"
+   },
+   {
+    "todo": "Keep done items out of the prompt context",
+    "reply": "The prompt context now names the in-progress item first.",
+    "label": "not-mentioned"
+   },
+   {
+    "todo": "Keep done items out of the prompt context",
+    "reply": "The panel hint text was corrected.",
+    "label": "not-mentioned"
+   }
+  ],
+  "lines": []
+ }
+}

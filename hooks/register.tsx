@@ -314,7 +314,7 @@ async function runTodo($: EngineInterface, answer: string): Promise<void> {
   const have = new Set(list.map(item => keyOf(item.text)))
   const isHad = (text: string) => keysOf(text).some(key => have.has(key))
   const fresh = candidates(s).filter(c => !keysOf(c.text).some(key => memory.seen.includes(key)))
-  const lines = fresh.filter(c => !c.isUpdate && !isHad(c.text)).map(c => ({ id: keyOf(c.text), text: c.text }))
+  const lines = fresh.filter(c => !c.isSure && !isHad(c.text)).map(c => ({ id: keyOf(c.text), text: c.text }))
   // A linked item's status follows its firstmate task; Laya is not asked about it.
   const open = list.filter(item => (item.status === 'todo' || item.status === 'in-progress') && links[keyOf(item.text)] === undefined)
   const statuses = answer.trim() === '' ? [] : open.map(item => ({ id: keyOf(item.text), text: item.text }))
@@ -323,7 +323,7 @@ async function runTodo($: EngineInterface, answer: string): Promise<void> {
   const seen: string[] = []
   for (const c of fresh) {
     const key = keyOf(c.text)
-    if (isHad(c.text) || c.isUpdate) {
+    if (isHad(c.text) || c.isSure) {
       seen.push(key)
       if (!isHad(c.text)) add.push({ status: 'todo', text: c.text })
       continue
@@ -334,9 +334,15 @@ async function runTodo($: EngineInterface, answer: string): Promise<void> {
     if (!isBackground(p)) add.push({ status: 'todo', text: c.text })
   }
   const set: Record<string, Move> = {}
+  const decided: Record<string, Verdict> = {}
+  const siblings = list.map(item => item.text)
   for (const item of statuses.length === 0 ? [] : open) {
-    const next = moved(item, answer, laya?.statuses[keyOf(item.text)])
-    if (next !== undefined) set[keyOf(item.text)] = { from: item.status, to: next }
+    const key = keyOf(item.text)
+    const verdict = laya?.statuses[key]
+    const next = moved(item, answer, verdict, siblings, memory.pins.includes(key))
+    if (next === undefined || verdict === undefined) continue
+    set[key] = { from: item.status, to: next.status }
+    decided[key] = { ...verdict, label: next.label, p: next.p }
   }
   const reported: Record<string, Status> = {}
   for (const [key, link] of Object.entries(links)) if (link.status !== undefined) reported[key] = link.status
@@ -355,7 +361,7 @@ async function runTodo($: EngineInterface, answer: string): Promise<void> {
     await $.store.set(memoryKey(path), out.memory)
     const changes = bridge === undefined ? [] : await snapshot($, path, items(body), items(out.body))
     if (out.body === format(parse(body))) return { said: [], changes }
-    if (out.applied.length > 0) await logMoves($, path, out.applied, laya?.statuses ?? {}, links)
+    if (out.applied.length > 0) await logMoves($, path, out.applied, decided, links)
     return { said: await save($, path, setTodo(latest, out.body), 'todo'), changes }
   })
   warn($, told('', said))

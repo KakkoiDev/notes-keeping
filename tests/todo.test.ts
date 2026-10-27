@@ -49,6 +49,78 @@ const CAPTAIN = [
   '',
 ].join('\n')
 
+// The captain's real file shape (numbered objectives with wrapped lines, links and bullets under them; updates with a label
+// line, nested bullets and a quoted line), with other words.
+const REAL_NOTES = [
+  '# Initial Prompt',
+  '',
+  '# Objectives',
+  '',
+  'All workers died during the weekend.',
+  '',
+  '1. Make sure the following prs are reviewed with /review (with diagrams):',
+  '- https://example.com/pull/1',
+  '- https://example.com/pull/2',
+  'And update the status of the associated tasks. I need to show progress to the manager.',
+  '',
+  '2. Fix the bleeding between chats and remake the example video. And make me a manual testing guide.',
+  'ex: thinking 15!= seen in chat B, this is wrong on 2 points: never asked for that calculation and should not be',
+  'seen in chat A and chat B.',
+  'Video is in the PR description if you have trouble finding it.',
+  '',
+  '3. Share the experiment page + link to the POC repo',
+  'https://example.com/poc',
+  'I want the update:',
+  '- https://example.com/page-1',
+  '5879a429 to add there all our data. This is a data dump that agents are supposed to look at.',
+  '-',
+  'https://example.com/page-2',
+  'This is the digest I want to share, it is a companion document. It is here to make it easy',
+  ' to share what we did and why we chose the solution.',
+  '- https://example.com/page-3 I',
+  'think the data here should be found in the digest.',
+  'Make sure that all documents refer to the other 2. We need to make it possible to find all the',
+  'research done on the topic.',
+  '',
+  '4. Make sure that all experiments have system diagrams.',
+  'The digest should contain the chosen diagram on top to clarify what was there before and what we are',
+  'doing now.',
+  '',
+  '5. Finish the bench tool. Make it ready to share.',
+  '',
+  '## Updates',
+  '',
+  '[UPDATE] 26-10-2026-10-58',
+  '- Make a plugin: Notes-Keeping',
+  'Plugin to keep track of work done in sessions, even long ones, even after compaction.',
+  'Workflow:',
+  '- /notes-keeping init',
+  '  - create timestamped md document',
+  '  - include initial prompt: the initial prompt is the plan for the session. What we figured we want to accomplish.',
+  '  Should be under the section `# Initial Prompt`',
+  '',
+  '[Update] 2026-10-26-12-07',
+  'Project: cleanroom-poc',
+  'As a thought experiment, I would like to copy a product in a cleanroom style',
+  '- Run project locally',
+  '',
+  '[Update] 2026-10-17-02',
+  'I want to have a todo list generated and maintained by the plugin',
+  'An objective can be of status:',
+  '- todo',
+  '- in progress',
+  '',
+  '[UPDATE] 2026-10-27-08-55',
+  '"URGENT: fix memory issues, need to free space"',
+  '',
+  '# Todo',
+  '',
+  '# Important',
+  '',
+  '# Chat',
+  '',
+].join('\n')
+
 describe('todo lines', () => {
   test('markers read and write back as - [ ] todo, - [~] in-progress, - [x] done, - [-] declined; other lines stay', () => {
     const body = '- [ ] one\n* [~] two\n- [X] three\n- [-] four\nnotes by hand\n- [?] odd'
@@ -119,10 +191,41 @@ describe('todo section in the notes file', () => {
 describe('candidates', () => {
   test('objective lines lose bullets, list introductions and one-word status names; each update is one candidate: its first line', () => {
     expect(candidates(sections(CAPTAIN))).toEqual([
-      { text: 'I want a todo list kept by the plugin', isUpdate: false },
-      { text: 'I want to see it live in the sidepanel.', isUpdate: true },
-      { text: 'Use the captain status names', isUpdate: true },
+      { text: 'I want a todo list kept by the plugin', isSure: false },
+      { text: 'I want to see it live in the sidepanel.', isSure: true },
+      { text: 'Use the captain status names', isSure: true },
     ])
+  })
+
+  test('the captain\'s real objectives shape: wrapped lines join, one item per numbered objective and per update, no fragments', () => {
+    const real = candidates(sections(REAL_NOTES))
+    expect(real).toEqual([
+      { text: 'All workers died during the weekend.', isSure: false },
+      { text: 'Make sure the following prs are reviewed with /review (with diagrams)', isSure: true },
+      { text: 'Fix the bleeding between chats and remake the example video. And make me a manual testing guide.', isSure: true },
+      { text: 'Share the experiment page + link to the POC repo', isSure: true },
+      { text: 'Make sure that all experiments have system diagrams.', isSure: true },
+      { text: 'Finish the bench tool. Make it ready to share.', isSure: true },
+      { text: 'Make a plugin: Notes-Keeping', isSure: true },
+      { text: 'As a thought experiment, I would like to copy a product in a cleanroom style', isSure: true },
+      { text: 'I want to have a todo list generated and maintained by the plugin', isSure: true },
+      { text: 'URGENT: fix memory issues, need to free space', isSure: true },
+    ])
+    const text = real.map(c => c.text).join('\n')
+    for (const fragment of ['seen in chat A', 'doing now', 'to add there all our data', 'think the data here', 'research done']) expect(text).not.toContain(fragment)
+  })
+
+  test('a paragraph of bullets is a list of items, and a wrapped bullet is one item', () => {
+    expect(candidates({ objectives: '- fix the panel flicker\n- write the docs for\n  the plugin\n- ok', updates: '' }).map(c => c.text)).toEqual([
+      'fix the panel flicker',
+      'write the docs for the plugin',
+    ])
+  })
+
+  test('an update that opens with a label line is named by its next line; a numbered objective ending in a colon loses it', () => {
+    const [one, two] = candidates({ objectives: '1. Review these:\n- https://example.com/1', updates: '[UPDATE] t\nProject: cleanroom\nCopy it as a test' })
+    expect(one).toEqual({ text: 'Review these', isSure: true })
+    expect(two).toEqual({ text: 'Copy it as a test', isSure: true })
   })
 
   test('a long line is kept whole on one line; a list shows it cut short until it has a label', () => {
@@ -148,16 +251,51 @@ describe('Laya answers', () => {
     expect(isBackground(0.9)).toBe(false)
   })
 
-  test('a reply moves an item (hand-set or not) only when it shares a word with it, Laya is sure, and the move is forward', () => {
-    const item = { status: 'todo' as const, text: 'Add a ctrl+q toggle for the notes pane' }
-    expect(moved(item, 'The toggle works, tests pass.', { label: 'finished', p: 0.9 })).toBe('done')
-    expect(moved(item, 'The notes pane toggle works.', { label: 'started', p: 0.7 })).toBe('in-progress')
-    expect(moved(item, 'Test suite is green, 42 pass.', { label: 'finished', p: 0.9 })).toBeUndefined()
-    expect(moved(item, 'The toggle works.', { label: 'finished', p: 0.59 })).toBeUndefined()
-    expect(moved(item, 'The toggle works.', { label: 'not-mentioned', p: 0.99 })).toBeUndefined()
-    expect(moved({ ...item, status: 'in-progress' }, 'The toggle works.', { label: 'started', p: 0.9 })).toBeUndefined()
-    expect(moved({ ...item, status: 'done' }, 'The toggle is dropped.', { label: 'rejected', p: 0.9 })).toBeUndefined()
-    expect(moved(item, 'The toggle is dropped.', { label: 'rejected', p: 0.9 })).toBe('declined')
+  const verdict = (label: string, p: number) => {
+    const labels = ['not-mentioned', 'started', 'finished', 'rejected']
+    return { label, p, probs: Object.fromEntries(labels.map(name => [name, name === label ? p : (1 - p) / 3])) }
+  }
+  const item = { status: 'todo' as const, text: 'Add a ctrl+q toggle for the notes pane' }
+
+  test('a reply moves an item only when it shares a word with it, Laya and the reply agree, and the move is forward', () => {
+    expect(moved(item, 'The toggle works, tests pass.', verdict('finished', 0.9))).toMatchObject({ status: 'done', label: 'finished' })
+    expect(moved(item, 'The notes pane toggle is partway there.', verdict('started', 0.7))).toMatchObject({ status: 'in-progress' })
+    expect(moved(item, 'Test suite is green, 42 pass.', verdict('finished', 0.99))).toBeUndefined()
+    expect(moved(item, 'The toggle was reworked.', verdict('finished', 0.59))).toBeUndefined()
+    expect(moved(item, 'The toggle was moved.', verdict('not-mentioned', 0.99))).toBeUndefined()
+    expect(moved({ ...item, status: 'in-progress' }, 'The toggle is half done.', verdict('started', 0.99))).toBeUndefined()
+    expect(moved({ ...item, status: 'done' }, 'The toggle is dropped.', verdict('rejected', 0.99))).toBeUndefined()
+    expect(moved(item, 'The toggle is dropped.', verdict('rejected', 0.9))).toMatchObject({ status: 'declined' })
+  })
+
+  test('a reply that says partway outweighs Laya calling it finished; a reply with no cue word moves only at Laya 0.9', () => {
+    expect(moved(item, 'The toggle is half wired up, the rest is still open.', verdict('finished', 0.9))).toMatchObject({ status: 'in-progress', label: 'started' })
+    expect(moved(item, 'The toggle landed.', verdict('finished', 0.59))).toMatchObject({ status: 'done' })
+    expect(moved(item, 'The toggle was reworked.', verdict('finished', 0.89))).toBeUndefined()
+    expect(moved(item, 'The toggle was reworked.', verdict('finished', 0.9))).toMatchObject({ status: 'done' })
+  })
+
+  test('a status the captain set needs Laya at 0.9, with or without a cue word', () => {
+    const hand = { ...item, status: 'in-progress' as const }
+    expect(moved(hand, 'The toggle was reworked.', verdict('finished', 0.89), [], true)).toBeUndefined()
+    expect(moved(hand, 'The toggle was reworked.', verdict('finished', 0.6), [], true)).toBeUndefined()
+    expect(moved(hand, 'The toggle was reworked.', verdict('finished', 0.9), [], true)).toMatchObject({ status: 'done' })
+    expect(moved(hand, 'The toggle was reworked.', verdict('finished', 0.6), [], false)).toBeUndefined()
+  })
+
+  test('a cue only counts in a sentence about the item, and not inside the item own words', () => {
+    const counter = 'Keep a count of moves Laya declined to make'
+    expect(moved({ status: 'todo', text: counter }, 'The skipped-move counter is finished and shows in the log.', verdict('finished', 0.71), [counter])).toMatchObject({ status: 'done' })
+    expect(moved({ status: 'todo', text: counter }, 'The counter for skipped moves is begun; I added the field but nothing increments it.', verdict('started', 0.51), [counter])).toMatchObject({ status: 'in-progress' })
+    expect(moved(item, 'The toggle is reworked. Other thing was dropped.', verdict('finished', 0.95), [item.text, 'Other thing'])).toMatchObject({ status: 'done', label: 'finished' })
+  })
+
+  test('a word the items share does not count as naming one of them', () => {
+    const others = ['Add a ctrl+q toggle for the notes pane', 'Rename the notes pane to Todo', 'Write the notes docs']
+    expect(mentions(others[0] ?? '', 'The notes pane now says Todo.')).toBe(true)
+    expect(mentions(others[0] ?? '', 'The notes pane now says Todo.', others)).toBe(false)
+    expect(mentions(others[0] ?? '', 'The toggle works.', others)).toBe(true)
+    expect(mentions('Notes pane', 'The notes pane works.', ['Notes pane', 'The notes pane'])).toBe(true)
   })
 
   test('Japanese items and replies match on shared two-character runs', () => {
