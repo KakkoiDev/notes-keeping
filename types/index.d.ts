@@ -17,7 +17,7 @@ export type Select = { mode: 'menu' | 'reply'; selection: string; isPlaced: bool
 
 export type Pair = { agent: string; user: string }
 
-export type View = 'todos' | 'objectives' | 'important' | 'chat' | 'queue'
+export type View = 'todos' | 'objectives' | 'important' | 'chat' | 'queue' | 'history'
 
 export type Todo = { id: string; text: string; status: 'todo' | 'in-progress' | 'done' | 'declined' }
 

@@ -29,6 +29,7 @@ Toggle with ctrl+q (see below), `/notes-keeping show` / `hide`, or the `Notes` b
 | `i` | Important view |
 | `c` | Chat view |
 | `e` | Queue view: every queued reply in its own editable field |
+| `h` | History view: earlier notes, newest first; Tab to one, Enter copies its objectives, updates and todo items here (same copy as `/notes-keeping history <n\|file>`); the original is never written |
 | `s` | Send queue: put every queued reply into the prompt box, clear the queue, record them in `# Chat`; you press Enter |
 | `b` | Back to the Todos view (shown in every view but Todos) |
 | `u` | in the Objectives view: opens an input; Enter appends the text as a new `[UPDATE]` under `## Updates` (while the objectives are still empty it sets them instead) |

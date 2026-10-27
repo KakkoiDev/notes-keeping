@@ -62,7 +62,7 @@ const USAGE = [
   '  replies                    open the panel at the queue: every reply editable, s moves all into the prompt',
   '  todo [sync]                show the todo list; sync runs Laya over the objectives and the last reply now',
   '  history [n|file]           list earlier notes; pick one to copy its objectives, updates and todo items here',
-  `  show | hide                open or close the notes panel (also ${CHORD}) at the todo list; t todos, o objectives, i important, c chat, e queue, s send queue`,
+  `  show | hide                open or close the notes panel (also ${CHORD}) at the todo list; t todos, o objectives, i important, c chat, e queue, h history, s send queue`,
   `${CHORD} works once ~/.claude/keybindings.json binds it: { "bindings": [{ "context": "Global", "bindings": { "${CHORD}": "${ACTION}" } }] }`,
   'Every write starts the notes file when the session has none.',
 ].join('\n')
@@ -370,6 +370,23 @@ async function todoCommand($: EngineInterface, args: string): Promise<string> {
   return list.length === 0 ? 'No todo items yet.' : list.map(item => row(item)).join('\n')
 }
 
+// Copies a picked file's objectives, updates and todo items into this session's notes; the picked file is only read.
+async function attach($: EngineInterface, pick: string): Promise<{ previous: string; said: string[] }> {
+  const dir = await notesDir($)
+  const previous = await readText($, `${dir}/${pick}`)
+  const said = await edit($, 'continue', text => carryOver(text, previous, pick))
+  // Lines the linked file's todo run already judged are not asked again here.
+  const path = await boundPath($)
+  if (path !== undefined) {
+    await locked(async () => {
+      const mine = await readMemory($, path)
+      const seen = [...new Set([...mine.seen, ...(await readMemory($, `${dir}/${pick}`)).seen])]
+      await $.store.set(memoryKey(path), { ...mine, seen })
+    })
+  }
+  return { previous, said }
+}
+
 async function history($: EngineInterface, args: string): Promise<{ text: string; context?: string[] }> {
   const current = await boundPath($)
   const names = (await listNotes($)).filter(name => current === undefined || !current.endsWith(`/${name}`))
@@ -389,17 +406,7 @@ async function history($: EngineInterface, args: string): Promise<{ text: string
   }
   const pick = /^\d+$/.test(args) ? names[Number(args) - 1] : names.find(name => name === args || name === `${args}.md`)
   if (pick === undefined) return { text: `No earlier notes match "${args}".` }
-  const previous = await readText($, `${dir}/${pick}`)
-  const said = await edit($, 'continue', text => carryOver(text, previous, pick))
-  // Lines the linked file's todo run already judged are not asked again here.
-  const path = await boundPath($)
-  if (path !== undefined) {
-    await locked(async () => {
-      const mine = await readMemory($, path)
-      const seen = [...new Set([...mine.seen, ...(await readMemory($, `${dir}/${pick}`)).seen])]
-      await $.store.set(memoryKey(path), { ...mine, seen })
-    })
-  }
+  const { previous, said } = await attach($, pick)
   return {
     text: told(`Continuing ${pick}: its objectives, updates and todo items are copied here; ${pick} is unchanged. The whole file is now in context.`, said),
     context: [inject(previous, `${dir}/${pick}`)],
@@ -433,7 +440,7 @@ async function important($: EngineInterface, text: string, tag: string): Promise
 }
 
 function showQueue($: EngineInterface, n: number): void {
-  $.ui.status(n === 0 ? undefined : `notes: ${n} repl${n === 1 ? 'y' : 'ies'} queued, sent with your next message. /notes-keeping replies: edit, remove, send`)
+  $.ui.status(n === 0 ? undefined : `notes: ${n} repl${n === 1 ? 'y' : 'ies'} queued, sent with your next message. Ctrl+q: edit, remove, send`)
 }
 
 // The selection is answered: the same text does not raise the pane again until it changes.
@@ -817,6 +824,7 @@ export const register: Register = on => {
         {tab('important', 'i', 'Important', 'important')}
         {tab('chat', 'c', 'Chat', 'chat')}
         {tab('queue', 'e', `Queue (${list.length})`, 'queue')}
+        {tab('history', 'h', 'History', 'history')}
         <Button key="send" plain hotkey="s" label="Send queue" onPress={() => sendQueue($)} />
         {at === 'todos' ? null : <Button key="view:back" plain hotkey="b" label="Back" onPress={go('todos')} />}
       </Box>
@@ -843,7 +851,38 @@ export const register: Register = on => {
       </Box>
     )
     let content
-    if (at === 'queue') {
+    if (at === 'history') {
+      const dir = await notesDir($)
+      const own = current?.path
+      const names = (await listNotes($)).filter(name => own === undefined || !own.endsWith(`/${name}`))
+      const rows = await Promise.all(
+        names.slice(0, HISTORY_CAP).map(async name => {
+          const line = summary(await readText($, `${dir}/${name}`).catch(() => ''))
+          const parts = nameParts(name)
+          return { name, label: `${parts === undefined ? name : `${parts.date} ${parts.time}  ${parts.project}  ${parts.shortId}`}  ${line.slice(0, PREVIEW)}` }
+        }),
+      )
+      content = (
+        <Box key="content" flexDirection="column">
+          <Text bold>Earlier notes ({names.length})</Text>
+          {rows.length === 0 ? <Text dimColor>No earlier notes.</Text> : null}
+          {rows.map(row => (
+            <Button
+              key={`attach:${row.name}`}
+              plain
+              label={row.label}
+              onPress={async () => {
+                warn($, told('', (await attach($, row.name)).said))
+                $.ui.toast(`Attached ${row.name}: its objectives, updates and todo items are copied here; the original is unchanged.`)
+                await go('todos')()
+              }}
+            />
+          ))}
+          {names.length > HISTORY_CAP ? <Text dimColor>{`(${names.length - HISTORY_CAP} older not listed)`}</Text> : null}
+          {hint('Tab to a file, Enter attaches a copy of it to this session. b goes back')}
+        </Box>
+      )
+    } else if (at === 'queue') {
       content = (
         <Box key="content" flexDirection="column">
           <Text bold>Queued replies ({list.length})</Text>
@@ -922,7 +961,7 @@ export const register: Register = on => {
         <Box key="content" flexDirection="column">
           {slot}
           {current === null ? <Text dimColor>No notes for this session yet; the first write starts them.</Text> : <Text dimColor wrap="truncate-start">{current.path}</Text>}
-          {hint('t todos, o objectives (u adds an update there), i important, c chat, e queue, s send queue, Esc closes')}
+          {hint('t todos, o objectives (u adds an update there), i important, c chat, e queue, h history, s send queue, Esc closes')}
         </Box>
       )
     }

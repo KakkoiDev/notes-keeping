@@ -297,7 +297,7 @@ test('a queued reply goes out with the next composer Enter, recorded as one turn
 
   expect((await run($, 'reply Merge it')).text).toBe('Reply queued; it goes out with your next message.')
   expect(fs[NOW]?.endsWith('# Chat\n')).toBe(true)
-  expect(ui.status.at(-1)).toBe('notes: 1 reply queued, sent with your next message. /notes-keeping replies: edit, remove, send')
+  expect(ui.status.at(-1)).toBe('notes: 1 reply queued, sent with your next message. Ctrl+q: edit, remove, send')
 
   await submit($, 'from a script', 'sdk')
   await $.prompt.submit({ text: 'meta', wait: false, isMeta: true, origin: { kind: 'composer' } })
@@ -397,6 +397,37 @@ test('history lists earlier notes of every project newest first and continues th
   expect(fs[old]).toBe(before)
   expect(writes).not.toContain(old)
   expect(fs[NOW]?.match(/old change/g)?.length).toBe(2)
+})
+
+test('the panel History view lists other notes newest first; pressing one copies it here and leaves the original byte-identical', async ($, on) => {
+  const old = `${DIR}/2026-10-24-09-00-firstmate-11111111.md`
+  const newer = `${DIR}/2026-10-25-18-30-dotfiles-22222222.md`
+  const before = '# Objectives\n\nOld plan\n\n## Updates\n\n[UPDATE] 2026-10-24-10-00\nold change\n\n# Todo\n\n- [~] old change\n\n# Important\n\n# Chat\n'
+  const writes: string[] = []
+  const fs: Fs = new Proxy<Fs>(
+    { [BOUND]: NOTES, [old]: before, [newer]: '# Objectives\n\nYesterday plan\n' },
+    { set: (target, path, text) => (writes.push(String(path)), Reflect.set(target, path, text)) },
+  )
+  const { ui } = engine(on, fs, { [`session:${SESSION}`]: BOUND })
+  engineDraws(on)
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: false })
+  await run($, 'show')
+  const pane = await $.ui.mount({ ...NOTES_PANE, surface: 'terminal' })
+  expect((await pane.find({ key: 'view:history' }))?.props).toMatchObject({ hotkey: 'h', label: 'History' })
+  await pane.press({ key: 'view:history' })
+  const first = await pane.find({ key: 'attach:2026-10-25-18-30-dotfiles-22222222.md' })
+  expect(first?.props.label).toBe('2026-10-25 18:30  dotfiles  22222222  Yesterday plan')
+  expect(await pane.find({ key: 'attach:2026-10-26-10-50-firstmate-abcdef12.md' })).toBeUndefined()
+  await pane.press({ key: 'attach:2026-10-24-09-00-firstmate-11111111.md' })
+  expect(fs[old]).toBe(before)
+  expect(writes).not.toContain(old)
+  expect(fs[BOUND]).toContain('Continuation of: 2026-10-24-09-00-firstmate-11111111.md')
+  expect(fs[BOUND]).toContain('Old plan')
+  expect(fs[BOUND]).toContain('[UPDATE] 2026-10-24-10-00\nold change')
+  expect(fs[BOUND]).toContain('- [~] old change')
+  expect(fs[BOUND]).toContain('The plan')
+  expect(ui.toasts.at(-1)).toContain('the original is unchanged')
+  await pane.unmount()
 })
 
 const NOTES = '# Objectives\n\nThe plan\n\n## Updates\n\n[UPDATE] t\nnew goal\n\n# Important\n\n[USER] agreed X\n\n# Chat\n\n[AI_AGENT] q\n[USER] a\n'
@@ -515,7 +546,7 @@ test('a selection opens a focused pane: i keeps it, r queues a reply, x dismisse
   await second.input({ key: 'reply', text: '   ' })
   expect(await second.find({ key: 'reply' })).toBeDefined()
   await second.input({ key: 'reply', text: 'Push now' })
-  expect(ui.status.at(-1)).toBe('notes: 1 reply queued, sent with your next message. /notes-keeping replies: edit, remove, send')
+  expect(ui.status.at(-1)).toBe('notes: 1 reply queued, sent with your next message. Ctrl+q: edit, remove, send')
   expect(fs[BOUND]?.endsWith('# Chat\n')).toBe(true)
   await clock.advance(1200)
   expect(await second.find({ key: 'reply' })).toBeUndefined()
@@ -739,8 +770,8 @@ test('the panel opens on the Todos view, t brings it back, and the other views c
   expect(await pane.find({ type: 'Text', text: 'Todo' })).toBeDefined()
   expect((await pane.find({ key: 'todo:ship it' }))?.props.label).toBe('[ ] Ship it')
   expect((await pane.find({ key: 'view:todos' }))?.props).toMatchObject({ hotkey: 't', dimColor: false })
-  expect((await pane.findAll({ type: 'Button' })).map(button => button.key)).toEqual(['view:todos', 'view:objectives', 'view:important', 'view:chat', 'view:queue', 'send', 'todo:ship it'])
-  expect(await pane.find({ type: 'Text', text: 't todos, o objectives (u adds an update there), i important, c chat, e queue, s send queue, Esc closes' })).toBeDefined()
+  expect((await pane.findAll({ type: 'Button' })).map(button => button.key)).toEqual(['view:todos', 'view:objectives', 'view:important', 'view:chat', 'view:queue', 'view:history', 'send', 'todo:ship it'])
+  expect(await pane.find({ type: 'Text', text: 't todos, o objectives (u adds an update there), i important, c chat, e queue, h history, s send queue, Esc closes' })).toBeDefined()
   for (const at of ['view:objectives', 'view:important', 'view:chat', 'view:queue']) {
     await pane.press({ key: at })
     expect(await pane.find({ key: 'todo:ship it' })).toBeUndefined()
@@ -780,7 +811,7 @@ test('the queue view lists every queued reply in its own editable field, removes
   await pane.input({ key: 'reply:1', text: 'two, reworded' })
   expect((await pane.find({ key: 'reply:1' }))?.props).toMatchObject({ value: 'two, reworded' })
   await pane.press({ key: 'remove:0' })
-  expect(ui.status.at(-1)).toBe('notes: 1 reply queued, sent with your next message. /notes-keeping replies: edit, remove, send')
+  expect(ui.status.at(-1)).toBe('notes: 1 reply queued, sent with your next message. Ctrl+q: edit, remove, send')
   expect((await pane.find({ key: 'reply:0' }))?.props).toMatchObject({ value: 'two, reworded' })
   expect(await pane.find({ key: 'reply:1' })).toBeUndefined()
   expect((await pane.find({ key: 'send' }))?.props).toMatchObject({ hotkey: 's' })
