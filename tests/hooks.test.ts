@@ -16,6 +16,8 @@ const PYTHON = `${HOME}/.laya-venv/bin/python`
 type Ask = { lines: { id: string; text: string }[]; statuses: { id: string; text: string }[]; answer: string }
 // What the fake Laya answers; left undefined, the call fails.
 const laya: { answer: ((ask: Ask) => unknown) | undefined; asks: Ask[] } = { answer: undefined, asks: [] }
+// What the fake label model answers per prompt; left undefined, the call fails as an API error.
+const model: { answer: ((prompt: string) => string) | undefined; asks: string[] } = { answer: undefined, asks: [] }
 
 async function flush(): Promise<void> {
   for (let i = 0; i < 5000; i++) await Promise.resolve()
@@ -48,6 +50,8 @@ function engine(
 ) {
   laya.answer = undefined
   laya.asks = []
+  model.answer = undefined
+  model.asks = []
   const clock = mock.clock(on, { now: new Date(2026, 9, 26, 10, 58).getTime() })
   mock.store(on, store)
   mock.env(on, { HOME })
@@ -86,6 +90,16 @@ function engine(
     if (e.argv[3] === 'init') fs[`${DIR}/.git/HEAD`] = 'ref: refs/heads/main\n'
     const stdout = e.argv[3] === 'remote' ? git.remotes : ''
     return { value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
+  on('model.complete', (_$, e) => {
+    model.asks.push(e.prompt)
+    const usage = { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }
+    return {
+      value:
+        model.answer === undefined
+          ? { isAnswered: false as const, reason: 'api-error' as const, status: 529, error: 'overloaded' as const, usage }
+          : { isAnswered: true as const, text: model.answer(e.prompt), usage },
+    }
   })
   on('ui.selection', () => {
     const text = selection()
@@ -1063,3 +1077,97 @@ test('the todo list is the first block of the notes pane', async ($, on) => {
 function setTodoFile(body: string): string {
   return CAPTAIN_NOTES.replace('# Important', `# Todo\n\n${body}\n\n# Important`)
 }
+
+// The fake label model names an item by its first three words.
+function fakeLabels() {
+  model.answer = prompt => `"${(prompt.split('Item: ')[1] ?? '').split(' ').slice(0, 3).join(' ')}."`
+}
+
+test('a new item gets a short label from the model once, written beside its whole text and shown in the panel, the todo command and the context', async ($, on) => {
+  const sent = submitting(on)
+  const fs: Fs = { [BOUND]: CAPTAIN_NOTES, [PYTHON]: '' }
+  engine(on, fs, { ...SESSION_BOUND })
+  fakeLaya()
+  fakeLabels()
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: false })
+  await flush()
+  expect(fs[BOUND]).toContain(
+    '# Todo\n\n- [ ] **I want a**: I want a todo list kept by the plugin\n- [ ] **ongoing: being worked**: ongoing: being worked on\n- [ ] **I want to**: I want to see it live in the sidepanel.\n\n# Important',
+  )
+  expect(model.asks).toHaveLength(3)
+
+  await run($, 'show')
+  const pane = await $.ui.mount({ ...NOTES_PANE, surface: 'terminal' })
+  expect((await pane.find({ key: 'todo:i want a todo list kept by the plugin' }))?.props.label).toBe('[ ] I want a')
+  await pane.press({ key: 'todo:i want a todo list kept by the plugin' })
+  expect(fs[BOUND]).toContain('- [~] **I want a**: I want a todo list kept by the plugin')
+  await pane.unmount()
+  expect((await run($, 'todo')).text).toBe('[~] I want a\n[ ] ongoing: being worked\n[ ] I want to')
+
+  await submit($, 'next')
+  expect(sent.at(-1)?.context?.[0]).toContain('Work on: I want a: I want a todo list kept by the plugin')
+
+  // Labels are kept: later runs ask the model nothing.
+  await run($, 'todo sync')
+  await complete($, 'Nothing yet.')
+  await flush()
+  expect(model.asks).toHaveLength(3)
+})
+
+test('an item already in the list without a label gets one once; a label written by hand is kept', async ($, on) => {
+  const fs: Fs = { [BOUND]: setTodoFile('- [x] Fix the flicker in the pane\n- [ ] **Mine**: Rename the pane'), [PYTHON]: '' }
+  engine(on, fs, { ...SESSION_BOUND })
+  fakeLaya()
+  fakeLabels()
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: false })
+  await flush()
+  expect(fs[BOUND]).toContain('- [x] **Fix the flicker**: Fix the flicker in the pane\n- [ ] **Mine**: Rename the pane')
+  expect(model.asks.filter(prompt => prompt.includes('Rename the pane'))).toHaveLength(0)
+})
+
+test('without a label from the model an item shows its text cut short, the whole text stays in the file, one toast says why, and it is not asked again', async ($, on) => {
+  const long = `Ship the todo labels ${'and keep every word of the long line '.repeat(5)}to the end`
+  const fs: Fs = { [BOUND]: CAPTAIN_NOTES.replace('## Updates\n\n', `## Updates\n\n[Update] 2026-10-17-01\n${long}\n\n`), [PYTHON]: '' }
+  const { ui } = engine(on, fs, { ...SESSION_BOUND })
+  fakeLaya()
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: false })
+  await flush()
+  expect(fs[BOUND]).toContain(`\n- [ ] ${long}\n`)
+  const asked = model.asks.length
+  expect(asked).toBeGreaterThan(0)
+  expect(ui.toasts.filter(text => text.includes('no label from haiku'))).toHaveLength(1)
+
+  await run($, 'show')
+  const pane = await $.ui.mount({ ...NOTES_PANE, surface: 'terminal' })
+  const label = (await pane.find({ key: `todo:${long.toLowerCase()}` }))?.props.label as string
+  expect(label.startsWith('[ ] Ship the todo labels')).toBe(true)
+  expect(label.endsWith('…')).toBe(true)
+  await pane.unmount()
+
+  await run($, 'todo sync')
+  expect(model.asks).toHaveLength(asked)
+})
+
+test('a model reply that is not a short label leaves the item unlabeled', async ($, on) => {
+  const fs: Fs = { [BOUND]: setTodoFile('- [ ] Write the docs'), [PYTHON]: '' }
+  engine(on, fs, { ...SESSION_BOUND })
+  fakeLaya()
+  model.answer = () => 'Here is a label you could use for this item, I think'
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: false })
+  await flush()
+  expect(fs[BOUND]).toContain('- [ ] Write the docs\n')
+})
+
+test('an item cut at 120 characters before the text was kept whole is not added again from its whole line', async ($, on) => {
+  const long = `Keep the whole text ${'of a very long update line '.repeat(6)}to the end`
+  const cut = `${long.slice(0, 119).trimEnd()}…`
+  const notes = CAPTAIN_NOTES.replace('## Updates\n\n', `## Updates\n\n[Update] 2026-10-17-01\n${long}\n\n`)
+  const fs: Fs = { [BOUND]: notes.replace('# Important', `# Todo\n\n- [ ] **Old label**: ${cut}\n\n# Important`), [PYTHON]: '' }
+  const store = { ...SESSION_BOUND, [`todo:${BOUND}`]: { seen: [cut.toLowerCase()], ai: { [cut.toLowerCase()]: 'todo' }, pins: [] } }
+  engine(on, fs, store)
+  fakeLaya()
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: false })
+  await flush()
+  expect(fs[BOUND]?.split('Keep the whole text').length).toBe(3)
+  expect(fs[BOUND]).toContain(`- [ ] **Old label**: ${cut}`)
+})

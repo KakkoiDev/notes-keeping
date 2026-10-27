@@ -6,16 +6,21 @@ import {
   candidates,
   context,
   cycle,
+  cleanLabel,
+  clip,
   cycleItem,
   format,
   isBackground,
   items,
   keyOf,
+  keysOf,
+  labelPrompt,
   mentions,
   moved,
   parse,
   reconcile,
   settle,
+  shown,
 } from '../hooks/todo'
 
 // The captain's heading layout; the text is a stand-in with his list shapes.
@@ -55,6 +60,37 @@ describe('todo lines', () => {
   })
 })
 
+describe('labels', () => {
+  test('a label is written before the whole text and reads back apart from it; the text and the key stay the same', () => {
+    const body = '- [~] **Todo list in the panel**: I want a todo list kept by the plugin: shown live\n- [ ] Plain item'
+    const [first, second] = items(body)
+    expect(first).toEqual({ status: 'in-progress', label: 'Todo list in the panel', text: 'I want a todo list kept by the plugin: shown live' })
+    expect(second).toEqual({ status: 'todo', text: 'Plain item' })
+    expect(format(parse(body))).toBe(body)
+    expect(keyOf(first?.text ?? '')).toBe('i want a todo list kept by the plugin: shown live')
+    expect(cycleItem(body, keyOf(first?.text ?? ''))).toContain('- [x] **Todo list in the panel**: I want a todo list kept by the plugin: shown live')
+  })
+
+  test('the model reply becomes a label only when it is one short line', () => {
+    expect(cleanLabel('Todo list in panel')).toBe('Todo list in panel')
+    expect(cleanLabel('  "Short labels for todos."\n')).toBe('Short labels for todos')
+    expect(cleanLabel('**Bold label**')).toBe('Bold label')
+    expect(cleanLabel('ToDoの短い名前。')).toBe('ToDoの短い名前')
+    expect(cleanLabel('one two three four five six seven')).toBeUndefined()
+    expect(cleanLabel('')).toBeUndefined()
+    expect(cleanLabel('a*b')).toBeUndefined()
+    expect(cleanLabel('x'.repeat(49))).toBeUndefined()
+    expect(labelPrompt('Fix the flicker')).toContain('Item: Fix the flicker')
+  })
+
+  test('reconcile sets a label on an item without one, keeps one already there, and remembers each item asked', () => {
+    const out = reconcile('- [ ] A\n- [ ] **Mine**: B', EMPTY, { add: [], set: {}, seen: [], labels: { a: 'Label A', b: 'Other' }, labeled: ['a', 'b'] })
+    expect(out.body).toBe('- [ ] **Label A**: A\n- [ ] **Mine**: B')
+    expect(out.memory.labeled).toEqual(['a', 'b'])
+    expect(settle(out.memory, [{ status: 'todo', text: 'A' }]).labeled).toEqual(['a'])
+  })
+})
+
 describe('todo section in the notes file', () => {
   test('sits between ## Updates and # Important, appears only on the first write, and the captain\'s file reads without it', () => {
     expect(sections(CAPTAIN).todo).toBe('')
@@ -87,10 +123,19 @@ describe('candidates', () => {
     ])
   })
 
-  test('long lines are cut to one short line', () => {
-    const [one] = candidates({ objectives: `${'word '.repeat(60)}end`, updates: '' })
-    expect(one?.text.length).toBeLessThanOrEqual(120)
-    expect(one?.text.endsWith('…')).toBe(true)
+  test('a long line is kept whole on one line; a list shows it cut short until it has a label', () => {
+    const long = `${'word '.repeat(60)}end`
+    const [one] = candidates({ objectives: long, updates: '' })
+    expect(one?.text).toBe(long)
+    expect(shown({ status: 'todo', text: long }).length).toBeLessThanOrEqual(120)
+    expect(shown({ status: 'todo', text: long }).endsWith('…')).toBe(true)
+    expect(shown({ status: 'todo', text: long, label: 'Many words' })).toBe('Many words')
+  })
+
+  test('an item cut short before the text was kept whole matches its whole line', () => {
+    const long = `${'word '.repeat(60)}end`
+    expect(keysOf(long)).toContain(keyOf(clip(long)))
+    expect(keysOf('short')).toEqual(['short'])
   })
 })
 
@@ -121,7 +166,7 @@ describe('Laya answers', () => {
 
 describe('memory and reconcile', () => {
   test('an item whose status differs from what the AI wrote, or a non-default one the AI never wrote, is marked hand-set', () => {
-    const memory = { seen: [], ai: { one: 'todo' as const, two: 'todo' as const }, pins: [] }
+    const memory = { seen: [], ai: { one: 'todo' as const, two: 'todo' as const }, pins: [], labeled: [] }
     const list = [
       { status: 'in-progress' as const, text: 'One' },
       { status: 'todo' as const, text: 'Two' },
@@ -132,12 +177,12 @@ describe('memory and reconcile', () => {
   })
 
   test('an item the captain deleted leaves the memory', () => {
-    const memory = { seen: ['gone'], ai: { gone: 'todo' as const }, pins: ['gone'] }
-    expect(settle(memory, [])).toEqual({ seen: ['gone'], ai: {}, pins: [] })
+    const memory = { seen: ['gone'], ai: { gone: 'todo' as const }, pins: ['gone'], labeled: ['gone'] }
+    expect(settle(memory, [])).toEqual({ seen: ['gone'], ai: {}, pins: [], labeled: [] })
   })
 
   test('new items are added once, moves land on the status Laya read, and the AI remembers what it wrote', () => {
-    const memory = { seen: [], ai: { a: 'todo' as const, b: 'todo' as const, d: 'todo' as const }, pins: [] }
+    const memory = { seen: [], ai: { a: 'todo' as const, b: 'todo' as const, d: 'todo' as const }, pins: [], labeled: [] }
     const out = reconcile('- [ ] A\n- [~] B\n- [ ] D\nnote', memory, {
       add: [{ status: 'todo', text: 'C' }, { status: 'todo', text: 'a' }],
       set: { a: { from: 'todo', to: 'done' }, b: { from: 'todo', to: 'done' }, d: { from: 'in-progress', to: 'done' } },
@@ -151,7 +196,7 @@ describe('memory and reconcile', () => {
   })
 
   test('a move on a hand-set item lands, is reported as hand-set, and the item is the AI\'s again', () => {
-    const memory = { seen: [], ai: { a: 'todo' as const }, pins: [] }
+    const memory = { seen: [], ai: { a: 'todo' as const }, pins: [], labeled: [] }
     const out = reconcile('- [~] A', memory, { add: [], set: { a: { from: 'in-progress', to: 'done' } }, seen: [] })
     expect(out.body).toBe('- [x] A')
     expect(out.applied).toEqual([{ text: 'A', from: 'in-progress', to: 'done', isHandSet: true }])
@@ -172,5 +217,12 @@ describe('context for Claude', () => {
     expect(context('- [ ] a\n- [ ] b')).toContain('Work on: a')
     expect(context('- [x] a')).toContain('Nothing is open.')
     expect(context('')).toBeUndefined()
+  })
+
+  test('a labeled item is named by its label, with its text cut short after it', () => {
+    const text = context(`- [ ] **Short name**: ${'word '.repeat(40)}end`) ?? ''
+    expect(text).toContain('Work on: Short name: word word')
+    expect(text).toContain('- [todo] Short name: word word')
+    expect(text).toContain('…')
   })
 })

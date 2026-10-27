@@ -24,7 +24,7 @@ import {
   stamp,
   summary,
 } from './notes'
-import { EMPTY, candidates, context, cycleItem, format, isBackground, items, keyOf, label, moved, parse, pin, reconcile, settle } from './todo'
+import { EMPTY, candidates, cleanLabel, context, cycleItem, format, isBackground, items, keyOf, keysOf, labelPrompt, moved, parse, pin, reconcile, row, settle, shown } from './todo'
 import type { Applied, Item, Memory, Move, Verdict } from './todo'
 import { TodoSlot } from './todos'
 
@@ -46,6 +46,8 @@ const NEAR = 2
 
 const LAYA_PYTHON = '.laya-venv/bin/python'
 const LAYA_MS = 60_000
+const LABEL_MODEL = 'haiku'
+const LABEL_MS = 20_000
 const LOG = 'todo-changes.log'
 
 const SUBCOMMANDS = ['init', 'objectives', 'update', 'important', 'reply', 'replies', 'todo', 'history', 'show', 'hide']
@@ -181,6 +183,7 @@ type Laya = { lines: Record<string, number>; statuses: Record<string, Verdict> }
 let isSyncing = false
 let waiting: string | undefined
 let isToldNoLaya = false
+let isToldNoLabel = false
 
 function memoryKey(path: string): string {
   return `todo:${path}`
@@ -204,6 +207,18 @@ async function askLaya($: EngineInterface, request: { lines: { id: string; text:
   return JSON.parse(done.stdout) as Laya
 }
 
+// Laya only picks among given answers, so the label comes from a small model through the session's own client.
+// Undefined when the model gives no usable label: the list then shows the text cut short.
+async function askLabel($: EngineInterface, text: string): Promise<string | undefined> {
+  const reply = await $.model.complete({ model: LABEL_MODEL, prompt: labelPrompt(text), maxTokens: 40, timeoutMs: LABEL_MS }).catch((error: unknown) => {
+    return { isAnswered: false as const, reason: message(error) }
+  })
+  if (reply.isAnswered) return cleanLabel(reply.text)
+  if (!isToldNoLabel) $.ui.toast(`notes-keeping todo: no label from ${LABEL_MODEL} (${reply.reason}); items show their text cut short.`)
+  isToldNoLabel = true
+  return undefined
+}
+
 // One line per status Laya changed, committed with the file, so a change can be reviewed; a hand-set status it replaced says so.
 async function logMoves($: EngineInterface, path: string, moves: readonly Applied[], verdicts: Record<string, Verdict>): Promise<void> {
   const log = `${await notesDir($)}/${LOG}`
@@ -225,8 +240,9 @@ async function runTodo($: EngineInterface, answer: string): Promise<void> {
   const list = items(s.todo)
   const memory = settle(await readMemory($, path), list)
   const have = new Set(list.map(item => keyOf(item.text)))
-  const fresh = candidates(s).filter(c => !memory.seen.includes(keyOf(c.text)))
-  const lines = fresh.filter(c => !c.isUpdate && !have.has(keyOf(c.text))).map(c => ({ id: keyOf(c.text), text: c.text }))
+  const isHad = (text: string) => keysOf(text).some(key => have.has(key))
+  const fresh = candidates(s).filter(c => !keysOf(c.text).some(key => memory.seen.includes(key)))
+  const lines = fresh.filter(c => !c.isUpdate && !isHad(c.text)).map(c => ({ id: keyOf(c.text), text: c.text }))
   const open = list.filter(item => item.status === 'todo' || item.status === 'in-progress')
   const statuses = answer.trim() === '' ? [] : open.map(item => ({ id: keyOf(item.text), text: item.text }))
   const laya = lines.length + statuses.length === 0 ? undefined : await askLaya($, { lines, statuses, answer })
@@ -234,9 +250,9 @@ async function runTodo($: EngineInterface, answer: string): Promise<void> {
   const seen: string[] = []
   for (const c of fresh) {
     const key = keyOf(c.text)
-    if (have.has(key) || c.isUpdate) {
+    if (isHad(c.text) || c.isUpdate) {
       seen.push(key)
-      if (!have.has(key)) add.push({ status: 'todo', text: c.text })
+      if (!isHad(c.text)) add.push({ status: 'todo', text: c.text })
       continue
     }
     const p = laya?.lines[key]
@@ -249,11 +265,17 @@ async function runTodo($: EngineInterface, answer: string): Promise<void> {
     const next = moved(item, answer, laya?.statuses[keyOf(item.text)])
     if (next !== undefined) set[keyOf(item.text)] = { from: item.status, to: next }
   }
+  const unlabeled = [...list.filter(item => item.label === undefined && !memory.labeled.includes(keyOf(item.text))), ...add]
+  const named = await Promise.all(unlabeled.map(async item => [keyOf(item.text), await askLabel($, item.text)] as const))
+  const labels: Record<string, string> = {}
+  for (const [key, label] of named) if (label !== undefined) labels[key] = label
+  const labeled = named.map(([key]) => key)
+  const added = add.map(item => (labels[keyOf(item.text)] === undefined ? item : { ...item, label: labels[keyOf(item.text)] }))
   // The file may have changed while Laya ran: apply onto what is there now.
   const said = await locked(async () => {
     const latest = await readText($, path)
     const body = sections(latest).todo
-    const out = reconcile(body, await readMemory($, path), { add, set, seen })
+    const out = reconcile(body, await readMemory($, path), { add: added, set, seen, labels, labeled })
     await $.store.set(memoryKey(path), out.memory)
     if (out.body === format(parse(body))) return []
     if (out.applied.length > 0) await logMoves($, path, out.applied, laya?.statuses ?? {})
@@ -345,7 +367,7 @@ async function todoCommand($: EngineInterface, args: string): Promise<string> {
   else if (args !== '') return 'Usage: /notes-keeping todo [sync]'
   const path = await boundPath($)
   const list = path === undefined ? [] : items(sections(await readText($, path)).todo)
-  return list.length === 0 ? 'No todo items yet.' : list.map(item => label(item)).join('\n')
+  return list.length === 0 ? 'No todo items yet.' : list.map(item => row(item)).join('\n')
 }
 
 async function history($: EngineInterface, args: string): Promise<{ text: string; context?: string[] }> {
@@ -779,7 +801,7 @@ export const register: Register = on => {
     const at = await read($, view)
     const list = await read($, queue)
     const s = current?.sections
-    const rows: Todo[] = s === undefined ? [] : items(s.todo).map(item => ({ id: keyOf(item.text), ...item }))
+    const rows: Todo[] = s === undefined ? [] : items(s.todo).map(item => ({ id: keyOf(item.text), status: item.status, text: shown(item) }))
     const hasObjectives = s !== undefined && s.objectives !== ''
     const go = (to: View) => async () => {
       await update($, editing, () => false)

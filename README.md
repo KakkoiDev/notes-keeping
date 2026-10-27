@@ -68,10 +68,14 @@ gets it on the first todo write; the heading layout of older and hand-edited fil
 One item per line. Edit the file by hand at any time; the plugin reads it back on every run. Lines in the section that
 are not items are kept as written.
 
+An item can carry a short label before its whole text: `- [ ] **Todo labels in the panel**: for the todo items, would it
+be possible to ...`. The pane, `/notes-keeping todo` and Claude's context name the item by its label; the text after it
+is kept whole and is what the item is matched and keyed by. See [Labels](#labels).
+
 ### Who sets what
 
 - At session launch, and after every `/notes-keeping objectives|update`: each `[UPDATE]` entry becomes one item (its first
-  line, cut to 120 characters). Each line of `# Objectives` is judged by Laya and becomes an item unless Laya is at least
+  line, whole). Each line of `# Objectives` is judged by Laya and becomes an item unless Laya is at least
   0.8 sure it is background. Lines ending in `:` and single-word lines are skipped. A line already judged is never asked
   twice, so an item you delete stays deleted.
 - At the end of every turn: Laya reads Claude's last reply against every open item (todo or in-progress), the ones you
@@ -87,7 +91,8 @@ are not items are kept as written.
 
 ### In Claude's context
 
-Every prompt carries the list (statuses, and `Work on:` the ongoing item, else the first to-do). A prompt that already
+Every prompt carries the list (statuses, and `Work on:` the ongoing item, else the first to-do), each item as
+`label: text` with the text cut to 120 characters, or the cut text alone when it has no label. A prompt that already
 carries the whole notes file, after a compaction or a resume, does not repeat it.
 
 ### In the pane
@@ -97,6 +102,16 @@ The list is the todo slot at the top of the panel (`TodoSlot` in `hooks/todos.ts
 ### `/notes-keeping todo [sync]`
 
 Prints the list. `sync` runs the objectives and the last reply through Laya now.
+
+## Labels
+
+Laya only picks among given answers, so it cannot write one. Each item without a label is sent once to `haiku` through
+the session's own client (`$.model.complete`, a 2 to 6 word label in the item's language); the reply is written into the
+file as `**label**: ` before the text. An item is asked once, whatever the answer: a reply that is not one short line
+(more than 6 words or 48 characters) leaves it unlabeled, and a failed call leaves it unlabeled with one toast per
+session. An unlabeled item is shown by its text cut to 120 characters. A label you write or edit by hand is kept. Items
+added before labels existed are asked on the next run; their text, cut at 120 characters back then, still matches its
+whole source line, so they are not added again.
 
 ## Laya
 
