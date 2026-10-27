@@ -24,8 +24,8 @@ import {
   stamp,
   summary,
 } from './notes'
-import { EMPTY, candidates, cleanLabel, context, cycleItem, format, isBackground, items, keyOf, keysOf, labelPrompt, moved, parse, pin, reconcile, row, settle, shown } from './todo'
-import type { Applied, Item, Memory, Move, Verdict } from './todo'
+import { EMPTY, bridgeMoves, candidates, cleanLabel, context, cycleItem, diffSnapshot, format, isBackground, items, keyOf, keysOf, labelPrompt, moved, parse, pin, reconcile, row, settle, shown, snapshotOf } from './todo'
+import type { Applied, Item, Memory, Move, Status, Verdict } from './todo'
 import { TodoSlot } from './todos'
 
 const NAME = 'notes-keeping'
@@ -49,6 +49,9 @@ const LAYA_MS = 60_000
 const LABEL_MODEL = 'haiku'
 const LABEL_MS = 20_000
 const LOG = 'todo-changes.log'
+// An executable under the session root, run only when present: `status` reports linked items' statuses, `notify` takes changes on stdin.
+const BRIDGE = 'config/notes-keeping-bridge'
+const BRIDGE_MS = 10_000
 
 const SUBCOMMANDS = ['init', 'objectives', 'update', 'important', 'reply', 'replies', 'todo', 'history', 'show', 'hide']
 
@@ -207,6 +210,64 @@ async function askLaya($: EngineInterface, request: { lines: { id: string; text:
   return JSON.parse(done.stdout) as Laya
 }
 
+function snapshotKey(path: string): string {
+  return `notified:${path}`
+}
+
+async function bridgeOf($: EngineInterface): Promise<string | undefined> {
+  const bridge = `${await $.session.root()}/${BRIDGE}`
+  return (await $.fs.exists(bridge)) ? bridge : undefined
+}
+
+async function runBridge($: EngineInterface, bridge: string, verb: 'status' | 'notify', path: string, stdin = ''): Promise<string> {
+  const done = await $.process.run([bridge, verb, path], { stdin, timeoutMs: BRIDGE_MS })
+  if (done.exitCode !== 0) throw new Error(`bridge ${verb} failed: ${done.stderr.trim().split('\n').pop() || done.exitCode}`)
+  return done.stdout
+}
+
+type Link = { status: Status | undefined; task: string }
+
+// Every linked item by key; status is undefined when the linked task has no state to report.
+async function linked($: EngineInterface, bridge: string, path: string): Promise<Record<string, Link>> {
+  const raw = JSON.parse(await runBridge($, bridge, 'status', path)) as Record<string, { status?: unknown; task?: unknown }>
+  const links: Record<string, Link> = {}
+  for (const [text, link] of Object.entries(raw)) {
+    const status = link.status === 'in-progress' || link.status === 'done' ? link.status : undefined
+    links[keyOf(text)] = { status, task: typeof link.task === 'string' ? link.task : '' }
+  }
+  return links
+}
+
+// Diffs the list against the last snapshot and stores the new one; called inside `locked` with the list as read and as written.
+async function snapshot($: EngineInterface, path: string, before: readonly Item[], after: readonly Item[]): Promise<string[]> {
+  const saved = await $.store.get(snapshotKey(path))
+  const changes = diffSnapshot(typeof saved === 'object' && saved !== null ? (saved as Record<string, Status>) : undefined, before, after)
+  await $.store.set(snapshotKey(path), snapshotOf(after))
+  return changes
+}
+
+async function notify($: EngineInterface, bridge: string, path: string, changes: readonly string[]): Promise<void> {
+  if (changes.length === 0) return
+  try {
+    await runBridge($, bridge, 'notify', path, `${changes.join('\n')}\n`)
+  } catch (error) {
+    $.ui.toast(`notes-keeping todo: ${message(error)}`)
+  }
+}
+
+// A captain's hand edit made while no todo run happens is noticed here.
+async function watchTodo($: EngineInterface): Promise<void> {
+  const bridge = await bridgeOf($)
+  if (bridge === undefined) return
+  const path = await boundPath($)
+  if (path === undefined) return
+  const changes = await locked(async () => {
+    const list = items(sections(await readText($, path)).todo)
+    return snapshot($, path, list, list)
+  })
+  await notify($, bridge, path, changes)
+}
+
 // Laya only picks among given answers, so the label comes from a small model through the session's own client.
 // Undefined when the model gives no usable label: the list then shows the text cut short.
 async function askLabel($: EngineInterface, text: string): Promise<string | undefined> {
@@ -219,13 +280,15 @@ async function askLabel($: EngineInterface, text: string): Promise<string | unde
   return undefined
 }
 
-// One line per status Laya changed, committed with the file, so a change can be reviewed; a hand-set status it replaced says so.
-async function logMoves($: EngineInterface, path: string, moves: readonly Applied[], verdicts: Record<string, Verdict>): Promise<void> {
+// One line per status Laya or the bridge changed, committed with the file, so a change can be reviewed; a hand-set status it replaced says so.
+async function logMoves($: EngineInterface, path: string, moves: readonly Applied[], verdicts: Record<string, Verdict>, links: Record<string, Link>): Promise<void> {
   const log = `${await notesDir($)}/${LOG}`
   const when = stamp(await $.clock.now())
   const rows = moves.map(move => {
-    const verdict = verdicts[keyOf(move.text)]
-    const said = verdict === undefined ? '' : ` | laya ${verdict.label} ${verdict.p.toFixed(2)}`
+    const key = keyOf(move.text)
+    const verdict = verdicts[key]
+    const link = links[key]
+    const said = link !== undefined ? ` | firstmate ${link.task}` : verdict === undefined ? '' : ` | laya ${verdict.label} ${verdict.p.toFixed(2)}`
     return `${when} ${path.split('/').pop()} | ${move.text} | ${move.from} -> ${move.to}${said}${move.isHandSet ? ' | replaced a hand-set status' : ''}`
   })
   const before = (await $.fs.exists(log)) ? await readText($, log) : ''
@@ -236,6 +299,15 @@ async function logMoves($: EngineInterface, path: string, moves: readonly Applie
 async function runTodo($: EngineInterface, answer: string): Promise<void> {
   const path = await boundPath($)
   if (path === undefined) return
+  const bridge = await bridgeOf($)
+  let links: Record<string, Link> = {}
+  if (bridge !== undefined) {
+    try {
+      links = await linked($, bridge, path)
+    } catch (error) {
+      $.ui.toast(`notes-keeping todo: ${message(error)}`)
+    }
+  }
   const s = sections(await readText($, path))
   const list = items(s.todo)
   const memory = settle(await readMemory($, path), list)
@@ -243,7 +315,8 @@ async function runTodo($: EngineInterface, answer: string): Promise<void> {
   const isHad = (text: string) => keysOf(text).some(key => have.has(key))
   const fresh = candidates(s).filter(c => !keysOf(c.text).some(key => memory.seen.includes(key)))
   const lines = fresh.filter(c => !c.isUpdate && !isHad(c.text)).map(c => ({ id: keyOf(c.text), text: c.text }))
-  const open = list.filter(item => item.status === 'todo' || item.status === 'in-progress')
+  // A linked item's status follows its firstmate task; Laya is not asked about it.
+  const open = list.filter(item => (item.status === 'todo' || item.status === 'in-progress') && links[keyOf(item.text)] === undefined)
   const statuses = answer.trim() === '' ? [] : open.map(item => ({ id: keyOf(item.text), text: item.text }))
   const laya = lines.length + statuses.length === 0 ? undefined : await askLaya($, { lines, statuses, answer })
   const add: Item[] = []
@@ -265,6 +338,9 @@ async function runTodo($: EngineInterface, answer: string): Promise<void> {
     const next = moved(item, answer, laya?.statuses[keyOf(item.text)])
     if (next !== undefined) set[keyOf(item.text)] = { from: item.status, to: next }
   }
+  const reported: Record<string, Status> = {}
+  for (const [key, link] of Object.entries(links)) if (link.status !== undefined) reported[key] = link.status
+  Object.assign(set, bridgeMoves(list, reported, memory))
   const unlabeled = [...list.filter(item => item.label === undefined && !memory.labeled.includes(keyOf(item.text))), ...add]
   const named = await Promise.all(unlabeled.map(async item => [keyOf(item.text), await askLabel($, item.text)] as const))
   const labels: Record<string, string> = {}
@@ -272,16 +348,18 @@ async function runTodo($: EngineInterface, answer: string): Promise<void> {
   const labeled = named.map(([key]) => key)
   const added = add.map(item => (labels[keyOf(item.text)] === undefined ? item : { ...item, label: labels[keyOf(item.text)] }))
   // The file may have changed while Laya ran: apply onto what is there now.
-  const said = await locked(async () => {
+  const { said, changes } = await locked(async () => {
     const latest = await readText($, path)
     const body = sections(latest).todo
-    const out = reconcile(body, await readMemory($, path), { add: added, set, seen, labels, labeled })
+    const out = reconcile(body, await readMemory($, path), { add: added, set, seen, labels, labeled, bridge: reported })
     await $.store.set(memoryKey(path), out.memory)
-    if (out.body === format(parse(body))) return []
-    if (out.applied.length > 0) await logMoves($, path, out.applied, laya?.statuses ?? {})
-    return await save($, path, setTodo(latest, out.body), 'todo')
+    const changes = bridge === undefined ? [] : await snapshot($, path, items(body), items(out.body))
+    if (out.body === format(parse(body))) return { said: [], changes }
+    if (out.applied.length > 0) await logMoves($, path, out.applied, laya?.statuses ?? {}, links)
+    return { said: await save($, path, setTodo(latest, out.body), 'todo'), changes }
   })
   warn($, told('', said))
+  if (bridge !== undefined) await notify($, bridge, path, changes)
 }
 
 async function syncTodo($: EngineInterface, answer: string): Promise<void> {
@@ -306,11 +384,15 @@ async function syncTodo($: EngineInterface, answer: string): Promise<void> {
 async function clickItem($: EngineInterface, key: string): Promise<void> {
   const path = await boundPath($)
   if (path === undefined) return
-  await locked(async () => {
+  const bridge = await bridgeOf($)
+  const changes = await locked(async () => {
     await $.store.set(memoryKey(path), pin(await readMemory($, path), key))
     const md = await readText($, path)
-    await save($, path, setTodo(md, cycleItem(sections(md).todo, key)), 'todo')
+    const body = cycleItem(sections(md).todo, key)
+    await save($, path, setTodo(md, body), 'todo')
+    return bridge === undefined ? [] : await snapshot($, path, items(body), items(body))
   })
+  if (bridge !== undefined) await notify($, bridge, path, changes)
 }
 
 function told(text: string, said: readonly string[]): string {
@@ -568,6 +650,7 @@ export const register: Register = on => {
       $.clock.every(REFRESH_MS, async () => {
         const panes = await $.ui.panes()
         if (panes.some(pane => pane.id === PANE)) await refresh($)
+        await watchTodo($)
       })
     }
     return next(e)

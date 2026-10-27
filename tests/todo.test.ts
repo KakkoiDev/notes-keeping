@@ -3,12 +3,14 @@ import { describe, expect, test } from 'claude-code/testing'
 import { addUpdate, create, sections, setTodo } from '../hooks/notes'
 import {
   EMPTY,
+  bridgeMoves,
   candidates,
   context,
   cycle,
   cleanLabel,
   clip,
   cycleItem,
+  diffSnapshot,
   format,
   isBackground,
   items,
@@ -166,7 +168,7 @@ describe('Laya answers', () => {
 
 describe('memory and reconcile', () => {
   test('an item whose status differs from what the AI wrote, or a non-default one the AI never wrote, is marked hand-set', () => {
-    const memory = { seen: [], ai: { one: 'todo' as const, two: 'todo' as const }, pins: [], labeled: [] }
+    const memory = { seen: [], ai: { one: 'todo' as const, two: 'todo' as const }, pins: [], labeled: [], bridge: {} }
     const list = [
       { status: 'in-progress' as const, text: 'One' },
       { status: 'todo' as const, text: 'Two' },
@@ -177,12 +179,12 @@ describe('memory and reconcile', () => {
   })
 
   test('an item the captain deleted leaves the memory', () => {
-    const memory = { seen: ['gone'], ai: { gone: 'todo' as const }, pins: ['gone'], labeled: ['gone'] }
-    expect(settle(memory, [])).toEqual({ seen: ['gone'], ai: {}, pins: [], labeled: [] })
+    const memory = { seen: ['gone'], ai: { gone: 'todo' as const }, pins: ['gone'], labeled: ['gone'], bridge: { gone: 'done' as const } }
+    expect(settle(memory, [])).toEqual({ seen: ['gone'], ai: {}, pins: [], labeled: [], bridge: {} })
   })
 
   test('new items are added once, moves land on the status Laya read, and the AI remembers what it wrote', () => {
-    const memory = { seen: [], ai: { a: 'todo' as const, b: 'todo' as const, d: 'todo' as const }, pins: [], labeled: [] }
+    const memory = { seen: [], ai: { a: 'todo' as const, b: 'todo' as const, d: 'todo' as const }, pins: [], labeled: [], bridge: {} }
     const out = reconcile('- [ ] A\n- [~] B\n- [ ] D\nnote', memory, {
       add: [{ status: 'todo', text: 'C' }, { status: 'todo', text: 'a' }],
       set: { a: { from: 'todo', to: 'done' }, b: { from: 'todo', to: 'done' }, d: { from: 'in-progress', to: 'done' } },
@@ -196,7 +198,7 @@ describe('memory and reconcile', () => {
   })
 
   test('a move on a hand-set item lands, is reported as hand-set, and the item is the AI\'s again', () => {
-    const memory = { seen: [], ai: { a: 'todo' as const }, pins: [], labeled: [] }
+    const memory = { seen: [], ai: { a: 'todo' as const }, pins: [], labeled: [], bridge: {} }
     const out = reconcile('- [~] A', memory, { add: [], set: { a: { from: 'in-progress', to: 'done' } }, seen: [] })
     expect(out.body).toBe('- [x] A')
     expect(out.applied).toEqual([{ text: 'A', from: 'in-progress', to: 'done', isHandSet: true }])
@@ -213,7 +215,7 @@ describe('context for Claude', () => {
   test('names the in-progress item first, else the first todo, and lists every item', () => {
     const text = context('- [ ] a\n- [~] b\n- [x] c')
     expect(text).toContain('Work on: b')
-    expect(text).toContain('- [todo] a\n- [in-progress] b\n- [done] c')
+    expect(text).toContain('- [ ] a\n- [~] b\n- [x] c')
     expect(context('- [ ] a\n- [ ] b')).toContain('Work on: a')
     expect(context('- [x] a')).toContain('Nothing is open.')
     expect(context('')).toBeUndefined()
@@ -222,7 +224,49 @@ describe('context for Claude', () => {
   test('a labeled item is named by its label, with its text cut short after it', () => {
     const text = context(`- [ ] **Short name**: ${'word '.repeat(40)}end`) ?? ''
     expect(text).toContain('Work on: Short name: word word')
-    expect(text).toContain('- [todo] Short name: word word')
+    expect(text).toContain('- [ ] Short name: word word')
     expect(text).toContain('…')
+  })
+})
+
+describe('bridge', () => {
+  const memory = { ...EMPTY, bridge: { c: 'in-progress' as const } }
+  const list = [
+    { status: 'todo' as const, text: 'A' },
+    { status: 'done' as const, text: 'B' },
+    { status: 'todo' as const, text: 'C' },
+  ]
+
+  test('a reported status moves its item forward only, and not again once reported', () => {
+    // C: the captain set it back to todo after the bridge reported in-progress; the same report does not move it again.
+    expect(bridgeMoves(list, { a: 'in-progress', b: 'in-progress', c: 'in-progress' }, memory)).toEqual({ a: { from: 'todo', to: 'in-progress' } })
+    expect(bridgeMoves(list, { c: 'done' }, memory)).toEqual({ c: { from: 'todo', to: 'done' } })
+  })
+
+  test('reconcile remembers what the bridge reported', () => {
+    const out = reconcile('- [ ] A', EMPTY, { add: [], set: { a: { from: 'todo', to: 'in-progress' } }, seen: [], bridge: { a: 'in-progress' } })
+    expect(out.body).toBe('- [~] A')
+    expect(out.memory.bridge).toEqual({ a: 'in-progress' })
+    expect(out.memory.ai).toEqual({ a: 'in-progress' })
+  })
+
+  test('the snapshot diff names new items and status changes found in the file, not the moves the write made', () => {
+    const before = [
+      { status: 'in-progress' as const, text: 'A' },
+      { status: 'todo' as const, text: 'B' },
+      { status: 'todo' as const, text: 'Hand added' },
+    ]
+    const after = [
+      { status: 'in-progress' as const, text: 'A' },
+      { status: 'done' as const, text: 'B' },
+      { status: 'todo' as const, text: 'Hand added' },
+      { status: 'todo' as const, text: 'From an update' },
+    ]
+    expect(diffSnapshot({ a: 'todo', b: 'todo' }, before, after)).toEqual([
+      'A: todo -> in-progress (captain)',
+      '+ [ ] Hand added',
+      '+ [ ] From an update',
+    ])
+    expect(diffSnapshot(undefined, before, after)).toEqual([])
   })
 })

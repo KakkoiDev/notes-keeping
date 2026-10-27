@@ -88,12 +88,23 @@ is kept whole and is what the item is matched and keyed by. See [Labels](#labels
   set by click or by hand. Review it there.
 - Click an item in the pane to cycle todo, in-progress, done, declined and back, or edit the marker by hand. Those
   statuses are yours until Laya moves them under the rule above.
+- Firstmate, when the session root holds an executable `config/notes-keeping-bridge` (a firstmate home that opted in):
+  - On every todo run the plugin runs `bridge status <notes file>`, which prints
+    `{"<item text>": {"status": "in-progress" | "done" | null, "task": "<id>"}}` for every item linked to a firstmate
+    task. A linked item follows that status forward and Laya is never asked about it; a null status leaves it where it
+    is. The move is logged with `firstmate <task>`. A status you set on a linked item stays until the bridge reports a
+    different one.
+  - After every todo write, every click, and every five seconds, the plugin runs `bridge notify <notes file>` with the
+    changes since its last write on stdin: `+ [ ] <item>` for a new item, `<item>: <from> -> <to> (captain)` for a
+    status set by click or by hand. Moves Laya or the bridge made are not sent.
+  - Without the file nothing of this runs.
 - Claude never edits the notes file; its Edit and Write on the notes folder are denied.
 
 ### In Claude's context
 
-Every prompt carries the list (statuses, and `Work on:` the ongoing item, else the first to-do), each item as
-`label: text` with the text cut to 120 characters, or the cut text alone when it has no label. A prompt that already
+Every prompt carries the list (each item with its marker, `[~]` for in-progress, and `Work on:` the ongoing item, else
+the first to-do), each item as `label: text` with the text cut to 120 characters, or the cut text alone when it has no
+label. A prompt that already
 carries the whole notes file, after a compaction or a resume, does not repeat it.
 
 ### In the pane

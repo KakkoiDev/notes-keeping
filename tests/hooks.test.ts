@@ -14,6 +14,9 @@ const ACTION = 'app:cycleDiffBase'
 const PYTHON = `${HOME}/.laya-venv/bin/python`
 
 type Ask = { lines: { id: string; text: string }[]; statuses: { id: string; text: string }[]; answer: string }
+const BRIDGE = `${ROOT}/config/notes-keeping-bridge`
+// What the fake bridge reports for status, and the change lines each notify sent.
+const bridge: { links: Record<string, { status: string | null; task: string }>; notified: string[]; calls: string[] } = { links: {}, notified: [], calls: [] }
 // What the fake Laya answers; left undefined, the call fails.
 const laya: { answer: ((ask: Ask) => unknown) | undefined; asks: Ask[] } = { answer: undefined, asks: [] }
 // What the fake label model answers per prompt; left undefined, the call fails as an API error.
@@ -50,6 +53,9 @@ function engine(
 ) {
   laya.answer = undefined
   laya.asks = []
+  bridge.links = {}
+  bridge.notified = []
+  bridge.calls = []
   model.answer = undefined
   model.asks = []
   const clock = mock.clock(on, { now: new Date(2026, 9, 26, 10, 58).getTime() })
@@ -85,6 +91,12 @@ function engine(
       laya.asks.push(ask)
       const stdout = laya.answer === undefined ? '' : JSON.stringify(laya.answer(ask))
       return { value: { exitCode: laya.answer === undefined ? 1 : 0, stdout, stderr: laya.answer === undefined ? 'boom' : '', isStdoutTruncated: false, isStderrTruncated: false } }
+    }
+    if (e.argv[0] === BRIDGE) {
+      bridge.calls.push(e.argv[1] ?? '')
+      if (e.argv[1] === 'notify') bridge.notified.push(e.init?.stdin ?? '')
+      const stdout = e.argv[1] === 'status' ? JSON.stringify(bridge.links) : ''
+      return { value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
     }
     git.calls.push([...e.argv])
     if (e.argv[3] === 'init') fs[`${DIR}/.git/HEAD`] = 'ref: refs/heads/main\n'
@@ -1072,7 +1084,7 @@ test('every prompt carries the todo list; a prompt that carries the whole file d
   for (const row of sent.slice(1)) {
     expect(row.context).toHaveLength(1)
     expect(row.context?.[0]).toContain('Work on: Write the docs')
-    expect(row.context?.[0]).toContain('- [todo] Add a ctrl+q toggle\n- [in-progress] Write the docs')
+    expect(row.context?.[0]).toContain('- [ ] Add a ctrl+q toggle\n- [~] Write the docs')
   }
 })
 
@@ -1118,6 +1130,138 @@ test('the todo list is the Todos view of the notes pane', async ($, on) => {
 function setTodoFile(body: string): string {
   return CAPTAIN_NOTES.replace('# Important', `# Todo\n\n${body}\n\n# Important`)
 }
+
+test('a linked item follows its firstmate task: the bridge moves it to in-progress and Laya is not asked about it', async ($, on) => {
+  const fs: Fs = { [BOUND]: setTodoFile('- [ ] Review this pr\n- [ ] Write the docs'), [PYTHON]: '', [BRIDGE]: '' }
+  engine(on, fs, { ...SESSION_BOUND })
+  fakeLaya({ 'review this pr': { label: 'finished', p: 0.95 }, 'write the docs': { label: 'started', p: 0.9 } })
+  bridge.links = { 'Review this PR': { status: 'in-progress', task: 'pr-review' } }
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: false })
+  await flush()
+  expect(fs[BOUND]).toContain('- [~] Review this pr\n- [ ] Write the docs')
+  expect(fs[LOG]).toContain('| Review this pr | todo -> in-progress | firstmate pr-review')
+
+  laya.asks.length = 0
+  await complete($, 'Finished the review this PR needed; started writing the docs.')
+  await flush()
+  expect(laya.asks.at(-1)?.statuses.map(status => status.id)).toContain('write the docs')
+  expect(laya.asks.at(-1)?.statuses.map(status => status.id)).not.toContain('review this pr')
+  expect(fs[BOUND]).toContain('- [~] Review this pr\n- [~] Write the docs')
+
+  bridge.links = { 'Review this PR': { status: 'done', task: 'pr-review' } }
+  await complete($, 'Nothing.')
+  await flush()
+  expect(fs[BOUND]).toContain('- [x] Review this pr')
+})
+
+test('a status the captain sets on a linked item stays until the linked task changes state', async ($, on) => {
+  const fs: Fs = { [BOUND]: setTodoFile('- [ ] Review this pr'), [PYTHON]: '', [BRIDGE]: '' }
+  engine(on, fs, { ...SESSION_BOUND })
+  fakeLaya()
+  bridge.links = { 'review this pr': { status: 'in-progress', task: 'pr-review' } }
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: false })
+  await flush()
+  expect(fs[BOUND]).toContain('- [~] Review this pr')
+  fs[BOUND] = (fs[BOUND] ?? '').replace('- [~] Review this pr', '- [ ] Review this pr')
+  await complete($, 'Nothing.')
+  await flush()
+  expect(fs[BOUND]).toContain('- [ ] Review this pr')
+  bridge.links = { 'review this pr': { status: 'done', task: 'pr-review' } }
+  await complete($, 'Nothing.')
+  await flush()
+  expect(fs[BOUND]).toContain('- [x] Review this pr')
+})
+
+test('a linked item with no task state is left alone and still kept from Laya', async ($, on) => {
+  const fs: Fs = { [BOUND]: setTodoFile('- [ ] Review this pr'), [PYTHON]: '', [BRIDGE]: '' }
+  engine(on, fs, { ...SESSION_BOUND })
+  fakeLaya({ 'review this pr': { label: 'finished', p: 0.95 } })
+  bridge.links = { 'review this pr': { status: null, task: 'pr-review' } }
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: false })
+  await flush()
+  await complete($, 'The review of this PR is finished.')
+  await flush()
+  expect(fs[BOUND]).toContain('- [ ] Review this pr')
+  expect(laya.asks.flatMap(ask => ask.statuses).map(status => status.id)).not.toContain('review this pr')
+  expect(laya.asks.at(-1)?.answer).toBe('The review of this PR is finished.')
+})
+
+test('the bridge is told of new items and of a captain click, not of a move Laya or the bridge made', async ($, on) => {
+  const fs: Fs = { [BOUND]: setTodoFile('- [ ] Add a ctrl+q toggle\n- [ ] Review this pr'), [PYTHON]: '', [BRIDGE]: '' }
+  engine(on, fs, { ...SESSION_BOUND })
+  fakeLaya({ 'add a ctrl+q toggle': { label: 'finished', p: 0.9 } })
+  // The first run takes the list as it is: nothing is new yet.
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: false })
+  await flush()
+  const seeded = bridge.notified.length
+
+  await complete($, 'The ctrl+q toggle works.')
+  await flush()
+  expect(fs[BOUND]).toContain('- [x] Add a ctrl+q toggle')
+  bridge.links = { 'review this pr': { status: 'in-progress', task: 'pr-review' } }
+  await complete($, 'Nothing.')
+  await flush()
+  expect(fs[BOUND]).toContain('- [~] Review this pr')
+  expect(bridge.notified.slice(seeded)).toEqual([])
+
+  await run($, 'update Ship the bridge')
+  await flush()
+  expect(bridge.notified.at(-1)).toBe('+ [ ] Ship the bridge\n')
+
+  await run($, 'show')
+  const pane = await $.ui.mount({ ...NOTES_PANE, surface: 'terminal' })
+  await pane.press({ key: 'todo:ship the bridge' })
+  await flush()
+  expect(bridge.notified.at(-1)).toBe('Ship the bridge: todo -> in-progress (captain)\n')
+  await pane.unmount()
+})
+
+test('a hand edit made between turns reaches the bridge within one refresh', async ($, on) => {
+  const fs: Fs = { [BOUND]: setTodoFile('- [ ] Add a ctrl+q toggle'), [PYTHON]: '', [BRIDGE]: '' }
+  const { clock } = engine(on, fs, { ...SESSION_BOUND })
+  fakeLaya()
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
+  await flush()
+  fs[BOUND] = (fs[BOUND] ?? '').replace('- [ ] Add a ctrl+q toggle', '- [x] Add a ctrl+q toggle\n- [ ] Typed by hand')
+  await clock.advance(5_000)
+  await flush()
+  expect(bridge.notified).toEqual(['Add a ctrl+q toggle: todo -> done (captain)\n+ [ ] Typed by hand\n'])
+  await clock.advance(5_000)
+  await flush()
+  expect(bridge.notified).toHaveLength(1)
+})
+
+test('without the bridge file the plugin runs no bridge and keeps no snapshot', async ($, on) => {
+  const fs: Fs = { [BOUND]: setTodoFile('- [ ] Add a ctrl+q toggle'), [PYTHON]: '' }
+  const store: Record<string, unknown> = { ...SESSION_BOUND }
+  const { clock } = engine(on, fs, store)
+  fakeLaya({ 'add a ctrl+q toggle': { label: 'finished', p: 0.9 } })
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
+  await flush()
+  await complete($, 'The ctrl+q toggle works.')
+  await run($, 'update Ship the bridge')
+  fs[BOUND] = (fs[BOUND] ?? '').replace('- [ ] Ship the bridge', '- [~] Ship the bridge')
+  await clock.advance(5_000)
+  await flush()
+  expect(fs[BOUND]).toContain('- [x] Add a ctrl+q toggle')
+  expect(bridge.calls).toEqual([])
+  expect(Object.keys(store).filter(key => key.startsWith('notified:'))).toEqual([])
+})
+
+test('the refresh tick binds no carried notes file to a new session id while there is no bridge', async ($, on) => {
+  const fs: Fs = {}
+  const session = { id: SESSION }
+  const store: Record<string, unknown> = {}
+  const { clock } = engine(on, fs, store, undefined, undefined, session)
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
+  await run($, 'init Plan')
+  await $.session.end({ reason: 'clear', sessionId: SESSION, resume: { id: SESSION } })
+  session.id = NEXT_ID
+  await clock.advance(5_000)
+  await flush()
+  expect(store[`session:${NEXT_ID}`]).toBeUndefined()
+  expect(fs[NOW]).not.toContain(NEXT_ID)
+})
 
 // The fake label model names an item by its first three words.
 function fakeLabels() {

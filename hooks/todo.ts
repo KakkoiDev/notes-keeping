@@ -8,11 +8,11 @@ export type Candidate = { text: string; isUpdate: boolean }
 export type Verdict = { label: string; p: number }
 // What the todo list remembers between runs: candidate lines already judged, the status the AI last wrote
 // per item, the items whose status the captain set (by hand or click), which the log flags when Laya changes them,
-// and the items a label was asked for, each asked once.
-export type Memory = { seen: string[]; ai: Record<string, Status>; pins: string[]; labeled: string[] }
+// the items a label was asked for, each asked once, and the status the bridge last reported per linked item.
+export type Memory = { seen: string[]; ai: Record<string, Status>; pins: string[]; labeled: string[]; bridge: Record<string, Status> }
 
 export const STATUSES: readonly Status[] = ['todo', 'in-progress', 'done', 'declined']
-export const EMPTY: Memory = { seen: [], ai: {}, pins: [], labeled: [] }
+export const EMPTY: Memory = { seen: [], ai: {}, pins: [], labeled: [], bridge: {} }
 // A line is dropped as background only when Laya is this sure it is not a task.
 export const BACKGROUND_FLOOR = 0.8
 // A status moves only when Laya is this sure of what the reply says.
@@ -173,13 +173,16 @@ export function settle(memory: Memory, list: readonly Item[]): Memory {
   const present = new Set(list.map(item => keyOf(item.text)))
   const pins = new Set(memory.pins.filter(key => present.has(key)))
   const ai: Record<string, Status> = {}
+  const bridge: Record<string, Status> = {}
   for (const item of list) {
     const key = keyOf(item.text)
     const wrote = memory.ai[key]
     if (wrote !== undefined) ai[key] = wrote
+    const reported = memory.bridge[key]
+    if (reported !== undefined) bridge[key] = reported
     if (wrote === undefined ? item.status !== 'todo' : wrote !== item.status) pins.add(key)
   }
-  return { seen: memory.seen, ai, pins: [...pins], labeled: memory.labeled.filter(key => present.has(key)) }
+  return { seen: memory.seen, ai, pins: [...pins], labeled: memory.labeled.filter(key => present.has(key)), bridge }
 }
 
 export function pin(memory: Memory, key: string): Memory {
@@ -193,7 +196,14 @@ export function cycleItem(body: string, key: string): string {
 
 export type Move = { from: Status; to: Status }
 // labels: a label per item key, set on an item still without one; labeled: the keys a label was asked for.
-export type Plan = { add: readonly Item[]; set: Readonly<Record<string, Move>>; seen: readonly string[]; labels?: Readonly<Record<string, string>>; labeled?: readonly string[] }
+export type Plan = {
+  add: readonly Item[]
+  set: Readonly<Record<string, Move>>
+  seen: readonly string[]
+  labels?: Readonly<Record<string, string>>
+  labeled?: readonly string[]
+  bridge?: Readonly<Record<string, Status>>
+}
 export type Applied = { text: string; from: Status; to: Status; isHandSet: boolean }
 
 // Applies new items and status moves to the todo section as it is now. A move lands only on an item still in the
@@ -225,7 +235,45 @@ export function reconcile(body: string, memory: Memory, plan: Plan): { body: str
   }
   const seen = [...new Set([...settled.seen, ...plan.seen])]
   const labeled = [...new Set([...settled.labeled, ...(plan.labeled ?? [])])]
-  return { body: format(lines), memory: { seen, ai, pins: [...pins], labeled }, applied }
+  return { body: format(lines), memory: { seen, ai, pins: [...pins], labeled, bridge: { ...settled.bridge, ...plan.bridge } }, applied }
+}
+
+// The moves the bridge's reported statuses make: forward only, and only when the report changed since the last run,
+// so a status the captain set on a linked item stays until the linked task's state changes again.
+export function bridgeMoves(list: readonly Item[], reported: Readonly<Record<string, Status>>, memory: Memory): Record<string, Move> {
+  const set: Record<string, Move> = {}
+  for (const item of list) {
+    const key = keyOf(item.text)
+    const to = reported[key]
+    if (to === undefined || to === memory.bridge[key] || RANK[to] <= RANK[item.status]) continue
+    set[key] = { from: item.status, to }
+  }
+  return set
+}
+
+export function snapshotOf(list: readonly Item[]): Record<string, Status> {
+  return Object.fromEntries(list.map(item => [keyOf(item.text), item.status]))
+}
+
+// What changed since the plugin last wrote the snapshot. `before` is the list as found, so a status that differs there
+// was set outside the plugin (by the captain); `after` adds the items this write added. Moves the plugin made are not
+// changes. With no snapshot yet nothing is reported.
+export function diffSnapshot(snapshot: Readonly<Record<string, Status>> | undefined, before: readonly Item[], after: readonly Item[]): string[] {
+  if (snapshot === undefined) return []
+  const out: string[] = []
+  const found = new Set<string>()
+  for (const item of before) {
+    const key = keyOf(item.text)
+    found.add(key)
+    const was = snapshot[key]
+    if (was === undefined) out.push(`+ [${MARKS[item.status]}] ${item.text}`)
+    else if (was !== item.status) out.push(`${item.text}: ${was} -> ${item.status} (captain)`)
+  }
+  for (const item of after) {
+    const key = keyOf(item.text)
+    if (!found.has(key) && snapshot[key] === undefined) out.push(`+ [${MARKS[item.status]}] ${item.text}`)
+  }
+  return out
 }
 
 const SECTION_CAP = 40
@@ -241,7 +289,7 @@ export function context(body: string): string | undefined {
   const open = list.filter(item => item.status === 'todo' || item.status === 'in-progress')
   const focus = open.find(item => item.status === 'in-progress') ?? open[0]
   const head = focus === undefined ? 'Nothing is open.' : `Work on: ${brief(focus)}`
-  const shown = list.slice(0, SECTION_CAP).map(item => `- [${item.status}] ${brief(item)}`)
+  const shown = list.slice(0, SECTION_CAP).map(item => `- [${MARKS[item.status]}] ${brief(item)}`)
   const more = list.length > SECTION_CAP ? [`(${list.length - SECTION_CAP} more in the notes file)`] : []
-  return ['Todo list kept by notes-keeping (statuses: todo, in-progress, done, declined). The captain and the plugin set them; you never edit the notes file.', head, ...shown, ...more].join('\n')
+  return ['Todo list kept by notes-keeping ([ ] todo, [~] in-progress, [x] done, [-] declined). The captain and the plugin set them; you never edit the notes file.', head, ...shown, ...more].join('\n')
 }
