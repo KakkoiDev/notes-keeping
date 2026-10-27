@@ -445,7 +445,9 @@ async function sendQueue($: EngineInterface): Promise<void> {
   showQueue($, 0)
 }
 
+// An open notes pane holding the keyboard refuses the selection pane's focus and keeps it a tab behind, so it closes first.
 async function openSelect($: EngineInterface, selection: string): Promise<void> {
+  if ((await $.ui.panes()).some(pane => pane.id === PANE)) await hideNotes($)
   await update($, select, () => ({ mode: 'menu', selection, isPlaced: false, hadFocus: false }))
   const opened = await $.ui.open({ id: SELECT, title: 'Selection', focus: true, closeOnEscape: true, rows: 4 })
   await update($, select, current => (current === null ? null : { ...current, isPlaced: opened.isPlaced }))
@@ -502,10 +504,13 @@ export const register: Register = on => {
       $.clock.every(POLL_MS, async () => {
         const current = await read($, select)
         if (current?.mode === 'reply') return
-        const isFocused = (await $.ui.panes()).some(pane => pane.id === SELECT && pane.isFocused)
+        const selectPane = (await $.ui.panes()).find(pane => pane.id === SELECT)
+        const isFocused = selectPane?.isFocused === true
         // A key that is none of r/i/x hands the keyboard back to the prompt: the menu goes with it.
+        // A click on another tab hides the pane instead: it stays behind its tab until shown again.
         if (current !== null && current.hadFocus && !isFocused) {
-          await finish($, current.selection)
+          if (selectPane !== undefined && !selectPane.isShown) await update($, select, () => ({ ...current, hadFocus: false }))
+          else await finish($, current.selection)
           return
         }
         if (current !== null && isFocused && !current.hadFocus) await update($, select, () => ({ ...current, hadFocus: true }))

@@ -24,8 +24,10 @@ async function flush(): Promise<void> {
 type Fs = Record<string, string>
 type Git = { calls: string[][]; remotes: string }
 // isPlaced: whether a pane opened unasked is drawn; isFocusable: whether it may take the keyboard (no draft in the prompt).
+// shown: the one pane the dock draws; the rest are tabs behind it. A pane holding the keyboard refuses another's focus.
 type Ui = {
   panes: Map<string, { isFocused: boolean }>
+  shown: string | undefined
   opened: { id: string; focus: boolean }[]
   closed: string[]
   status: (string | undefined)[]
@@ -50,7 +52,7 @@ function engine(
   mock.store(on, store)
   mock.env(on, { HOME })
   const git: Git = { calls: [], remotes: '' }
-  const ui: Ui = { panes: new Map(), opened: [], closed: [], status: [], toasts: [], isPlaced: true, isFocusable: true, fills: [], isFillable: true }
+  const ui: Ui = { panes: new Map(), shown: undefined, opened: [], closed: [], status: [], toasts: [], isPlaced: true, isFocusable: true, fills: [], isFillable: true }
   on('session.start', (_$, e) => ({ cwd: e.cwd }))
   on('session.end', (_$, e) => ({ sessionId: e.sessionId }))
   on('command.register', (_$, e) => ({ value: { command: e.name } }))
@@ -93,16 +95,20 @@ function engine(
     const focus = e.focus === true
     ui.opened.push({ id: e.id, focus })
     if (!ui.isPlaced) return { value: { isPlaced: false as const, reason: 'narrow' } }
-    ui.panes.set(e.id, { isFocused: focus && ui.isFocusable })
+    const isHeld = [...ui.panes].some(([id, pane]) => id !== e.id && pane.isFocused)
+    const isFocused = focus && ui.isFocusable && !isHeld
+    ui.panes.set(e.id, { isFocused })
+    if (isFocused || ui.shown === undefined) ui.shown = e.id
     return { value: { isPlaced: true as const } }
   })
   on('ui.close', (_$, e) => {
     ui.closed.push(e.id)
     ui.panes.delete(e.id)
+    if (ui.shown === e.id) ui.shown = ui.panes.keys().next().value
     return { value: undefined }
   })
   on('ui.panes', () => ({
-    value: [...ui.panes].map(([id, pane]) => ({ id, title: id, isShown: true, isFocused: pane.isFocused, isPlaced: true })),
+    value: [...ui.panes].map(([id, pane]) => ({ id, title: id, isShown: id === ui.shown, isFocused: pane.isFocused, isPlaced: true })),
   }))
   on('ui.status', (_$, e) => {
     ui.status.push(e.text)
@@ -518,6 +524,19 @@ test('a selection opens a focused pane: i keeps it, r queues a reply, x dismisse
   expect(ui.opened).toHaveLength(opens + 1)
 })
 
+test('a selection while the notes panel holds the keyboard shows the Selection pane, focused, with no Esc', async ($, on) => {
+  let selection: string | undefined
+  const { clock, ui } = engine(on, { [BOUND]: NOTES }, { [`session:${SESSION}`]: BOUND }, () => selection)
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
+  await run($, 'show')
+  expect(ui.shown).toBe('notes-keeping')
+  expect(ui.panes.get('notes-keeping')?.isFocused).toBe(true)
+  selection = 'Keep this fact'
+  await clock.advance(1200)
+  expect(ui.shown).toBe('notes-keeping-select')
+  expect(ui.panes.get('notes-keeping-select')?.isFocused).toBe(true)
+})
+
 test('a selection still changing between polls, as during a drag, opens nothing until it holds', async ($, on) => {
   let selection: string | undefined
   const { clock, ui } = engine(on, { [BOUND]: NOTES }, { [`session:${SESSION}`]: BOUND }, () => selection)
@@ -547,6 +566,31 @@ test('a key that is none of the hotkeys hands focus back to the prompt and close
   expect(ui.closed).toEqual(['notes-keeping-select'])
   await clock.advance(1200)
   expect(ui.opened).toHaveLength(1)
+})
+
+test('switching to the Notes tab keeps the Selection pane and both tabs; it closes only when the prompt takes the keyboard', async ($, on) => {
+  let selection: string | undefined
+  const { clock, ui } = engine(on, { [BOUND]: NOTES }, { [`session:${SESSION}`]: BOUND }, () => selection)
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
+  selection = 'alpha'
+  await clock.advance(1200)
+  await clock.advance(600)
+  await run($, 'show')
+  expect([...ui.panes.keys()]).toEqual(['notes-keeping-select', 'notes-keeping'])
+  // The person clicks the Notes tab: it is shown and takes the keyboard.
+  ui.shown = 'notes-keeping'
+  ui.panes.set('notes-keeping', { isFocused: true })
+  ui.panes.set('notes-keeping-select', { isFocused: false })
+  await clock.advance(1200)
+  expect(ui.closed).toEqual([])
+  // Back on the Selection tab, then a key that is none of r/i/x hands the keyboard to the prompt.
+  ui.shown = 'notes-keeping-select'
+  ui.panes.set('notes-keeping', { isFocused: false })
+  ui.panes.set('notes-keeping-select', { isFocused: true })
+  await clock.advance(600)
+  ui.panes.set('notes-keeping-select', { isFocused: false })
+  await clock.advance(600)
+  expect(ui.closed).toEqual(['notes-keeping-select'])
 })
 
 test('the open pane outlives the selection the terminal drops when the dock narrows the transcript', async ($, on) => {
