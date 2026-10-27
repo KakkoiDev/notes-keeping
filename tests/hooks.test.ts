@@ -751,6 +751,24 @@ test('u in the objectives view opens an input whose text lands as a new [UPDATE]
   await pane.unmount()
 })
 
+test('a selection pane the terminal cannot seat says why once and names the bar keys, instead of silently showing the bar', async ($, on) => {
+  let selection: string | undefined
+  const { clock, ui } = engine(on, { [BOUND]: NOTES }, { [`session:${SESSION}`]: BOUND }, () => selection)
+  engineDraws(on)
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
+  ui.isPlaced = false
+  selection = 'first pick'
+  await clock.advance(1200)
+  const told = () => ui.toasts.filter(text => text.startsWith('The selection panel'))
+  expect(told()).toEqual(['The selection panel waits for a wider terminal (narrow); use the bar above the prompt: 1 Reply, 2 Important, 3 Dismiss.'])
+  selection = undefined
+  await clock.advance(1200)
+  selection = 'second pick'
+  await clock.advance(1200)
+  expect(ui.opened).toHaveLength(2)
+  expect(told()).toHaveLength(1)
+})
+
 // The captain's heading layout with his list shapes; the text is a stand-in.
 const CAPTAIN_NOTES = [
   '# Objectives',

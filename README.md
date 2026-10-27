@@ -47,7 +47,7 @@ Select text in the transcript and hold still. The Selection pane opens:
 | `i` | Important: add the selected text to `# Important` |
 | `x` | Dismiss |
 
-Any other key hands the keyboard back to the prompt and closes the pane. On a terminal too narrow for the pane, the same actions are a band above the prompt on keys `1`, `2`, `3`.
+Any other key hands the keyboard back to the prompt and closes the pane. The pane is opened by a timer, not by a key press, so the terminal seats it only from 144 columns (110 once you have opened it yourself and not closed it by hand). Below that the same actions are a bar above the prompt on keys `1` Reply, `2` Important, `3` Dismiss, and a toast says so once per session with the width it needs.
 
 Queued replies go out ahead of your next message when you press Enter, unless you moved them into the prompt first with `s`.
 

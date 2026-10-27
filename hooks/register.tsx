@@ -93,6 +93,8 @@ let resumed = false
 let seen = ''
 // Closing the dock widens the transcript, and the kept selection then covers other text.
 let isClosed = false
+// The bar stands in for a pane the terminal cannot seat: the reason is told once, not on every selection.
+let isTold = false
 
 async function boundPath($: EngineInterface): Promise<string | undefined> {
   const id = await $.session.id()
@@ -438,6 +440,10 @@ async function openSelect($: EngineInterface, selection: string): Promise<void> 
   await update($, select, () => ({ mode: 'menu', selection, isPlaced: false, hadFocus: false }))
   const opened = await $.ui.open({ id: SELECT, title: 'Selection', focus: true, closeOnEscape: true, rows: 4 })
   await update($, select, current => (current === null ? null : { ...current, isPlaced: opened.isPlaced }))
+  if (!opened.isPlaced && !isTold) {
+    isTold = true
+    $.ui.toast(`The selection panel waits for a wider terminal (${opened.reason}); use the bar above the prompt: 1 Reply, 2 Important, 3 Dismiss.`)
+  }
 }
 
 async function openReply($: EngineInterface, selection: string): Promise<void> {
