@@ -19,18 +19,18 @@ Session notes in `~/.notes-keeping/<date>-<time>-<project>-<session>.md`, commit
 
 Toggle with ctrl+q (see below), `/notes-keeping show` / `hide`, or the `Notes` button under the prompt. Esc closes it. Top to bottom:
 
-1. The todo slot (see [Todo list](#todo-list)).
-2. A row of views and actions, keys shown on screen.
-3. The current view.
+1. A row of views and actions, keys shown on screen.
+2. The current view. The panel opens on the Todos view; no other view shows the todo list.
 
 | Key | Does |
 | --- | --- |
+| `t` | Todos view: the todo list (see [Todo list](#todo-list)) and the notes file path |
 | `o` | Objectives view: objectives and updates |
 | `i` | Important view |
 | `c` | Chat view |
 | `e` | Queue view: every queued reply in its own editable field |
 | `s` | Send queue: put every queued reply into the prompt box, clear the queue, record them in `# Chat`; you press Enter |
-| `b` | Back to the overview (shown in every view but the overview) |
+| `b` | Back to the Todos view (shown in every view but Todos) |
 | `u` | in the Objectives view: opens an input; Enter appends the text as a new `[UPDATE]` under `## Updates` (while the objectives are still empty it sets them instead) |
 
 Every row is also clickable. In the Queue view, Tab to a reply, edit its text, Enter keeps it; `[remove]` beside a reply drops it.
@@ -97,7 +97,7 @@ carries the whole notes file, after a compaction or a resume, does not repeat it
 
 ### In the pane
 
-The list is the todo slot at the top of the panel (`TodoSlot` in `hooks/todos.tsx`), read from the notes file on every draw; a click calls the same status cycle as above. It refreshes every five seconds while the pane is open and on every write.
+The list is the Todos view of the panel (`TodoSlot` in `hooks/todos.tsx`), read from the notes file on every draw; a click calls the same status cycle as above. It refreshes every five seconds while the pane is open and on every write.
 
 ### `/notes-keeping todo [sync]`
 

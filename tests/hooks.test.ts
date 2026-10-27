@@ -730,24 +730,34 @@ test('o opens the objectives view and u focuses an inline field that sets the ob
 })
 
 
-test('the panel opens on an overview with the todo slot first, keys on screen, and a view per key', async ($, on) => {
-  const fs: Fs = { [BOUND]: '# Objectives\n\nSessions: s\n\nShip it\n\n## Updates\n\n# Important\n\n[AI_AGENT] a fact\n\n# Chat\n\n[USER] hello\n' }
+test('the panel opens on the Todos view, t brings it back, and the other views carry no todo list', async ($, on) => {
+  const fs: Fs = { [BOUND]: '# Objectives\n\nSessions: s\n\nShip it\n\n## Updates\n\n# Todo\n\n- [ ] Ship it\n\n# Important\n\n[AI_AGENT] a fact\n\n# Chat\n\n[USER] hello\n' }
   engine(on, fs, { [`session:${SESSION}`]: BOUND })
   await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: false })
   await run($, 'show')
   const pane = await $.ui.mount({ ...NOTES_PANE, surface: 'terminal' })
   expect(await pane.find({ type: 'Text', text: 'Todo' })).toBeDefined()
-  expect(await pane.find({ type: 'Text', text: '(no todos yet)' })).toBeDefined()
-  expect((await pane.findAll({ type: 'Button' })).map(button => button.key)).toEqual(['view:objectives', 'view:important', 'view:chat', 'view:queue', 'send'])
-  expect(await pane.find({ type: 'Text', text: 'o objectives (u adds an update there), i important, c chat, e queue, s send queue, Esc closes' })).toBeDefined()
+  expect((await pane.find({ key: 'todo:ship it' }))?.props.label).toBe('[ ] Ship it')
+  expect((await pane.find({ key: 'view:todos' }))?.props).toMatchObject({ hotkey: 't', dimColor: false })
+  expect((await pane.findAll({ type: 'Button' })).map(button => button.key)).toEqual(['view:todos', 'view:objectives', 'view:important', 'view:chat', 'view:queue', 'send', 'todo:ship it'])
+  expect(await pane.find({ type: 'Text', text: 't todos, o objectives (u adds an update there), i important, c chat, e queue, s send queue, Esc closes' })).toBeDefined()
+  for (const at of ['view:objectives', 'view:important', 'view:chat', 'view:queue']) {
+    await pane.press({ key: at })
+    expect(await pane.find({ key: 'todo:ship it' })).toBeUndefined()
+    expect(await pane.find({ type: 'Text', text: 'Todo' })).toBeUndefined()
+  }
   await pane.press({ key: 'view:important' })
   expect(await pane.find({ type: 'Text', text: '[AI_AGENT] a fact' })).toBeDefined()
   expect(await pane.find({ type: 'Text', text: '[USER] hello' })).toBeUndefined()
   await pane.press({ key: 'view:chat' })
   expect(await pane.find({ type: 'Text', text: '[USER] hello' })).toBeDefined()
-  expect((await pane.find({ key: 'view:overview' }))?.props).toMatchObject({ hotkey: 'b' })
-  await pane.press({ key: 'view:overview' })
-  expect(await pane.find({ key: 'view:overview' })).toBeUndefined()
+  await pane.press({ key: 'view:todos' })
+  expect((await pane.find({ key: 'todo:ship it' }))?.props.label).toBe('[ ] Ship it')
+  await pane.press({ key: 'view:chat' })
+  expect((await pane.find({ key: 'view:back' }))?.props).toMatchObject({ hotkey: 'b' })
+  await pane.press({ key: 'view:back' })
+  expect(await pane.find({ key: 'view:back' })).toBeUndefined()
+  expect(await pane.find({ key: 'todo:ship it' })).toBeDefined()
   await pane.unmount()
 })
 
@@ -1063,7 +1073,7 @@ test('a click on a todo item in the notes pane sets the next status and writes t
   await pane.unmount()
 })
 
-test('the todo list is the first block of the notes pane', async ($, on) => {
+test('the todo list is the Todos view of the notes pane', async ($, on) => {
   const fs: Fs = { [BOUND]: setTodoFile('- [x] Done one\n- [-] Dropped one') }
   engine(on, fs, { ...SESSION_BOUND })
   await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: false })

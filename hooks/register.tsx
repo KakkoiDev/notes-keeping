@@ -62,7 +62,7 @@ const USAGE = [
   '  replies                    open the panel at the queue: every reply editable, s moves all into the prompt',
   '  todo [sync]                show the todo list; sync runs Laya over the objectives and the last reply now',
   '  history [n|file]           list earlier notes; pick one to copy its objectives, updates and todo items here',
-  `  show | hide                open or close the notes panel (also ${CHORD}); o objectives, i important, c chat, e queue, s send queue`,
+  `  show | hide                open or close the notes panel (also ${CHORD}) at the todo list; t todos, o objectives, i important, c chat, e queue, s send queue`,
   `${CHORD} works once ~/.claude/keybindings.json binds it: { "bindings": [{ "context": "Global", "bindings": { "${CHORD}": "${ACTION}" } }] }`,
   'Every write starts the notes file when the session has none.',
 ].join('\n')
@@ -72,7 +72,7 @@ const select = atom({ plugin: 'notes-keeping', key: 'select' } as const, null as
 const handled = atom({ plugin: 'notes-keeping', key: 'handled' } as const, '')
 const queue = atom({ plugin: 'notes-keeping', key: 'queue' } as const, [] as Pair[])
 const editing = atom({ plugin: 'notes-keeping', key: 'editing' } as const, false)
-const view = atom({ plugin: 'notes-keeping', key: 'view' } as const, 'overview' as View)
+const view = atom({ plugin: 'notes-keeping', key: 'view' } as const, 'todos' as View)
 const isNotesOpen = atom({ plugin: 'notes-keeping', key: 'isNotesOpen' } as const, false)
 
 function message(error: unknown): string {
@@ -490,7 +490,7 @@ async function refresh($: EngineInterface): Promise<void> {
   await publish($, path, await readText($, path))
 }
 
-async function showNotes($: EngineInterface, at: View = 'overview'): Promise<void> {
+async function showNotes($: EngineInterface, at: View = 'todos'): Promise<void> {
   await refresh($)
   await update($, view, () => at)
   await $.ui.open({ id: PANE, title: TITLE, focus: true, closeOnEscape: true })
@@ -812,12 +812,13 @@ export const register: Register = on => {
     )
     const nav = (
       <Box key="nav" flexDirection="row" gap={2} marginBottom={1}>
+        {tab('todos', 't', 'Todos', 'todos')}
         {tab('objectives', 'o', 'Objectives', 'objectives')}
         {tab('important', 'i', 'Important', 'important')}
         {tab('chat', 'c', 'Chat', 'chat')}
         {tab('queue', 'e', `Queue (${list.length})`, 'queue')}
         <Button key="send" plain hotkey="s" label="Send queue" onPress={() => sendQueue($)} />
-        {at === 'overview' ? null : <Button key="view:overview" plain hotkey="b" label="Back" onPress={go('overview')} />}
+        {at === 'todos' ? null : <Button key="view:back" plain hotkey="b" label="Back" onPress={go('todos')} />}
       </Box>
     )
     const slot = (
@@ -919,14 +920,14 @@ export const register: Register = on => {
     } else {
       content = (
         <Box key="content" flexDirection="column">
+          {slot}
           {current === null ? <Text dimColor>No notes for this session yet; the first write starts them.</Text> : <Text dimColor wrap="truncate-start">{current.path}</Text>}
-          {hint('o objectives (u adds an update there), i important, c chat, e queue, s send queue, Esc closes')}
+          {hint('t todos, o objectives (u adds an update there), i important, c chat, e queue, s send queue, Esc closes')}
         </Box>
       )
     }
     return (
       <Box flexDirection="column">
-        {slot}
         {nav}
         {content}
       </Box>

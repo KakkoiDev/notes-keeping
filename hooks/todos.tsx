@@ -8,7 +8,7 @@ export function nextStatus(status: Todo['status']): Todo['status'] {
 
 const MARK: Record<Todo['status'], string> = { todo: '[ ]', 'in-progress': '[~]', done: '[x]', declined: '[-]' }
 
-// The top of the notes panel, reserved for the todo list. The notes-todo work owns this file and the `todos` atom in
+// The todo list of the notes panel's Todos view. The notes-todo work owns this file and the `todos` atom in
 // register.tsx: it fills the atom, and `onCycle(id)` is called when a row is clicked.
 export function TodoSlot(props: {
   Box: any
