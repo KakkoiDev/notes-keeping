@@ -94,7 +94,9 @@ is kept whole and is what the item is matched and keyed by. See [Labels](#labels
   set by click or by hand. Review it there.
 - Click an item in the pane to cycle todo, in-progress, done, declined and back, or edit the marker by hand. Those
   statuses are yours until Laya moves them under the rule above.
-- Firstmate, when the session root holds an executable `config/notes-keeping-bridge` (a firstmate home that opted in):
+- Firstmate, when the session root holds an executable `config/notes-keeping-bridge` (a firstmate home that opted in;
+  the bridge is this plugin's `bin/notes-keeping-bridge`, and `FM_ROOT` / `FM_HOME` name the firstmate checkout and home
+  when it is run from here rather than through a link in `config/`):
   - On every todo run the plugin runs `bridge status <notes file>`, which prints
     `{"<item text>": {"status": "in-progress" | "done" | null, "task": "<id>"}}` for every item linked to a firstmate
     task. A linked item follows that status forward and Laya is never asked about it; a null status leaves it where it
@@ -102,7 +104,9 @@ is kept whole and is what the item is matched and keyed by. See [Labels](#labels
     different one.
   - After every todo write, every click, and every five seconds, the plugin runs `bridge notify <notes file>` with the
     changes since its last write on stdin: `+ [ ] <item>` for a new item, `<item>: <from> -> <to> (captain)` for a
-    status set by click or by hand. Moves Laya or the bridge made are not sent.
+    status set by click or by hand. Moves Laya or the bridge made are not sent. The bridge files them as one inbox note
+    whose first line, the part firstmate's notification shows, is the first change (`<item>` or
+    `<item>: <from> -> <to>`), with `(+N more)` when there are several.
   - Without the file nothing of this runs.
 - Claude never edits the notes file; its Edit and Write on the notes folder are denied.
 
@@ -225,4 +229,4 @@ The Notes button's chord works only when `~/.claude/keybindings.json` binds it. 
 
 ## Tests
 
-`claude plugin test .` and `claude plugin validate .` from this folder.
+`claude plugin test .` and `claude plugin validate .` from this folder; `bin/notes-keeping-bridge.test.sh` for the bridge (needs a firstmate checkout at `FM_ROOT`, default `~/Code/firstmate`).

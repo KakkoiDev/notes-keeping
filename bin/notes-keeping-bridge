@@ -1,0 +1,143 @@
+#!/usr/bin/env python3
+"""notes-keeping-bridge - links the notes-keeping todo list to this firstmate home's tasks.
+
+The notes-keeping plugin runs this file when it exists under the session root (config/ is gitignored, so only this
+home opted in). Two verbs are the plugin's; two are firstmate's.
+
+  status <notes-file>        print {"<item text>": {"status": "in-progress" | "done" | null, "task": "<id>"}} for every
+                             linked item. done: the last state line of state/<task>.status is done. in-progress: else
+                             state/<task>.meta exists. null: anything else; the plugin leaves the item where it is.
+  notify <notes-file>        change lines on stdin become one captain inbox note (bin/fm-inbox.sh note), one wake.
+                             The note's first line is the first change, with "(+N more)" when there are several.
+  link <task-id> <item text> link the item to the task; the latest link for an item wins.
+  unlink <item text>         drop the item's link.
+
+Links are appended to state/notes-todo-links.jsonl. An item's key is its text lowercased with whitespace collapsed,
+the same key the plugin uses. FM_HOME overrides the home whose state/ is used. FM_ROOT names the firstmate checkout whose
+bin/fm-inbox.sh takes the notes; without it the checkout is the parent of this file's directory, so a firstmate
+config/notes-keeping-bridge symlink to this file needs neither.
+"""
+import hashlib
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+
+ROOT = os.environ.get('FM_ROOT') or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+HOME = os.environ.get('FM_HOME') or ROOT
+STATE = os.path.join(HOME, 'state')
+LINKS = os.path.join(STATE, 'notes-todo-links.jsonl')
+INBOX = os.path.join(ROOT, 'bin', 'fm-inbox.sh')
+STATES = ('working', 'needs-decision', 'blocked', 'paused', 'done', 'failed')
+STATE_LINE = re.compile(r'^(%s)(?: \[[^\]]*\])?:' % '|'.join(re.escape(s) for s in STATES))
+ADDED = re.compile(r'^\+ \[.\] ')
+TASK_ID = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]*$')
+USAGE = 'usage: notes-keeping-bridge status <notes-file> | notify <notes-file> | link <task-id> <item text> | unlink <item text>'
+
+
+def die(text, code=2):
+    print(f'notes-keeping-bridge: {text}', file=sys.stderr)
+    sys.exit(code)
+
+
+def key_of(text):
+    return ' '.join(text.lower().split())
+
+
+def append(record):
+    os.makedirs(STATE, exist_ok=True)
+    with open(LINKS, 'a', encoding='utf-8') as f:
+        f.write(json.dumps(record, ensure_ascii=False) + '\n')
+
+
+def links():
+    """Latest record per key; an unlink removes the key."""
+    out = {}
+    try:
+        f = open(LINKS, encoding='utf-8')
+    except FileNotFoundError:
+        return out
+    with f:
+        for line in f:
+            try:
+                record = json.loads(line)
+            except ValueError:
+                continue
+            key = record.get('key')
+            if not isinstance(key, str):
+                continue
+            if record.get('unlink'):
+                out.pop(key, None)
+            elif isinstance(record.get('task'), str) and isinstance(record.get('text'), str):
+                out[key] = record
+    return out
+
+
+def derive(task):
+    if not TASK_ID.match(task):
+        return None
+    last = None
+    try:
+        with open(os.path.join(STATE, f'{task}.status'), encoding='utf-8', errors='replace') as f:
+            for line in f:
+                m = STATE_LINE.match(line)
+                if m:
+                    last = m.group(1)
+    except FileNotFoundError:
+        pass
+    if last == 'done':
+        return 'done'
+    if os.path.exists(os.path.join(STATE, f'{task}.meta')):
+        return 'in-progress'
+    return None
+
+
+def status():
+    print(json.dumps({r['text']: {'status': derive(r['task']), 'task': r['task']} for r in links().values()}, ensure_ascii=False))
+
+
+def headline(lines):
+    """The first change without its add marker or (captain) suffix, plus the count of the rest."""
+    first = ADDED.sub('', lines[0], count=1).removesuffix(' (captain)')
+    return first if len(lines) == 1 else f'{first} (+{len(lines) - 1} more)'
+
+
+def notify(notes_file):
+    changes = sys.stdin.read().strip('\n')
+    if changes == '':
+        return
+    lines = changes.split('\n')
+    body = f'{headline(lines)}\nnotes-keeping todo changed in {notes_file}:\n{changes}\n'
+    # The same changes sent twice in one second are one note.
+    request = 'nk-' + hashlib.sha256(f'{int(time.time())}\n{body}'.encode()).hexdigest()[:16]
+    done = subprocess.run([INBOX, 'note', '--request-id', request, '-'], input=body, text=True, capture_output=True, env={**os.environ, 'FM_HOME': HOME})
+    if done.returncode != 0:
+        die(f'fm-inbox.sh note failed ({done.returncode}): {(done.stderr or done.stdout).strip()}', 1)
+
+
+def main(argv):
+    verb, args = (argv[0], argv[1:]) if argv else ('', [])
+    if verb == 'status' and len(args) == 1:
+        status()
+    elif verb == 'notify' and len(args) == 1:
+        notify(args[0])
+    elif verb == 'link' and len(args) >= 2:
+        task, text = args[0], ' '.join(args[1:]).strip()
+        if not TASK_ID.match(task):
+            die(f'not a task id: {task}')
+        if text == '':
+            die('empty item text')
+        append({'task': task, 'key': key_of(text), 'text': text, 'at': int(time.time())})
+    elif verb == 'unlink' and len(args) >= 1:
+        key = key_of(' '.join(args))
+        if key not in links():
+            die(f'no link for: {key}', 1)
+        append({'unlink': True, 'key': key, 'at': int(time.time())})
+    else:
+        die(USAGE)
+
+
+if __name__ == '__main__':
+    main(sys.argv[1:])
