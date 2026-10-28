@@ -59,7 +59,7 @@ const LOG = 'todo-changes.log'
 const BRIDGE = 'config/notes-keeping-bridge'
 const BRIDGE_MS = 10_000
 
-const SUBCOMMANDS = ['init', 'objectives', 'update', 'important', 'reply', 'replies', 'todo', 'history', 'show', 'hide']
+const SUBCOMMANDS = ['init', 'objectives', 'update', 'important', 'reply', 'replies', 'todo', 'history', 'show', 'hide', 'debug']
 
 const USAGE = [
   'Usage: /notes-keeping <subcommand>',
@@ -72,6 +72,7 @@ const USAGE = [
   '  todo [sync]                show the todo list; sync runs Laya over the objectives and the last reply now',
   '  history [n|file]           list earlier notes; pick one to copy its objectives, updates and open todo items here',
   `  show | hide                open or close the notes panel (also ${CHORD}) at the todo list; t todos, o objectives, i important, c chat, e queue, h history, s send queue`,
+  '  debug                      the selection poll: how often it ran, when last, the live selection, and why recent ones opened no pane',
   `${CHORD} works once ~/.claude/keybindings.json binds it: { "bindings": [{ "context": "Global", "bindings": { "${CHORD}": "${ACTION}" } }] }`,
   'Every write starts the notes file when the session has none.',
 ].join('\n')
@@ -122,6 +123,10 @@ let canPaste = true
 let isReflowed = false
 // The bar stands in for a pane the terminal cannot seat: the reason is told once, not on every selection.
 let isTold = false
+// What the selection poll did, for /notes-keeping debug: its ticks, the last one's time, and its last outcomes as they changed.
+let ticks = 0
+let lastTick = 0
+const outcomes: { at: number; text: string }[] = []
 
 async function boundPath($: EngineInterface): Promise<string | undefined> {
   const id = await $.session.id()
@@ -652,6 +657,88 @@ async function toggleNotes($: EngineInterface): Promise<void> {
   else await showNotes($)
 }
 
+const OUTCOMES = 10
+
+// One poll of the selection; returns what it did, in words for /notes-keeping debug.
+async function poll($: EngineInterface): Promise<string> {
+  const current = await read($, select)
+  const panes = await $.ui.panes()
+  const selectPane = panes.find(pane => pane.id === SELECT)
+  const isFocused = selectPane?.isFocused === true
+  // A key that is none of r/i/x, or a click in the transcript, hands the keyboard back to the prompt: the menu or the reply box goes with it.
+  // A click on another tab hides the pane instead: it stays behind its tab until shown again.
+  if (current !== null && current.hadFocus && !isFocused) {
+    if (selectPane !== undefined && !selectPane.isShown) {
+      await update($, select, () => ({ ...current, hadFocus: false }))
+      return `${current.mode} behind another tab: ${current.selection}`
+    }
+    await finish($, current.selection)
+    isReflowed = false
+    return `${current.mode} lost the keyboard, closed: ${current.selection}`
+  }
+  if (current !== null && isFocused && !current.hadFocus) await update($, select, () => ({ ...current, hadFocus: true }))
+  // A selection with no transcript row lies in a pane or the prompt: while a pane of this plugin is shown it is the pane's text.
+  const picked = await $.ui.selection()
+  const isInPane = picked !== undefined && picked.requestId === undefined && panes.some(pane => (pane.id === PANE || pane.id === SELECT) && pane.isShown)
+  const text = isInPane ? '' : (picked?.text ?? '').trim()
+  // The first selection read after the dock opens or closes is the old one, moved by the reflow: it counts as answered.
+  if (isReflowed) {
+    isReflowed = false
+    if (text !== '') await update($, handled, () => text)
+    return `first read after the dock moved, counted as answered: ${text}`
+  }
+  // A reply box in view is the one being typed in. Behind another tab, or after the keyboard left it, a new selection replaces it.
+  if (current?.mode === 'reply' && selectPane?.isShown !== false) return `reply box open: ${current.selection}`
+  // A docked pane narrows the transcript and the terminal drops the selection, so an open pane outlives it.
+  if (text === '') {
+    seen = ''
+    if (current !== null && !current.isPlaced) await update($, select, () => null)
+    if (current === null && (await read($, handled)) !== '') await update($, handled, () => '')
+    return isInPane ? `selection in a notes pane: ${(picked?.text ?? '').trim()}` : 'no selection'
+  }
+  if (text === (await read($, handled))) return `already answered: ${text}`
+  if (text === current?.selection) return `pane already open: ${text}`
+  // Opening the dock mid-drag reflows the transcript under the pointer, so the pane waits for a still selection.
+  if (text !== seen) {
+    seen = text
+    stillSince = await $.clock.now()
+    return `still changing: ${text}`
+  }
+  if (!(await isReleased($, text))) return `held, the clipboard has not taken it: ${text}`
+  await openSelect($, text)
+  return `opened: ${text}`
+}
+
+// Keeps an outcome only when it differs from the last one, so a quiet poll leaves one line.
+function note(at: number, text: string): void {
+  if (outcomes.at(-1)?.text === text) {
+    outcomes[outcomes.length - 1] = { at, text }
+    return
+  }
+  outcomes.push({ at, text })
+  if (outcomes.length > OUTCOMES) outcomes.shift()
+}
+
+function ago(now: number, at: number): string {
+  return `${((now - at) / 1000).toFixed(1)} s ago`
+}
+
+async function debug($: EngineInterface): Promise<string> {
+  const now = await $.clock.now()
+  const picked = await $.ui.selection()
+  const current = await read($, select)
+  const panes = await $.ui.panes()
+  return [
+    `poll: ${ticks} ticks, ${lastTick === 0 ? 'never ran' : `last ${ago(now, lastTick)}, every ${POLL_MS} ms`}`,
+    `selection now: ${picked === undefined ? 'none' : `${JSON.stringify(picked.text)} in row ${picked.requestId ?? 'none'}`}`,
+    `select: ${current === null ? 'none' : JSON.stringify(current)}; handled: ${JSON.stringify(await read($, handled))}`,
+    `panes: ${panes.length === 0 ? 'none' : panes.map(pane => `${pane.id}${pane.isShown ? ' shown' : ''}${pane.isFocused ? ' focused' : ''}`).join(', ')}`,
+    `clipboard read: ${canPaste ? 'yes' : 'no'}; reflow pending: ${isReflowed ? 'yes' : 'no'}`,
+    'last poll outcomes, oldest first:',
+    ...outcomes.map(outcome => `  ${ago(now, outcome.at)}: ${outcome.text}`),
+  ].join('\n')
+}
+
 function isDrawn(surface: string): boolean {
   return surface === 'terminal' || surface === 'desktop'
 }
@@ -667,49 +754,14 @@ export const register: Register = on => {
     void syncTodo($, '')
     if (e.isInteractive) {
       $.clock.every(POLL_MS, async () => {
-        const current = await read($, select)
-        const panes = await $.ui.panes()
-        const selectPane = panes.find(pane => pane.id === SELECT)
-        const isFocused = selectPane?.isFocused === true
-        // A key that is none of r/i/x, or a click in the transcript, hands the keyboard back to the prompt: the menu or the reply box goes with it.
-        // A click on another tab hides the pane instead: it stays behind its tab until shown again.
-        if (current !== null && current.hadFocus && !isFocused) {
-          if (selectPane !== undefined && !selectPane.isShown) await update($, select, () => ({ ...current, hadFocus: false }))
-          else {
-            await finish($, current.selection)
-            isReflowed = false
-          }
-          return
+        ticks += 1
+        lastTick = await $.clock.now()
+        try {
+          note(lastTick, await poll($))
+        } catch (error) {
+          note(lastTick, `error: ${message(error)}`)
+          throw error
         }
-        if (current !== null && isFocused && !current.hadFocus) await update($, select, () => ({ ...current, hadFocus: true }))
-        // A selection with no transcript row lies in a pane or the prompt: while a pane of this plugin is shown it is the pane's text.
-        const picked = await $.ui.selection()
-        const isInPane = picked !== undefined && picked.requestId === undefined && panes.some(pane => (pane.id === PANE || pane.id === SELECT) && pane.isShown)
-        const text = isInPane ? '' : (picked?.text ?? '').trim()
-        // The first selection read after the dock opens or closes is the old one, moved by the reflow: it counts as answered.
-        if (isReflowed) {
-          isReflowed = false
-          if (text !== '') await update($, handled, () => text)
-          return
-        }
-        // A reply box in view is the one being typed in. Behind another tab, or after the keyboard left it, a new selection replaces it.
-        if (current?.mode === 'reply' && selectPane?.isShown !== false) return
-        // A docked pane narrows the transcript and the terminal drops the selection, so an open pane outlives it.
-        if (text === '') {
-          seen = ''
-          if (current !== null && !current.isPlaced) await update($, select, () => null)
-          if (current === null && (await read($, handled)) !== '') await update($, handled, () => '')
-          return
-        }
-        if (text === (await read($, handled)) || text === current?.selection) return
-        // Opening the dock mid-drag reflows the transcript under the pointer, so the pane waits for a still selection.
-        if (text !== seen) {
-          seen = text
-          stillSince = await $.clock.now()
-          return
-        }
-        if (!(await isReleased($, text))) return
-        await openSelect($, text)
       })
       $.clock.every(REFRESH_MS, async () => {
         const panes = await $.ui.panes()
@@ -801,6 +853,8 @@ export const register: Register = on => {
         case 'hide':
           await hideNotes($)
           return {}
+        case 'debug':
+          return { text: await debug($) }
         case '':
           return { text: USAGE }
         default:

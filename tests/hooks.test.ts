@@ -948,6 +948,41 @@ test('with copy on select off the clipboard never takes the selection: a still s
   expect(ui.opened).toEqual([{ id: 'notes-keeping-select', focus: true }])
 })
 
+test('debug says how often the selection poll ran, when it last ran, and why the recent selections opened no pane', async ($, on) => {
+  let selection: string | undefined
+  const { clock } = engine(on, { [BOUND]: NOTES }, { [`session:${SESSION}`]: BOUND }, () => selection)
+  expect((await run($, 'debug')).text).toContain('poll: 0 ticks, never ran')
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
+  await clock.advance(1200)
+  selection = 'alpha bravo'
+  await clock.advance(600)
+  clipboard.text = 'copied earlier'
+  await clock.advance(600)
+  const text = (await run($, 'debug')).text ?? ''
+  expect(text).toContain('poll: 4 ticks, last 0.0 s ago, every 600 ms')
+  expect(text).toContain('selection now: "alpha bravo" in row row-1')
+  expect(text).toContain('select: none; handled: ""')
+  expect(text.split('\n').slice(-3)).toEqual([
+    '  1.2 s ago: no selection',
+    '  0.6 s ago: still changing: alpha bravo',
+    '  0.0 s ago: held, the clipboard has not taken it: alpha bravo',
+  ])
+})
+
+test('debug records a poll that threw, with the error', async ($, on) => {
+  let isBroken = false
+  const { clock } = engine(on, { [BOUND]: NOTES }, { [`session:${SESSION}`]: BOUND }, () => {
+    if (isBroken) throw new Error('selection refused')
+    return undefined
+  })
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
+  await clock.advance(600)
+  isBroken = true
+  await clock.advance(600)
+  isBroken = false
+  expect((await run($, 'debug')).text?.split('\n').slice(-2)).toEqual(['  0.6 s ago: no selection', '  0.0 s ago: error: no implementation for ui.selection'])
+})
+
 test('a key that is none of the hotkeys hands focus back to the prompt and closes the menu', async ($, on) => {
   let selection: string | undefined
   const { clock, ui } = engine(on, { [BOUND]: NOTES }, { [`session:${SESSION}`]: BOUND }, () => selection)

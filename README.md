@@ -14,6 +14,7 @@ Session notes in `~/.notes-keeping/<date>-<time>-<project>-<session>.md`, commit
 | `todo [sync]` | show the todo list; `sync` runs Laya over the objectives and the last reply now |
 | `history [n\|file]` | list earlier notes; pick one to continue it here: its objectives, updates and open todo items (statuses kept) are copied into this file under a `Continuation of:` line, and the picked file is never written. Todo items marked done `[x]` or declined `[-]` are not copied, nor is an objective whose items are all done or declined (an objective with no item, or with one open, is copied) |
 | `show`, `hide` | open or close the panel |
+| `debug` | the selection poll: its tick count, when it last ran, the live selection, and its last ten outcomes, each one saying why a selection opened the pane or did not |
 
 ## The panel
 
