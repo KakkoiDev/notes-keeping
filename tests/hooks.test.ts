@@ -1613,3 +1613,38 @@ test('an item cut at 120 characters before the text was kept whole is not added 
   expect(fs[BOUND]?.split('Keep the whole text').length).toBe(3)
   expect(fs[BOUND]).toContain(`- [ ] **Old label**: ${cut}`)
 })
+
+// Every host call the plugin makes reaches one of the engine's hooks; each hook notes the time it ran.
+function marking(on: On, marks: number[]): On {
+  return ((event: string, ...rest: unknown[]) => {
+    const hook = rest.pop() as (...args: unknown[]) => unknown
+    return (on as (...args: unknown[]) => unknown)(event, ...rest, (...args: unknown[]) => {
+      marks.push(performance.now())
+      return hook(...args)
+    })
+  }) as On
+}
+
+// The engine unloads the plugin when its hooks worker answers no heartbeat for 5000 ms while a dispatch waits on it; the todo
+// run after a turn holds the worker between two host calls, so the longest such stretch is what a press during it waits on.
+test('the todo run after a turn over 100 items and a long reply never holds the hooks worker for a second between host calls', { timeoutMs: 30_000 }, async ($, on) => {
+  const syllables = ['ba', 'ce', 'di', 'fo', 'gu', 'ha', 'ke', 'li', 'mo', 'nu', 'pa', 're', 'si', 'to', 'vu', 'wa', 'ze', 'ji', 'qo', 'xu']
+  const word = (n: number) => [Math.floor(n / 400) % 20, Math.floor(n / 20) % 20, n % 20].map(i => syllables[i]).join('')
+  const shared = Array.from({ length: 40 }, (_, i) => word(7000 + i))
+  const texts = Array.from({ length: 100 }, (_, i) =>
+    [0, 1, 2, 3].map(j => word(i * 4 + j)).concat(Array.from({ length: 10 }, (_, j) => shared[(i + j * 3) % shared.length] ?? '')).join(' '),
+  )
+  const answer = Array.from({ length: 150 }, (_, s) => `The ${texts[s % texts.length]?.split(' ').slice(0, 12).join(' ')} part is done and merged.`).join(' ')
+  const fs: Fs = { [BOUND]: setTodoFile(texts.map(text => `- [ ] ${text}`).join('\n')), [PYTHON]: '' }
+  const marks: number[] = []
+  engine(marking(on, marks), fs, { ...SESSION_BOUND })
+  laya.answer = ask => ({ lines: {}, statuses: Object.fromEntries(ask.statuses.map(status => [status.id, verdict({ label: 'finished', p: 0.9 })])) })
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: false })
+  await flush()
+  marks.length = 0
+  await complete($, answer)
+  for (let i = 0; i < 20 && !fs[BOUND]?.includes(`- [x] ${texts[99]}`); i++) await flush()
+  expect(fs[BOUND]).toContain(`- [x] ${texts[99]}`)
+  const held = Math.max(...marks.slice(1).map((at, i) => at - (marks[i] ?? at)))
+  expect(held).toBeLessThan(1000)
+})

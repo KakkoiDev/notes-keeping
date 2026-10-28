@@ -348,6 +348,8 @@ async function runTodo($: EngineInterface, answer: string): Promise<void> {
   const decided: Record<string, Verdict> = {}
   const siblings = list.map(item => item.text)
   for (const item of statuses.length === 0 ? [] : open) {
+    // A host call per item lets the hooks worker answer the engine's heartbeat between items.
+    await $.clock.now()
     const key = keyOf(item.text)
     const verdict = laya?.statuses[key]
     const next = moved(item, answer, verdict, siblings, memory.pins.includes(key))
