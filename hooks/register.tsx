@@ -99,8 +99,8 @@ let carried: string | undefined
 let resumed = false
 // The selection the last poll read: a drag still under way changes it between polls.
 let seen = ''
-// Closing the dock widens the transcript, and the kept selection then covers other text.
-let isClosed = false
+// Opening or closing the dock reflows the transcript, and the kept selection then covers other text.
+let isReflowed = false
 // The bar stands in for a pane the terminal cannot seat: the reason is told once, not on every selection.
 let isTold = false
 
@@ -539,7 +539,7 @@ async function finish($: EngineInterface, selection: string): Promise<void> {
   await update($, handled, () => selection)
   await update($, select, () => null)
   await $.ui.close({ id: SELECT })
-  isClosed = true
+  isReflowed = true
 }
 
 async function queueReply($: EngineInterface, agent: string, user: string): Promise<void> {
@@ -571,6 +571,7 @@ async function openSelect($: EngineInterface, selection: string): Promise<void> 
   await update($, select, () => ({ mode: 'menu', selection, isPlaced: false, hadFocus: false }))
   const opened = await $.ui.open({ id: SELECT, title: 'Selection', focus: true, closeOnEscape: true, rows: 4 })
   await update($, select, current => (current === null ? null : { ...current, isPlaced: opened.isPlaced }))
+  isReflowed = true
   if (!opened.isPlaced && !isTold) {
     isTold = true
     $.ui.toast(`The selection panel waits for a wider terminal (${opened.reason}); use the bar above the prompt: 1 Reply, 2 Important, 3 Dismiss.`)
@@ -632,23 +633,23 @@ export const register: Register = on => {
           if (selectPane !== undefined && !selectPane.isShown) await update($, select, () => ({ ...current, hadFocus: false }))
           else {
             await finish($, current.selection)
-            isClosed = false
+            isReflowed = false
           }
           return
         }
         if (current !== null && isFocused && !current.hadFocus) await update($, select, () => ({ ...current, hadFocus: true }))
-        // A reply box in view is the one being typed in. Behind another tab, or after the keyboard left it, a new selection replaces it.
-        if (current?.mode === 'reply' && selectPane?.isShown !== false) return
         // A selection with no transcript row lies in a pane or the prompt: while a pane of this plugin is shown it is the pane's text.
         const picked = await $.ui.selection()
         const isInPane = picked !== undefined && picked.requestId === undefined && panes.some(pane => (pane.id === PANE || pane.id === SELECT) && pane.isShown)
         const text = isInPane ? '' : (picked?.text ?? '').trim()
-        // The first selection read after a close is the old one, moved by the reflow: it counts as answered.
-        if (isClosed) {
-          isClosed = false
+        // The first selection read after the dock opens or closes is the old one, moved by the reflow: it counts as answered.
+        if (isReflowed) {
+          isReflowed = false
           if (text !== '') await update($, handled, () => text)
           return
         }
+        // A reply box in view is the one being typed in. Behind another tab, or after the keyboard left it, a new selection replaces it.
+        if (current?.mode === 'reply' && selectPane?.isShown !== false) return
         // A docked pane narrows the transcript and the terminal drops the selection, so an open pane outlives it.
         if (text === '') {
           seen = ''
@@ -702,7 +703,7 @@ export const register: Register = on => {
         await update($, handled, () => current.selection)
         await update($, select, () => null)
       }
-      isClosed = true
+      isReflowed = true
     }
     if (e.id === PANE) {
       await update($, editing, () => false)

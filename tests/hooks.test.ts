@@ -654,6 +654,7 @@ test('after the reply box is left for the Notes tab, a new selection in the chat
   const menu = await $.ui.mount({ ...SELECT_PANE, surface: 'terminal' })
   await menu.press({ key: 'reply-open' })
   await menu.unmount()
+  await clock.advance(600)
   await run($, 'show')
   // The person clicks the Notes tab: it is shown and takes the keyboard; the reply box waits behind it.
   ui.shown = 'notes-keeping'
@@ -831,6 +832,48 @@ test('the open pane outlives the selection the terminal drops when the dock narr
   selection = 'alpha bravo'
   await clock.advance(1200)
   expect(ui.opened).toHaveLength(1)
+})
+
+// The terminal keeps the selection where it was on screen: once the dock narrows the transcript, the same rows hold other text.
+const PICKED = 'Jev disagreement (effort-level)\n- Fix: remove effort-level from the authority list.'
+const REFLOWED = '- Right steps the status forward: todo, in progress, done, declined.\n  - Left steps it back.'
+
+test('the reply quotes the text selected, not the text the opened dock reflows under the kept selection', async ($, on) => {
+  const fs: Fs = { [BOUND]: NOTES }
+  const sent = submitting(on)
+  let selection = PICKED
+  const { clock, ui } = engine(on, fs, { [`session:${SESSION}`]: BOUND }, () => selection)
+  engineDraws(on)
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
+  await clock.advance(1200)
+  // The reflow reaches the selection after the open has resolved, before the next poll.
+  selection = REFLOWED
+  await clock.advance(3000)
+  expect(ui.opened).toEqual([{ id: 'notes-keeping-select', focus: true }])
+  const menu = await $.ui.mount({ ...SELECT_PANE, surface: 'terminal' })
+  await menu.press({ key: 'reply-open' })
+  await menu.unmount()
+  const box = await $.ui.mount({ ...SELECT_PANE, surface: 'terminal' })
+  await box.input({ key: 'reply', text: 'ok' })
+  await box.unmount()
+  await submit($, 'next')
+  expect(sent.at(-1)?.text).toBe(`[AI_AGENT] ${PICKED}\n[USER] ok\n\nnext`)
+  expect(fs[BOUND]?.endsWith(`[USER] a\n\n[AI_AGENT] ${PICKED}\n[USER] ok\n\n[USER] next\n`)).toBe(true)
+})
+
+test('with a draft in the prompt the unfocused pane also keeps the text selected through the reflow', async ($, on) => {
+  const fs: Fs = { [BOUND]: NOTES }
+  const { clock, ui } = engine(on, fs, { [`session:${SESSION}`]: BOUND }, () => (ui.panes.has('notes-keeping-select') ? REFLOWED : PICKED))
+  ui.isFocusable = false
+  engineDraws(on)
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
+  await clock.advance(1200)
+  await clock.advance(3000)
+  expect(ui.opened).toHaveLength(1)
+  const menu = await $.ui.mount({ ...SELECT_PANE, surface: 'terminal' })
+  await menu.press({ key: 'important' })
+  await menu.unmount()
+  expect(fs[BOUND]).toContain(`[USER] agreed X\n\n[AI_AGENT] ${PICKED}\n\n# Chat`)
 })
 
 test('the text a closed dock leaves under the kept selection does not raise the pane again', async ($, on) => {
