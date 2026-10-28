@@ -5,15 +5,18 @@ The notes-keeping plugin runs this file when it exists under the session root (c
 home opted in). Two verbs are the plugin's; two are firstmate's.
 
   status <notes-file>        print {"<item text>": {"status": "in-progress" | "done" | null, "task": "<id>"}} for every
-                             linked item. done: the last state line of state/<task>.status is done. in-progress: else
-                             state/<task>.meta exists. null: anything else; the plugin leaves the item where it is.
+                             linked item; an item linked by id is printed as "id:<id>" with an "id" field. done: the
+                             last state line of state/<task>.status is done. in-progress: else state/<task>.meta exists.
+                             null: anything else; the plugin leaves the item where it is.
   notify <notes-file>        change lines on stdin become one captain inbox note (bin/fm-inbox.sh note), one wake.
-                             The note's first line is the first change, with "(+N more)" when there are several.
-  link <task-id> <item text> link the item to the task; the latest link for an item wins.
-  unlink <item text>         drop the item's link.
+                             The note's first line is the first change, with "(+N more)" when there are several. A
+                             change line ends in [id:<id>] when the item has one.
+  link <task-id> <item>      link the item to the task; the latest link for an item wins. <item> is id:<id> (the id a
+                             change line names; it survives edits to the item's text) or the item text.
+  unlink <item>              drop the item's link.
 
-Links are appended to state/notes-todo-links.jsonl. An item's key is its text lowercased with whitespace collapsed,
-the same key the plugin uses. FM_HOME overrides the home whose state/ is used. FM_ROOT names the firstmate checkout whose
+Links are appended to state/notes-todo-links.jsonl. An item's key is id:<id>, or its text lowercased with whitespace
+collapsed, the same text key the plugin falls back to for an item without an id. FM_HOME overrides the home whose state/ is used. FM_ROOT names the firstmate checkout whose
 bin/fm-inbox.sh takes the notes; without it the checkout is the parent of this file's directory, so a firstmate
 config/notes-keeping-bridge symlink to this file needs neither.
 """
@@ -33,8 +36,10 @@ INBOX = os.path.join(ROOT, 'bin', 'fm-inbox.sh')
 STATES = ('working', 'needs-decision', 'blocked', 'paused', 'done', 'failed')
 STATE_LINE = re.compile(r'^(%s)(?: \[[^\]]*\])?:' % '|'.join(re.escape(s) for s in STATES))
 ADDED = re.compile(r'^\+ \[.\] ')
+ID_TAG = re.compile(r' \[id:[a-z0-9]+\]$')
+ITEM_ID = re.compile(r'^id:([a-z0-9]+)$')
 TASK_ID = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]*$')
-USAGE = 'usage: notes-keeping-bridge status <notes-file> | notify <notes-file> | link <task-id> <item text> | unlink <item text>'
+USAGE = 'usage: notes-keeping-bridge status <notes-file> | notify <notes-file> | link <task-id> <item> | unlink <item>'
 
 
 def die(text, code=2):
@@ -70,7 +75,7 @@ def links():
                 continue
             if record.get('unlink'):
                 out.pop(key, None)
-            elif isinstance(record.get('task'), str) and isinstance(record.get('text'), str):
+            elif isinstance(record.get('task'), str) and (isinstance(record.get('text'), str) or isinstance(record.get('id'), str)):
                 out[key] = record
     return out
 
@@ -95,12 +100,18 @@ def derive(task):
 
 
 def status():
-    print(json.dumps({r['text']: {'status': derive(r['task']), 'task': r['task']} for r in links().values()}, ensure_ascii=False))
+    out = {}
+    for r in links().values():
+        if 'id' in r:
+            out[f"id:{r['id']}"] = {'status': derive(r['task']), 'task': r['task'], 'id': r['id']}
+        else:
+            out[r['text']] = {'status': derive(r['task']), 'task': r['task']}
+    print(json.dumps(out, ensure_ascii=False))
 
 
 def headline(lines):
-    """The first change without its add marker or (captain) suffix, plus the count of the rest."""
-    first = ADDED.sub('', lines[0], count=1).removesuffix(' (captain)')
+    """The first change without its add marker, id tag or (captain) suffix, plus the count of the rest."""
+    first = ID_TAG.sub('', ADDED.sub('', lines[0], count=1)).removesuffix(' (captain)')
     return first if len(lines) == 1 else f'{first} (+{len(lines) - 1} more)'
 
 
@@ -129,7 +140,8 @@ def main(argv):
             die(f'not a task id: {task}')
         if text == '':
             die('empty item text')
-        append({'task': task, 'key': key_of(text), 'text': text, 'at': int(time.time())})
+        m = ITEM_ID.match(text)
+        append({'task': task, 'key': text, 'id': m.group(1), 'at': int(time.time())} if m else {'task': task, 'key': key_of(text), 'text': text, 'at': int(time.time())})
     elif verb == 'unlink' and len(args) >= 1:
         key = key_of(' '.join(args))
         if key not in links():

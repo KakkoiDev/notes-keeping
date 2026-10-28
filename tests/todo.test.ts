@@ -12,7 +12,11 @@ import {
   cycleItem,
   diffSnapshot,
   format,
+  idFor,
   isBackground,
+  openObjectives,
+  snapshotOf,
+  stamped,
   items,
   keyOf,
   keysOf,
@@ -23,6 +27,7 @@ import {
   reconcile,
   settle,
   shown,
+  withoutIds,
 } from '../hooks/todo'
 
 // The captain's heading layout; the text is a stand-in with his list shapes.
@@ -130,7 +135,7 @@ describe('todo lines', () => {
 
   test('a click moves todo to in-progress to done to declined and back around', () => {
     expect([cycle('todo'), cycle('in-progress'), cycle('done'), cycle('declined')]).toEqual(['in-progress', 'done', 'declined', 'todo'])
-    expect(cycleItem('- [ ] one\n- [ ] two', keyOf('Two'))).toBe('- [ ] one\n- [~] two')
+    expect(withoutIds(cycleItem('- [ ] one\n- [ ] two', keyOf('Two')))).toBe('- [ ] one\n- [~] two')
   })
 })
 
@@ -159,7 +164,7 @@ describe('labels', () => {
 
   test('reconcile sets a label on an item without one, keeps one already there, and remembers each item asked', () => {
     const out = reconcile('- [ ] A\n- [ ] **Mine**: B', EMPTY, { add: [], set: {}, seen: [], labels: { a: 'Label A', b: 'Other' }, labeled: ['a', 'b'] })
-    expect(out.body).toBe('- [ ] **Label A**: A\n- [ ] **Mine**: B')
+    expect(withoutIds(out.body)).toBe('- [ ] **Label A**: A\n- [ ] **Mine**: B')
     expect(out.memory.labeled).toEqual(['a', 'b'])
     expect(settle(out.memory, [{ status: 'todo', text: 'A' }]).labeled).toEqual(['a'])
   })
@@ -347,17 +352,17 @@ describe('memory and reconcile', () => {
       seen: ['c'],
     })
     // b was hand-set to in-progress before Laya read it as todo: its status moved on, so the move is dropped.
-    expect(out.body).toBe('- [x] A\n- [~] B\n- [ ] D\nnote\n- [ ] C')
-    expect(out.applied).toEqual([{ text: 'A', from: 'todo', to: 'done', isHandSet: false }])
+    expect(withoutIds(out.body)).toBe('- [x] A\n- [~] B\n- [ ] D\nnote\n- [ ] C')
+    expect(out.applied).toEqual([{ key: 'a', text: 'A', from: 'todo', to: 'done', isHandSet: false }])
     expect(out.memory.ai).toEqual({ a: 'done', b: 'todo', d: 'todo', c: 'todo' })
-    expect(out.memory.seen).toEqual(['c'])
+    expect(out.memory.seen).toEqual(['c', ...items(out.body).map(item => item.id)])
   })
 
   test('a move on a hand-set item lands, is reported as hand-set, and the item is the AI\'s again', () => {
     const memory = { seen: [], ai: { a: 'todo' as const }, pins: [], labeled: [], bridge: {} }
     const out = reconcile('- [~] A', memory, { add: [], set: { a: { from: 'in-progress', to: 'done' } }, seen: [] })
-    expect(out.body).toBe('- [x] A')
-    expect(out.applied).toEqual([{ text: 'A', from: 'in-progress', to: 'done', isHandSet: true }])
+    expect(withoutIds(out.body)).toBe('- [x] A')
+    expect(out.applied).toEqual([{ key: 'a', text: 'A', from: 'in-progress', to: 'done', isHandSet: true }])
     expect(out.memory.pins).toEqual([])
     expect(out.memory.ai).toEqual({ a: 'done' })
   })
@@ -407,7 +412,7 @@ describe('bridge', () => {
 
   test('reconcile remembers what the bridge reported', () => {
     const out = reconcile('- [ ] A', EMPTY, { add: [], set: { a: { from: 'todo', to: 'in-progress' } }, seen: [], bridge: { a: 'in-progress' } })
-    expect(out.body).toBe('- [~] A')
+    expect(withoutIds(out.body)).toBe('- [~] A')
     expect(out.memory.bridge).toEqual({ a: 'in-progress' })
     expect(out.memory.ai).toEqual({ a: 'in-progress' })
   })
@@ -430,5 +435,79 @@ describe('bridge', () => {
       '+ [ ] From an update',
     ])
     expect(diffSnapshot(undefined, before, after)).toEqual([])
+  })
+})
+
+describe('ids', () => {
+  test('an id on an item line reads apart from the label and text and writes back; a list never shows it', () => {
+    const body = '- [~] **Short**: Ship the bridge <!-- id:ab12cd3 -->\n- [ ] Plain'
+    expect(items(body)).toEqual([
+      { status: 'in-progress', label: 'Short', text: 'Ship the bridge', id: 'ab12cd3' },
+      { status: 'todo', text: 'Plain' },
+    ])
+    expect(format(parse(body))).toBe(body)
+    expect(context(body)).not.toContain('id:')
+  })
+
+  test('a changed body gives every item an id, each once; an unchanged body is left as it is', () => {
+    const changed = reconcile('- [ ] A\n- [ ] B <!-- id:ab12cd3 -->', EMPTY, { add: [{ status: 'todo', text: 'C' }], set: {}, seen: [] })
+    expect(changed.body).toBe(`- [ ] A <!-- id:${idFor('A', new Set())} -->\n- [ ] B <!-- id:ab12cd3 -->\n- [ ] C <!-- id:${idFor('C', new Set())} -->`)
+    expect(reconcile('- [ ] A', EMPTY, { add: [], set: {}, seen: [] }).body).toBe('- [ ] A')
+    const taken = new Set([idFor('A', new Set())])
+    expect(idFor('A', taken)).not.toBe(idFor('A', new Set()))
+  })
+
+  test('an item keeps its id, hand-set mark, AI status and bridge report when the captain edits its text', () => {
+    const memory = { seen: [], ai: { ab12cd3: 'in-progress' as const }, pins: ['ab12cd3'], labeled: ['ab12cd3'], bridge: { ab12cd3: 'in-progress' as const } }
+    const edited = [{ status: 'todo' as const, text: 'Review the PR again', id: 'ab12cd3' }]
+    expect(settle(memory, edited)).toEqual({ seen: [], ai: { ab12cd3: 'in-progress' }, pins: ['ab12cd3'], labeled: ['ab12cd3'], bridge: { ab12cd3: 'in-progress' } })
+    // The captain set it back to todo; the same report does not move it again.
+    expect(bridgeMoves(edited, { ab12cd3: 'in-progress' }, memory)).toEqual({})
+    expect(bridgeMoves(edited, { ab12cd3: 'done' }, memory)).toEqual({ ab12cd3: { from: 'todo', to: 'done' } })
+    expect(diffSnapshot(snapshotOf([{ status: 'todo', text: 'Review this PR', id: 'ab12cd3' }]), edited, edited)).toEqual([])
+  })
+
+  test('memory kept under text keys before ids moves to the ids; the snapshot does not report the items as new', () => {
+    const memory = { seen: [], ai: { a: 'done' as const }, pins: ['a'], labeled: ['a'], bridge: { a: 'done' as const } }
+    const list = [{ status: 'done' as const, text: 'A', id: 'ab12cd3' }]
+    expect(settle(memory, list)).toEqual({ seen: [], ai: { ab12cd3: 'done' }, pins: ['ab12cd3'], labeled: ['ab12cd3'], bridge: { ab12cd3: 'done' } })
+    expect(diffSnapshot({ a: 'done' }, [{ status: 'done', text: 'A' }], list)).toEqual([])
+    expect(diffSnapshot({ a: 'todo' }, list, list)).toEqual(['A: todo -> done (captain) [id:ab12cd3]'])
+  })
+
+  test('an item gets its id onto the objective or update line it came from, once, and the candidate reads it back', () => {
+    const s = { objectives: '- fix the flicker\n- write the docs\n\n1. Ship the bridge\n   See the notes', updates: '[UPDATE] t\nProject: x\nAdd a pane' }
+    const list = [
+      { status: 'todo' as const, text: 'Ship the bridge', id: 'aaaaaaa' },
+      { status: 'todo' as const, text: 'write the docs', id: 'bbbbbbb' },
+      { status: 'todo' as const, text: 'Add a pane', id: 'ccccccc' },
+      { status: 'todo' as const, text: 'Unrelated' },
+    ]
+    const out = stamped(s, list)
+    expect(out).toEqual({
+      objectives: '- fix the flicker\n- write the docs <!-- id:bbbbbbb -->\n\n1. Ship the bridge <!-- id:aaaaaaa -->\n   See the notes',
+      updates: '[UPDATE] t\nProject: x\nAdd a pane <!-- id:ccccccc -->',
+    })
+    expect(stamped(out, list)).toEqual(out)
+    expect(candidates(out)).toEqual([
+      { text: 'fix the flicker', isSure: false },
+      { text: 'write the docs', isSure: false, id: 'bbbbbbb' },
+      { text: 'Ship the bridge', isSure: true, id: 'aaaaaaa' },
+      { text: 'Add a pane', isSure: true, id: 'ccccccc' },
+    ])
+  })
+
+  test('an objective whose item is done or declined is left behind by id, after either text was edited', () => {
+    const objectives = '1. Ship the exporter, edited <!-- id:aaaaaaa -->\n\n2. Fix the login bug <!-- id:bbbbbbb -->\n\n3. Wire the audit log <!-- id:ccccccc -->'
+    const list = [
+      { status: 'done' as const, text: 'Ship the exporter', id: 'aaaaaaa' },
+      { status: 'declined' as const, text: 'Fix the login bug, reworded', id: 'bbbbbbb' },
+      { status: 'todo' as const, text: 'Wire the audit log', id: 'ccccccc' },
+    ]
+    expect(openObjectives(objectives, list)).toBe('3. Wire the audit log <!-- id:ccccccc -->')
+  })
+
+  test('an objective without an id still finds its item by text', () => {
+    expect(openObjectives('1. Ship it\n\n2. Keep it', [{ status: 'done', text: 'Ship it', id: 'aaaaaaa' }, { status: 'todo', text: 'Keep it' }])).toBe('2. Keep it')
   })
 })

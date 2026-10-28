@@ -22,10 +22,11 @@ import {
   setObjectives,
   setTodo,
   stamp,
+  stampIds,
   summary,
 } from './notes'
-import { EMPTY, bridgeMoves, candidates, cleanLabel, context, cycleItem, diffSnapshot, format, isBackground, items, keyOf, keysOf, labelPrompt, moved, parse, pin, reconcile, row, settle, shown, snapshotOf } from './todo'
-import type { Applied, Item, Memory, Move, Status, Verdict } from './todo'
+import { EMPTY, bridgeMoves, candidateKeys, candidates, cleanLabel, context, cycleItem, diffSnapshot, format, idOf, isBackground, items, keyOf, labelPrompt, moved, parse, pin, reconcile, row, settle, shown, snapshotOf, withoutIds } from './todo'
+import type { Applied, Candidate, Item, Memory, Move, Status, Verdict } from './todo'
 import { TodoSlot } from './todos'
 
 const NAME = 'notes-keeping'
@@ -238,15 +239,19 @@ async function runBridge($: EngineInterface, bridge: string, verb: 'status' | 'n
 
 type Link = { status: Status | undefined; task: string }
 
-// Every linked item by key; status is undefined when the linked task has no state to report.
+// Every linked item by id, or by text key for a link made by text; status is undefined when the linked task has no state to report.
 async function linked($: EngineInterface, bridge: string, path: string): Promise<Record<string, Link>> {
-  const raw = JSON.parse(await runBridge($, bridge, 'status', path)) as Record<string, { status?: unknown; task?: unknown }>
+  const raw = JSON.parse(await runBridge($, bridge, 'status', path)) as Record<string, { status?: unknown; task?: unknown; id?: unknown }>
   const links: Record<string, Link> = {}
   for (const [text, link] of Object.entries(raw)) {
     const status = link.status === 'in-progress' || link.status === 'done' ? link.status : undefined
-    links[keyOf(text)] = { status, task: typeof link.task === 'string' ? link.task : '' }
+    links[typeof link.id === 'string' ? link.id : keyOf(text)] = { status, task: typeof link.task === 'string' ? link.task : '' }
   }
   return links
+}
+
+function linkOf(links: Record<string, Link>, item: Item): Link | undefined {
+  return links[idOf(item)] ?? links[keyOf(item.text)]
 }
 
 // Diffs the list against the last snapshot and stores the new one; called inside `locked` with the list as read and as written.
@@ -296,9 +301,8 @@ async function logMoves($: EngineInterface, path: string, moves: readonly Applie
   const log = `${await notesDir($)}/${LOG}`
   const when = stamp(await $.clock.now())
   const rows = moves.map(move => {
-    const key = keyOf(move.text)
-    const verdict = verdicts[key]
-    const link = links[key]
+    const verdict = verdicts[move.key]
+    const link = links[move.key] ?? links[keyOf(move.text)]
     const said = link !== undefined ? ` | firstmate ${link.task}` : verdict === undefined ? '' : ` | laya ${verdict.label} ${verdict.p.toFixed(2)}`
     return `${when} ${path.split('/').pop()} | ${move.text} | ${move.from} -> ${move.to}${said}${move.isHandSet ? ' | replaced a hand-set status' : ''}`
   })
@@ -322,27 +326,29 @@ async function runTodo($: EngineInterface, answer: string): Promise<void> {
   const s = sections(await readText($, path))
   const list = items(s.todo)
   const memory = settle(await readMemory($, path), list)
-  const have = new Set(list.map(item => keyOf(item.text)))
-  const isHad = (text: string) => keysOf(text).some(key => have.has(key))
-  const fresh = candidates(s).filter(c => !keysOf(c.text).some(key => memory.seen.includes(key)))
-  const lines = fresh.filter(c => !c.isSure && !isHad(c.text)).map(c => ({ id: keyOf(c.text), text: c.text }))
+  const have = new Set(list.flatMap(item => [idOf(item), keyOf(item.text)]))
+  // A candidate whose line carries an id is its item's even after either text was edited.
+  const isHad = (c: Candidate) => candidateKeys(c).some(key => have.has(key))
+  const fresh = candidates(s).filter(c => !candidateKeys(c).some(key => memory.seen.includes(key)))
+  const lines = fresh.filter(c => !c.isSure && !isHad(c)).map(c => ({ id: keyOf(c.text), text: c.text }))
   // A linked item's status follows its firstmate task; Laya is not asked about it.
-  const open = list.filter(item => (item.status === 'todo' || item.status === 'in-progress') && links[keyOf(item.text)] === undefined)
+  const open = list.filter(item => (item.status === 'todo' || item.status === 'in-progress') && linkOf(links, item) === undefined)
   const statuses = answer.trim() === '' ? [] : open.map(item => ({ id: keyOf(item.text), text: item.text }))
   const laya = lines.length + statuses.length === 0 ? undefined : await askLaya($, { lines, statuses, answer })
   const add: Item[] = []
   const seen: string[] = []
+  const itemOf = (c: Candidate): Item => (c.id === undefined ? { status: 'todo', text: c.text } : { status: 'todo', text: c.text, id: c.id })
   for (const c of fresh) {
     const key = keyOf(c.text)
-    if (isHad(c.text) || c.isSure) {
+    if (isHad(c) || c.isSure) {
       seen.push(key)
-      if (!isHad(c.text)) add.push({ status: 'todo', text: c.text })
+      if (!isHad(c)) add.push(itemOf(c))
       continue
     }
     const p = laya?.lines[key]
     if (p === undefined) continue
     seen.push(key)
-    if (!isBackground(p)) add.push({ status: 'todo', text: c.text })
+    if (!isBackground(p)) add.push(itemOf(c))
   }
   const set: Record<string, Move> = {}
   const decided: Record<string, Verdict> = {}
@@ -350,22 +356,25 @@ async function runTodo($: EngineInterface, answer: string): Promise<void> {
   for (const item of statuses.length === 0 ? [] : open) {
     // A host call per item lets the hooks worker answer the engine's heartbeat between items.
     await $.clock.now()
-    const key = keyOf(item.text)
-    const verdict = laya?.statuses[key]
+    const key = idOf(item)
+    const verdict = laya?.statuses[keyOf(item.text)]
     const next = moved(item, answer, verdict, siblings, memory.pins.includes(key))
     if (next === undefined || verdict === undefined) continue
     set[key] = { from: item.status, to: next.status }
     decided[key] = { ...verdict, label: next.label, p: next.p }
   }
   const reported: Record<string, Status> = {}
-  for (const [key, link] of Object.entries(links)) if (link.status !== undefined) reported[key] = link.status
+  for (const item of list) {
+    const status = linkOf(links, item)?.status
+    if (status !== undefined) reported[idOf(item)] = status
+  }
   Object.assign(set, bridgeMoves(list, reported, memory))
-  const unlabeled = [...list.filter(item => item.label === undefined && !memory.labeled.includes(keyOf(item.text))), ...add]
-  const named = await Promise.all(unlabeled.map(async item => [keyOf(item.text), await askLabel($, item.text)] as const))
+  const unlabeled = [...list.filter(item => item.label === undefined && !memory.labeled.includes(idOf(item))), ...add]
+  const named = await Promise.all(unlabeled.map(async item => [idOf(item), await askLabel($, item.text)] as const))
   const labels: Record<string, string> = {}
   for (const [key, label] of named) if (label !== undefined) labels[key] = label
   const labeled = named.map(([key]) => key)
-  const added = add.map(item => (labels[keyOf(item.text)] === undefined ? item : { ...item, label: labels[keyOf(item.text)] }))
+  const added = add.map(item => (labels[idOf(item)] === undefined ? item : { ...item, label: labels[idOf(item)] }))
   // The file may have changed while Laya ran: apply onto what is there now.
   const { said, changes } = await locked(async () => {
     const latest = await readText($, path)
@@ -375,7 +384,7 @@ async function runTodo($: EngineInterface, answer: string): Promise<void> {
     const changes = bridge === undefined ? [] : await snapshot($, path, items(body), items(out.body))
     if (out.body === format(parse(body))) return { said: [], changes }
     if (out.applied.length > 0) await logMoves($, path, out.applied, decided, links)
-    return { said: await save($, path, setTodo(latest, out.body), 'todo'), changes }
+    return { said: await save($, path, stampIds(setTodo(latest, out.body), items(out.body)), 'todo'), changes }
   })
   warn($, told('', said))
   if (bridge !== undefined) await notify($, bridge, path, changes)
@@ -408,7 +417,7 @@ async function clickItem($: EngineInterface, key: string): Promise<void> {
     await $.store.set(memoryKey(path), pin(await readMemory($, path), key))
     const md = await readText($, path)
     const body = cycleItem(sections(md).todo, key)
-    await save($, path, setTodo(md, body), 'todo')
+    await save($, path, stampIds(setTodo(md, body), items(body)), 'todo')
     return bridge === undefined ? [] : await snapshot($, path, items(body), items(body))
   })
   if (bridge !== undefined) await notify($, bridge, path, changes)
@@ -985,7 +994,7 @@ export const register: Register = on => {
     const body = (title: string, text: string) => (
       <Box key="body" flexDirection="column">
         <Text bold>{title}</Text>
-        <Text dimColor={text === ''}>{text === '' ? '(empty)' : text}</Text>
+        <Text dimColor={text === ''}>{text === '' ? '(empty)' : withoutIds(text)}</Text>
       </Box>
     )
     let content

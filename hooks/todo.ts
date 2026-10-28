@@ -2,10 +2,11 @@ import type { Sections } from '../types'
 
 export type Status = 'todo' | 'in-progress' | 'done' | 'declined'
 // label: the short name the model wrote for the item, shown in its place; the text stays whole beside it.
-export type Item = { status: Status; text: string; label?: string }
+// id: set once, kept when the text is edited; the item's objective or update line carries the same id.
+export type Item = { status: Status; text: string; label?: string; id?: string }
 export type Line = { item: Item } | { raw: string }
 // A candidate with isSure is an item as written (an update, a numbered objective); the others wait for Laya.
-export type Candidate = { text: string; isSure: boolean }
+export type Candidate = { text: string; isSure: boolean; id?: string }
 // What Laya answered for one item and one reply: its top label and the probability of every option.
 export type Verdict = { label: string; p: number; probs: Record<string, number> }
 export type Decision = { status: Status; label: string; p: number }
@@ -32,6 +33,9 @@ const ITEM = /^\s*[-*]\s+\[([ ~xX-])\]\s+(\S.*?)\s*$/
 const UPDATE_TAG = /^\[update\]/i
 // - [ ] **Short label**: the whole text
 const LABELED = /^\*\*(.+?)\*\*:\s+(\S.*)$/
+// A trailing <!-- id:x --> on an item line or on the first line of its objective or update.
+const ID = /\s*<!-- id:([a-z0-9]+) -->\s*$/
+const IDS = /[ \t]*<!-- id:[a-z0-9]+ -->/g
 const MAX_TEXT = 120
 const MAX_LABEL = 48
 const MAX_LABEL_WORDS = 6
@@ -50,6 +54,31 @@ export function keyOf(text: string): string {
   return text.toLowerCase().replace(/\s+/g, ' ').trim()
 }
 
+// What an item is keyed by: its id, else its text key (an item written before ids).
+export function idOf(item: { text: string; id?: string }): string {
+  return item.id ?? keyOf(item.text)
+}
+
+function splitId(line: string): { line: string; id?: string } {
+  const m = ID.exec(line)
+  return m === null ? { line } : { line: line.slice(0, m.index), id: m[1] }
+}
+
+// Text as shown: id tokens removed.
+export function withoutIds(text: string): string {
+  return text.replace(IDS, '')
+}
+
+// FNV-1a of the text key in base 36; a taken id is hashed again with a counter.
+export function idFor(text: string, taken: ReadonlySet<string>): string {
+  for (let n = 0; ; n++) {
+    let h = 0x811c9dc5
+    for (const ch of n === 0 ? keyOf(text) : `${keyOf(text)}\n${n}`) h = Math.imul(h ^ (ch.codePointAt(0) ?? 0), 0x01000193) >>> 0
+    const id = h.toString(36).padStart(7, '0')
+    if (!taken.has(id)) return id
+  }
+}
+
 function statusOf(mark: string): Status {
   const found = STATUSES.find(status => MARKS[status] === mark.toLowerCase())
   return found ?? 'todo'
@@ -60,17 +89,31 @@ export function parse(body: string): Line[] {
     .split('\n')
     .filter(line => line.trim() !== '')
     .map(line => {
-      const m = ITEM.exec(line)
+      const split = splitId(line)
+      const m = ITEM.exec(split.line)
       if (m === null) return { raw: line }
       const status = statusOf(m[1] ?? ' ')
       const rest = m[2] ?? ''
       const named = LABELED.exec(rest)
-      return { item: named === null ? { status, text: rest } : { status, text: named[2] ?? '', label: named[1] ?? '' } }
+      const item: Item = named === null ? { status, text: rest } : { status, text: named[2] ?? '', label: named[1] ?? '' }
+      return { item: split.id === undefined ? item : { ...item, id: split.id } }
     })
 }
 
 function written(item: Item): string {
-  return item.label === undefined ? item.text : `**${item.label}**: ${item.text}`
+  const text = item.label === undefined ? item.text : `**${item.label}**: ${item.text}`
+  return item.id === undefined ? text : `${text} <!-- id:${item.id} -->`
+}
+
+// Every item without an id gets one.
+export function withIds(lines: readonly Line[]): Line[] {
+  const taken = new Set(lines.flatMap(line => ('item' in line && line.item.id !== undefined ? [line.item.id] : [])))
+  return lines.map(line => {
+    if (!('item' in line) || line.item.id !== undefined) return line
+    const id = idFor(line.item.text, taken)
+    taken.add(id)
+    return { item: { ...line.item, id } }
+  })
 }
 
 export function format(lines: readonly Line[]): string {
@@ -129,7 +172,8 @@ function unquote(text: string): string {
 
 // The first sentence of a block: its first line plus the wrapped lines under it, which carry on in lower case or digits
 // until a line ends a sentence. Bullets, numbers and links under it are details, not part of it.
-function head(lines: readonly string[]): string {
+function head(raw: readonly string[]): string {
+  const lines = raw.map(line => splitId(line).line)
   let out = stripBullet(lines[0] ?? '')
   for (const next of lines.slice(1)) {
     if (SENTENCE_END.test(out) || isDetail(next) || !/^[a-z0-9]/.test(next.trim())) break
@@ -138,7 +182,10 @@ function head(lines: readonly string[]): string {
   return unquote(out)
 }
 
-type Block = { isNumbered: boolean; lines: string[]; first: number; last: number }
+// ats: the index of each line in the section.
+type Block = { isNumbered: boolean; lines: string[]; ats: number[]; first: number; last: number }
+// A candidate with where its first line sits: that line carries its id.
+type Source = Candidate & { section: 'objectives' | 'updates'; at: number }
 
 // A numbered line opens a block that runs to the next numbered line, blank lines and bullets inside it; outside one, a
 // blank line ends a paragraph.
@@ -151,10 +198,11 @@ function blocks(text: string): Block[] {
       return
     }
     const last = out[out.length - 1]
-    if (NUMBERED.test(line)) out.push({ isNumbered: true, lines: [line], first: at, last: at })
-    else if (last === undefined || (isAfterBlank && !last.isNumbered)) out.push({ isNumbered: false, lines: [line], first: at, last: at })
+    if (NUMBERED.test(line)) out.push({ isNumbered: true, lines: [line], ats: [at], first: at, last: at })
+    else if (last === undefined || (isAfterBlank && !last.isNumbered)) out.push({ isNumbered: false, lines: [line], ats: [at], first: at, last: at })
     else {
       last.lines.push(line)
+      last.ats.push(at)
       last.last = at
     }
     isAfterBlank = false
@@ -163,27 +211,30 @@ function blocks(text: string): Block[] {
 }
 
 // A paragraph of bullets is a list of items; a paragraph that opens with text and then lists is one item, its bullets details.
-function objectiveHeads(block: Block): string[] {
-  if (block.isNumbered || !BULLET.test(block.lines[0] ?? '')) return [head(block.lines)]
-  const lists: string[][] = []
-  for (const line of block.lines) {
-    if (BULLET.test(line)) lists.push([line])
-    else lists[lists.length - 1]?.push(line)
-  }
-  return lists.map(head)
+function objectiveHeads(block: Block): { text: string; id?: string; at: number }[] {
+  const of = (lines: string[], at: number) => ({ text: head(lines), id: splitId(lines[0] ?? '').id, at })
+  if (block.isNumbered || !BULLET.test(block.lines[0] ?? '')) return [of(block.lines, block.first)]
+  const lists: { lines: string[]; at: number }[] = []
+  block.lines.forEach((line, i) => {
+    if (BULLET.test(line)) lists.push({ lines: [line], at: block.ats[i] ?? 0 })
+    else lists[lists.length - 1]?.lines.push(line)
+  })
+  return lists.map(list => of(list.lines, list.at))
 }
 
 // Each [UPDATE] block is one candidate: its first line of text, past a "Project: x" label. Text before the first tag is a block too.
-function updateBlocks(updates: string): string[] {
-  const parts: string[][] = [[]]
-  for (const line of updates.split('\n')) {
+function updateBlocks(updates: string): { text: string; id?: string; at: number }[] {
+  const parts: { line: string; at: number }[][] = [[]]
+  updates.split('\n').forEach((line, at) => {
     if (UPDATE_TAG.test(line.trim())) parts.push([])
-    else parts[parts.length - 1]?.push(line)
-  }
+    else parts[parts.length - 1]?.push({ line, at })
+  })
   return parts.flatMap(part => {
-    const lines = part.filter(line => line.trim() !== '')
-    const at = lines.findIndex(line => !LABEL.test(stripBullet(line)))
-    return at < 0 ? [] : [head(lines.slice(at))]
+    const lines = part.filter(({ line }) => line.trim() !== '')
+    const at = lines.findIndex(({ line }) => !LABEL.test(stripBullet(splitId(line).line)))
+    const first = lines[at]
+    if (at < 0 || first === undefined) return []
+    return [{ text: head(lines.slice(at).map(({ line }) => line)), id: splitId(first.line).id, at: first.at }]
   })
 }
 
@@ -211,26 +262,50 @@ export function cleanLabel(reply: string): string | undefined {
 
 // Numbered objectives and updates are items as written; any other objective paragraph or bullet waits for Laya, unless it
 // introduces a list (ends in a colon), is a heading or is a single word.
-export function candidates(s: Pick<Sections, 'objectives' | 'updates'>): Candidate[] {
+function sources(s: Pick<Sections, 'objectives' | 'updates'>): Source[] {
   const goals = blocks(s.objectives).flatMap(block =>
-    objectiveHeads(block).flatMap(text => {
+    objectiveHeads(block).flatMap(({ text, id, at }): Source[] => {
       const clean = block.isNumbered ? text.replace(/:$/, '') : text
       if (clean === '' || text.startsWith('#') || !isPhrase(clean) || (!block.isNumbered && text.endsWith(':'))) return []
-      return [{ text: oneLine(clean), isSure: block.isNumbered }]
+      return [{ text: oneLine(clean), isSure: block.isNumbered, id, section: 'objectives', at }]
     }),
   )
-  const updates = updateBlocks(s.updates).map(text => ({ text: oneLine(text), isSure: true }))
+  const updates = updateBlocks(s.updates).map(({ text, id, at }): Source => ({ text: oneLine(text), isSure: true, id, section: 'updates', at }))
   return [...goals, ...updates]
+}
+
+export function candidates(s: Pick<Sections, 'objectives' | 'updates'>): Candidate[] {
+  return sources(s).map(({ text, isSure, id }) => (id === undefined ? { text, isSure } : { text, isSure, id }))
+}
+
+// The keys a candidate is matched by: its id, if its line carries one, and its text keys.
+export function candidateKeys(c: Candidate): string[] {
+  return c.id === undefined ? keysOf(c.text) : [c.id, ...keysOf(c.text)]
+}
+
+// Puts an item's id on the objective or update line it came from, matched by text, when that line carries none yet.
+export function stamped(s: Pick<Sections, 'objectives' | 'updates'>, list: readonly Item[]): Pick<Sections, 'objectives' | 'updates'> {
+  const ids = new Map(list.flatMap(item => (item.id === undefined ? [] : [[keyOf(item.text), item.id] as const])))
+  const lines = { objectives: s.objectives.split('\n'), updates: s.updates.split('\n') }
+  for (const source of sources(s)) {
+    if (source.id !== undefined) continue
+    const id = keysOf(source.text).flatMap(key => ids.get(key) ?? [])[0]
+    if (id !== undefined) lines[source.section][source.at] = `${lines[source.section][source.at] ?? ''} <!-- id:${id} -->`
+  }
+  return { objectives: lines.objectives.join('\n'), updates: lines.updates.join('\n') }
 }
 
 // The objectives without the blocks whose items are all finished: a block is matched to its items by the text it yields as
 // a candidate, and one with no item in the list stays. Blank lines the cut leaves doubled are folded.
 export function openObjectives(objectives: string, list: readonly Item[]): string {
-  const status = new Map(list.map(item => [keyOf(item.text), item.status] as const))
+  const byId = new Map(list.flatMap(item => (item.id === undefined ? [] : [[item.id, item.status] as const])))
+  const byText = new Map(list.map(item => [keyOf(item.text), item.status] as const))
   const lines = objectives.split('\n')
   const gone = new Set<number>()
   for (const block of blocks(objectives)) {
-    const linked = candidates({ objectives: block.lines.join('\n'), updates: '' }).flatMap(c => keysOf(c.text).flatMap(key => status.get(key) ?? []))
+    const linked = candidates({ objectives: block.lines.join('\n'), updates: '' }).flatMap(c =>
+      c.id === undefined ? keysOf(c.text).flatMap(key => byText.get(key) ?? []) : byId.get(c.id) ?? [],
+    )
     if (linked.length > 0 && linked.every(s => s === 'done' || s === 'declined')) for (let i = block.first; i <= block.last; i++) gone.add(i)
   }
   return lines.filter((_, i) => !gone.has(i)).join('\n').replace(/\n{3,}/g, '\n\n').trim()
@@ -322,30 +397,39 @@ export function moved(item: Item, answer: string, verdict: Verdict | undefined, 
   return { status: next, label, p }
 }
 
-// Pins every item whose status is not the one the AI last wrote, and forgets items that left the list.
+// A record's value for an item: under its id, else under its text key (written before the item had an id).
+function pick<T>(record: Readonly<Record<string, T>>, item: Item): T | undefined {
+  return record[idOf(item)] ?? record[keyOf(item.text)]
+}
+
+// Pins every item whose status is not the one the AI last wrote, and forgets items that left the list. Entries kept
+// under an item's text key move to its id.
 export function settle(memory: Memory, list: readonly Item[]): Memory {
-  const present = new Set(list.map(item => keyOf(item.text)))
-  const pins = new Set(memory.pins.filter(key => present.has(key)))
+  const pins = new Set<string>()
+  const labeled: string[] = []
   const ai: Record<string, Status> = {}
   const bridge: Record<string, Status> = {}
   for (const item of list) {
-    const key = keyOf(item.text)
-    const wrote = memory.ai[key]
+    const key = idOf(item)
+    const isIn = (keys: readonly string[]) => keys.includes(key) || keys.includes(keyOf(item.text))
+    const wrote = pick(memory.ai, item)
     if (wrote !== undefined) ai[key] = wrote
-    const reported = memory.bridge[key]
+    const reported = pick(memory.bridge, item)
     if (reported !== undefined) bridge[key] = reported
-    if (wrote === undefined ? item.status !== 'todo' : wrote !== item.status) pins.add(key)
+    if (isIn(memory.pins) || (wrote === undefined ? item.status !== 'todo' : wrote !== item.status)) pins.add(key)
+    if (isIn(memory.labeled)) labeled.push(key)
   }
-  return { seen: memory.seen, ai, pins: [...pins], labeled: memory.labeled.filter(key => present.has(key)), bridge }
+  return { seen: memory.seen, ai, pins: [...pins], labeled, bridge }
 }
 
 export function pin(memory: Memory, key: string): Memory {
   return memory.pins.includes(key) ? memory : { ...memory, pins: [...memory.pins, key] }
 }
 
-// A click on an item sets its next status; the caller pins it.
+// A click on an item, by id or text key, sets its next status; the caller pins it. The write gives every item an id.
 export function cycleItem(body: string, key: string): string {
-  return format(parse(body).map(line => ('item' in line && keyOf(line.item.text) === key ? { item: { ...line.item, status: cycle(line.item.status) } } : line)))
+  const isIt = (item: Item) => idOf(item) === key || keyOf(item.text) === key
+  return format(withIds(parse(body).map(line => ('item' in line && isIt(line.item) ? { item: { ...line.item, status: cycle(line.item.status) } } : line))))
 }
 
 export type Move = { from: Status; to: Status }
@@ -358,10 +442,12 @@ export type Plan = {
   labeled?: readonly string[]
   bridge?: Readonly<Record<string, Status>>
 }
-export type Applied = { text: string; from: Status; to: Status; isHandSet: boolean }
+// key: the item's key in the plan and the memory.
+export type Applied = { key: string; text: string; from: Status; to: Status; isHandSet: boolean }
 
 // Applies new items and status moves to the todo section as it is now. A move lands only on an item still in the
 // status Laya read; one the captain changed meanwhile is left. A move on a hand-set item is reported so it can be logged.
+// A body that changes gives every item an id; every id written is seen.
 export function reconcile(body: string, memory: Memory, plan: Plan): { body: string; memory: Memory; applied: Applied[] } {
   const settled = settle(memory, items(body))
   const ai = { ...settled.ai }
@@ -369,27 +455,29 @@ export function reconcile(body: string, memory: Memory, plan: Plan): { body: str
   const applied: Applied[] = []
   const lines = parse(body).map(line => {
     if (!('item' in line)) return line
-    const key = keyOf(line.item.text)
-    const named = plan.labels?.[key]
+    const key = idOf(line.item)
+    const named = pick(plan.labels ?? {}, line.item)
     const item = line.item.label === undefined && named !== undefined ? { ...line.item, label: named } : line.item
-    const move = plan.set[key]
+    const move = pick(plan.set, item)
     if (move === undefined || move.from !== item.status) return { item }
-    applied.push({ text: item.text, from: move.from, to: move.to, isHandSet: pins.has(key) })
+    applied.push({ key, text: item.text, from: move.from, to: move.to, isHandSet: pins.has(key) })
     ai[key] = move.to
     pins.delete(key)
     return { item: { ...item, status: move.to } }
   })
-  const have = new Set(items(body).map(item => keyOf(item.text)))
+  const have = new Set(items(body).flatMap(item => [idOf(item), keyOf(item.text)]))
   for (const item of plan.add) {
-    const key = keyOf(item.text)
-    if (have.has(key)) continue
-    have.add(key)
-    ai[key] = item.status
+    const keys = [idOf(item), keyOf(item.text)]
+    if (keys.some(key => have.has(key))) continue
+    for (const key of keys) have.add(key)
+    ai[idOf(item)] = item.status
     lines.push({ item })
   }
-  const seen = [...new Set([...settled.seen, ...plan.seen])]
+  const out = format(lines) === format(parse(body)) ? lines : withIds(lines)
+  const ids = out.flatMap(line => ('item' in line && line.item.id !== undefined ? [line.item.id] : []))
+  const seen = [...new Set([...settled.seen, ...plan.seen, ...ids])]
   const labeled = [...new Set([...settled.labeled, ...(plan.labeled ?? [])])]
-  return { body: format(lines), memory: { seen, ai, pins: [...pins], labeled, bridge: { ...settled.bridge, ...plan.bridge } }, applied }
+  return { body: format(out), memory: { seen, ai, pins: [...pins], labeled, bridge: { ...settled.bridge, ...plan.bridge } }, applied }
 }
 
 // The moves the bridge's reported statuses make: forward only, and only when the report changed since the last run,
@@ -397,35 +485,37 @@ export function reconcile(body: string, memory: Memory, plan: Plan): { body: str
 export function bridgeMoves(list: readonly Item[], reported: Readonly<Record<string, Status>>, memory: Memory): Record<string, Move> {
   const set: Record<string, Move> = {}
   for (const item of list) {
-    const key = keyOf(item.text)
-    const to = reported[key]
-    if (to === undefined || to === memory.bridge[key] || RANK[to] <= RANK[item.status]) continue
-    set[key] = { from: item.status, to }
+    const to = pick(reported, item)
+    if (to === undefined || to === pick(memory.bridge, item) || RANK[to] <= RANK[item.status]) continue
+    set[idOf(item)] = { from: item.status, to }
   }
   return set
 }
 
 export function snapshotOf(list: readonly Item[]): Record<string, Status> {
-  return Object.fromEntries(list.map(item => [keyOf(item.text), item.status]))
+  return Object.fromEntries(list.map(item => [idOf(item), item.status]))
+}
+
+function tagged(item: Item, line: string): string {
+  return item.id === undefined ? line : `${line} [id:${item.id}]`
 }
 
 // What changed since the plugin last wrote the snapshot. `before` is the list as found, so a status that differs there
 // was set outside the plugin (by the captain); `after` adds the items this write added. Moves the plugin made are not
-// changes. With no snapshot yet nothing is reported.
+// changes. With no snapshot yet nothing is reported. A line names the item's id when it has one.
 export function diffSnapshot(snapshot: Readonly<Record<string, Status>> | undefined, before: readonly Item[], after: readonly Item[]): string[] {
   if (snapshot === undefined) return []
   const out: string[] = []
   const found = new Set<string>()
   for (const item of before) {
-    const key = keyOf(item.text)
-    found.add(key)
-    const was = snapshot[key]
-    if (was === undefined) out.push(`+ [${MARKS[item.status]}] ${item.text}`)
-    else if (was !== item.status) out.push(`${item.text}: ${was} -> ${item.status} (captain)`)
+    found.add(idOf(item))
+    found.add(keyOf(item.text))
+    const was = pick(snapshot, item)
+    if (was === undefined) out.push(tagged(item, `+ [${MARKS[item.status]}] ${item.text}`))
+    else if (was !== item.status) out.push(tagged(item, `${item.text}: ${was} -> ${item.status} (captain)`))
   }
   for (const item of after) {
-    const key = keyOf(item.text)
-    if (!found.has(key) && snapshot[key] === undefined) out.push(`+ [${MARKS[item.status]}] ${item.text}`)
+    if (!found.has(idOf(item)) && !found.has(keyOf(item.text)) && pick(snapshot, item) === undefined) out.push(tagged(item, `+ [${MARKS[item.status]}] ${item.text}`))
   }
   return out
 }

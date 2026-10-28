@@ -18,6 +18,7 @@ import {
   setObjectives,
   setTodo,
   stamp,
+  stampIds,
   summary,
 } from '../hooks/notes'
 
@@ -155,6 +156,29 @@ describe('section writer', () => {
     const md = carryOver(create('New plan', ID), previous, 'old.md')
     expect(sections(md).objectives).toBe('Background line with no item here\n\n2. Fix the login bug\n\nNew plan')
     expect(sections(md).todo).toBe('- [ ] Fix the login bug\n- [ ] Wire the audit log extras')
+  })
+
+  test('carryOver leaves behind an objective whose item is done by id, after either text was edited, and keeps the ids', () => {
+    const previous = '# Objectives\n\n1. Ship the exporter, reworded <!-- id:aaaaaaa -->\n\n2. Fix the login bug <!-- id:bbbbbbb -->\n\n# Todo\n\n- [x] Ship it <!-- id:aaaaaaa -->\n- [~] Fix login <!-- id:bbbbbbb -->\n\n# Important\n\n# Chat\n'
+    const md = carryOver(create('New plan', ID), previous, 'old.md')
+    expect(sections(md).objectives).toBe('2. Fix the login bug <!-- id:bbbbbbb -->\n\nNew plan')
+    expect(sections(md).todo).toBe('- [~] Fix login <!-- id:bbbbbbb -->')
+  })
+
+  test('carryOver again after this file stamped ids on what it carried copies nothing twice', () => {
+    const previous = '# Objectives\n\nOld plan\n\n## Updates\n\n[UPDATE] 2026-10-24-10-00\nold change\n\n# Todo\n\n- [~] old change\n\n# Important\n\n# Chat\n'
+    const once = carryOver(create('New plan', ID), previous, 'old.md')
+    const list = [{ status: 'in-progress' as const, text: 'old change', id: 'aaaaaaa' }, { status: 'todo' as const, text: 'Old plan', id: 'bbbbbbb' }]
+    const stamped = stampIds(setTodo(once, '- [~] old change <!-- id:aaaaaaa -->\n- [ ] Old plan <!-- id:bbbbbbb -->'), list)
+    expect(sections(stamped).updates).toBe('[UPDATE] 2026-10-24-10-00\nold change <!-- id:aaaaaaa -->')
+    const twice = sections(carryOver(stamped, previous, 'old.md'))
+    expect(twice.updates).toBe('[UPDATE] 2026-10-24-10-00\nold change <!-- id:aaaaaaa -->')
+    expect(twice.objectives).toBe('Old plan <!-- id:bbbbbbb -->\n\nNew plan')
+    expect(twice.todo).toBe('- [~] old change <!-- id:aaaaaaa -->\n- [ ] Old plan <!-- id:bbbbbbb -->')
+  })
+
+  test('summary and the panel text leave the ids out', () => {
+    expect(summary('# Objectives\n\nShip it <!-- id:aaaaaaa -->\n')).toBe('Ship it')
   })
 
   test('reads and writes the captain\'s example layout', () => {

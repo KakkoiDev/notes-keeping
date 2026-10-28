@@ -73,7 +73,15 @@ are not items are kept as written.
 
 An item can carry a short label before its whole text: `- [ ] **Todo labels in the panel**: for the todo items, would it
 be possible to ...`. The pane, `/notes-keeping todo` and Claude's context name the item by its label; the text after it
-is kept whole and is what the item is matched and keyed by. See [Labels](#labels).
+is kept whole. See [Labels](#labels).
+
+Every write the plugin makes to the list gives each item without one a short id at the end of its line,
+`- [ ] Ship the bridge <!-- id:1kmv58p -->`, and puts the same id at the end of the objective or update line the item
+came from. The id never changes: an item and its objective or update stay linked, and an item keeps its link to a
+firstmate task, its hand-set mark and its bridge status, when you edit the wording of either line. Leave the id where it
+is when you edit. A file from before ids works as before, matched by text (lowercased, whitespace folded), and gets its
+ids on the next write; your wording is never changed. The pane, the objectives view and Claude's todo list leave the ids
+out.
 
 ### Who sets what
 
@@ -99,12 +107,13 @@ is kept whole and is what the item is matched and keyed by. See [Labels](#labels
   when it is run from here rather than through a link in `config/`):
   - On every todo run the plugin runs `bridge status <notes file>`, which prints
     `{"<item text>": {"status": "in-progress" | "done" | null, "task": "<id>"}}` for every item linked to a firstmate
-    task. A linked item follows that status forward and Laya is never asked about it; a null status leaves it where it
+    task; an item linked by id (`bridge link <task> id:<id>`) is printed as `"id:<id>"` with an `"id"` field and
+    matched by id, an item linked by text (older links) by its text. A linked item follows that status forward and Laya is never asked about it; a null status leaves it where it
     is. The move is logged with `firstmate <task>`. A status you set on a linked item stays until the bridge reports a
     different one.
   - After every todo write, every click, and every five seconds, the plugin runs `bridge notify <notes file>` with the
     changes since its last write on stdin: `+ [ ] <item>` for a new item, `<item>: <from> -> <to> (captain)` for a
-    status set by click or by hand. Moves Laya or the bridge made are not sent. The bridge files them as one inbox note
+    status set by click or by hand, each followed by ` [id:<id>]` when the item has an id. Moves Laya or the bridge made are not sent. The bridge files them as one inbox note
     whose first line, the part firstmate's notification shows, is the first change (`<item>` or
     `<item>: <from> -> <to>`), with `(+N more)` when there are several.
   - Without the file nothing of this runs.

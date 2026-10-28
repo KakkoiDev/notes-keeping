@@ -1,5 +1,6 @@
 import type { NameParts, Sections } from '../types'
-import { format, items, keyOf, openObjectives, parse } from './todo'
+import type { Item } from './todo'
+import { format, idOf, items, keyOf, openObjectives, parse, stamped, withoutIds } from './todo'
 
 export const OBJECTIVES = '# Objectives'
 export const UPDATES = '## Updates'
@@ -234,23 +235,34 @@ function updateEntries(updates: string): string[] {
 }
 
 // Copies a linked file's objectives, updates and open todo items (with their statuses) into this one, and names it on the
-// Continuation of: line. Done and declined items, and objectives whose items are all done or declined, stay behind. Text this file already holds is not copied twice; on a todo item both hold, this file's status stays.
+// Continuation of: line. Done and declined items, and objectives whose items are all done or declined, stay behind. Text this file already holds, ids aside, is not copied twice; on a todo item both hold, this file's status stays.
 export function carryOver(md: string, previous: string, name: string): string {
   const from = sections(previous)
   const here = sections(md)
   let out = setContinuation(md, name)
   const goals = openObjectives(from.objectives, items(from.todo))
-  if (goals !== '' && !here.objectives.includes(goals)) {
+  if (goals !== '' && !withoutIds(here.objectives).includes(withoutIds(goals))) {
     out = setObjectives(out, [goals, here.objectives].filter(text => text !== '').join('\n\n'))
   }
   const own = updateEntries(here.updates)
-  const carried = updateEntries(from.updates).filter(entry => !own.includes(entry))
+  const ownBare = own.map(withoutIds)
+  const carried = updateEntries(from.updates).filter(entry => !ownBare.includes(withoutIds(entry)))
   if (carried.length > 0) out = setUpdates(out, [...carried, ...own].join('\n\n'))
   const lines = parse(here.todo)
-  const have = new Set(items(here.todo).map(item => keyOf(item.text)))
-  const added = items(from.todo).filter(item => item.status !== 'done' && item.status !== 'declined' && !have.has(keyOf(item.text)))
+  const have = new Set(items(here.todo).flatMap(item => [idOf(item), keyOf(item.text)]))
+  const added = items(from.todo).filter(item => item.status !== 'done' && item.status !== 'declined' && !have.has(idOf(item)) && !have.has(keyOf(item.text)))
   if (added.length > 0) out = setTodo(out, format([...added.map(item => ({ item })), ...lines]))
   return out
+}
+
+// Puts each item's id on the objective or update line it came from; a file whose lines all carry theirs comes back as is.
+export function stampIds(md: string, list: readonly Item[]): string {
+  const s = sections(md)
+  const out = stamped(s, list)
+  let doc = md
+  if (out.objectives !== s.objectives) doc = setObjectives(doc, out.objectives)
+  if (out.updates !== s.updates) doc = setUpdates(doc, out.updates)
+  return doc
 }
 
 export function sections(md: string): Sections {
@@ -273,7 +285,7 @@ export function sections(md: string): Sections {
 }
 
 export function summary(md: string): string {
-  const first = sections(md).objectives.split('\n').find(line => line.trim() !== '')
+  const first = withoutIds(sections(md).objectives).split('\n').find(line => line.trim() !== '')
   return first?.trim() ?? '(empty)'
 }
 

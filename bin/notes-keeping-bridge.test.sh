@@ -55,6 +55,15 @@ b unlink 'ship the bridge' 2>/dev/null
 check 'unlink of an unlinked item fails' '1' "$?"
 
 home
+b link pr-review id:ab12cd3
+check 'a link by id prints under id:<id> with the id' '{"id:ab12cd3": {"status": null, "task": "pr-review", "id": "ab12cd3"}}' "$(b status /n.md)"
+: > "$H/state/pr-review.meta"
+b link other 'Ship the bridge'
+check 'links by id and by text are listed side by side' '{"id:ab12cd3": {"status": "in-progress", "task": "pr-review", "id": "ab12cd3"}, "Ship the bridge": {"status": null, "task": "other"}}' "$(b status /n.md)"
+b unlink id:ab12cd3
+check 'unlink by id drops only that link' '{"Ship the bridge": {"status": null, "task": "other"}}' "$(b status /n.md)"
+
+home
 b link ../etc 'x' 2>/dev/null
 check 'a task id with a path is refused' '2' "$?"
 b bogus 2>/dev/null
@@ -82,6 +91,15 @@ printf 'Review: todo -> done (captain)\n' | b notify /notes/a.md
 check 'one status change: the first line is item, old and new status' 'Review: todo -> done' "$(first)"
 note="$(cat "$H"/state/inbox/*.note)"
 check 'the body still names the file and carries the change line' 'yes' "$(case "$note" in *'notes-keeping todo changed in /notes/a.md:'*'Review: todo -> done (captain)'*) echo yes ;; *) echo no ;; esac)"
+
+home
+printf 'Review: todo -> done (captain) [id:ab12cd3]\n' | b notify /notes/a.md
+check 'one change with an id: the first line drops the id tag' 'Review: todo -> done' "$(first)"
+check 'the body keeps the id tag' '1' "$(grep -c 'Review: todo -> done (captain) \[id:ab12cd3\]' "$H"/state/inbox/*.note)"
+
+home
+printf '+ [ ] Ship the bridge [id:ab12cd3]\n' | b notify /notes/a.md
+check 'one add with an id: the first line is the item text' 'Ship the bridge' "$(first)"
 
 home
 printf '+ [ ] A\n+ [x] B\nC: todo -> declined (captain)\n' | b notify /notes/a.md
