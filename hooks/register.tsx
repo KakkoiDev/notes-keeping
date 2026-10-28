@@ -687,8 +687,8 @@ async function poll($: EngineInterface): Promise<string> {
     if (text !== '') await update($, handled, () => text)
     return `first read after the dock moved, counted as answered: ${text}`
   }
-  // A reply box in view is the one being typed in. Behind another tab, or after the keyboard left it, a new selection replaces it.
-  if (current?.mode === 'reply' && selectPane?.isShown !== false) return `reply box open: ${current.selection}`
+  // A reply box in view is the one being typed in. Behind another tab, gone, or after the keyboard left it, a new selection replaces it.
+  if (current?.mode === 'reply' && selectPane?.isShown === true) return `reply box open: ${current.selection}`
   // A docked pane narrows the transcript and the terminal drops the selection, so an open pane outlives it.
   if (text === '') {
     seen = ''

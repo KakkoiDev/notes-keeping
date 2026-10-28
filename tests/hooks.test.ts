@@ -865,6 +865,32 @@ test('Esc or the close mark on the menu, or on the reply box with or without a d
   await menu.unmount()
 })
 
+test('a reply box that never held the keyboard and is gone without a close event leaves the next selection able to open the menu', async ($, on) => {
+  let selection: string | undefined
+  const { clock, ui } = engine(on, { [BOUND]: NOTES }, { [`session:${SESSION}`]: BOUND }, () => selection)
+  engineDraws(on)
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
+  selection = 'alpha'
+  await clock.advance(1200)
+  const menu = await $.ui.mount({ ...SELECT_PANE, surface: 'terminal' })
+  // A draft in the prompt keeps the keyboard: the reply box opens without it.
+  ui.isFocusable = false
+  await menu.press({ key: 'reply-open' })
+  await menu.unmount()
+  await clock.advance(1200)
+  // The engine drops the pane with no ui.close hook run, as an unload does.
+  ui.panes.delete('notes-keeping-select')
+  ui.shown = undefined
+  ui.isFocusable = true
+  const opens = ui.opened.length
+  selection = 'bravo'
+  await clock.advance(1800)
+  expect(ui.opened.slice(opens)).toEqual([{ id: 'notes-keeping-select', focus: true }])
+  const shown = await $.ui.mount({ ...SELECT_PANE, surface: 'terminal' })
+  expect(await shown.find({ key: 'reply-open' })).toBeDefined()
+  await shown.unmount()
+})
+
 test('the Ctrl+q chord with the reply box open leaves the reply box behind the Notes tab; the next selection replaces both', async ($, on) => {
   let selection: string | undefined
   const { clock, ui } = engine(on, { [BOUND]: NOTES }, { [`session:${SESSION}`]: BOUND }, () => selection)
