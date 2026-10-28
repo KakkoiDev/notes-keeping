@@ -39,6 +39,9 @@ const CHORD = 'ctrl+q'
 const GIT_MS = 10_000
 const POLL_MS = 600
 const REFRESH_MS = 5_000
+// How long a still selection the clipboard never took (copy on select off) waits before it counts as released.
+const HOLD_MS = 3_000
+const PASTE_MS = 2_000
 const PREVIEW = 60
 const HISTORY_CAP = 20
 const NOTE = 'note:'
@@ -99,6 +102,10 @@ let carried: string | undefined
 let resumed = false
 // The selection the last poll read: a drag still under way changes it between polls.
 let seen = ''
+// When the selection last changed.
+let stillSince = 0
+// False once pbpaste failed: a still selection then counts as released.
+let canPaste = true
 // Opening or closing the dock reflows the transcript, and the kept selection then covers other text.
 let isReflowed = false
 // The bar stands in for a pane the terminal cannot seat: the reason is told once, not on every selection.
@@ -107,7 +114,8 @@ let isTold = false
 async function boundPath($: EngineInterface): Promise<string | undefined> {
   const id = await $.session.id()
   const path = await $.store.get(bindKey(id))
-  if (typeof path === 'string') return path
+  // A deleted notes file unbinds the session: its next write starts a new one.
+  if (typeof path === 'string') return (await $.fs.exists(path)) ? path : undefined
   if (carried === undefined) return undefined
   const kept = carried
   carried = undefined
@@ -522,6 +530,20 @@ function unknown(sub: string): string {
   return `${said}\n${USAGE}`
 }
 
+// The engine copies a mouse selection to the clipboard when the button comes up, and reports the selection while it is
+// still held; the clipboard holding the selection is the release.
+async function isReleased($: EngineInterface, text: string): Promise<boolean> {
+  if (!canPaste) return true
+  try {
+    const pasted = await $.process.run(['pbpaste'], { timeoutMs: PASTE_MS })
+    if (pasted.exitCode !== 0) canPaste = false
+    return pasted.exitCode !== 0 || pasted.stdout.trim() === text || (await $.clock.now()) - stillSince >= HOLD_MS
+  } catch {
+    canPaste = false
+    return true
+  }
+}
+
 async function selected($: EngineInterface): Promise<string> {
   return ((await $.ui.selection())?.text ?? '').trim()
 }
@@ -661,8 +683,10 @@ export const register: Register = on => {
         // Opening the dock mid-drag reflows the transcript under the pointer, so the pane waits for a still selection.
         if (text !== seen) {
           seen = text
+          stillSince = await $.clock.now()
           return
         }
+        if (!(await isReleased($, text))) return
         await openSelect($, text)
       })
       $.clock.every(REFRESH_MS, async () => {

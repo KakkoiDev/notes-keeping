@@ -302,6 +302,24 @@ describe('Laya answers', () => {
     expect(mentions('ドキュメントを書く', 'ドキュメントの執筆を始めました')).toBe(true)
     expect(mentions('ドキュメントを書く', '今日は天気がいいですね')).toBe(false)
   })
+
+  // The hooks worker is killed when a hook does not yield for 5000 ms; the todo run calls moved() once per open item.
+  test('moved() over 50 items and a long reply naming many of them stays far under the hooks worker heartbeat', () => {
+    const syllables = ['ba', 'ce', 'di', 'fo', 'gu', 'ha', 'ke', 'li', 'mo', 'nu', 'pa', 're', 'si', 'to', 'vu', 'wa', 'ze', 'ji', 'qo', 'xu']
+    const word = (n: number) => [Math.floor(n / 400) % 20, Math.floor(n / 20) % 20, n % 20].map(i => syllables[i]).join('')
+    const shared = Array.from({ length: 30 }, (_, i) => word(7000 + i))
+    const list = Array.from({ length: 50 }, (_, i) => ({
+      status: 'todo' as const,
+      text: [0, 1, 2, 3].map(j => word(i * 4 + j)).concat(Array.from({ length: 10 }, (_, j) => shared[(i + j * 3) % shared.length] ?? '')).join(' '),
+    }))
+    const siblings = list.map(one => one.text)
+    const cues = ['is done and merged', 'was started, still partway', 'was dropped, out of scope', 'landed and works']
+    const answer = Array.from({ length: 70 }, (_, s) => `The ${word((s % 50) * 4)} ${word(((s * 7) % 50) * 4 + 1)} ${shared[s % shared.length]} part ${cues[s % cues.length]}.`).join(' ')
+    expect(answer.length).toBeGreaterThan(3500)
+    const at = performance.now()
+    for (const one of list.slice(0, 20)) moved(one, answer, verdict('finished', 0.9), siblings)
+    expect(performance.now() - at).toBeLessThan(1000)
+  })
 })
 
 describe('memory and reconcile', () => {

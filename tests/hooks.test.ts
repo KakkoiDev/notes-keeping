@@ -21,6 +21,8 @@ const bridge: { links: Record<string, { status: string | null; task: string }>; 
 const laya: { answer: ((ask: Ask) => unknown) | undefined; asks: Ask[] } = { answer: undefined, asks: [] }
 // What the fake label model answers per prompt; left undefined, the call fails as an API error.
 const model: { answer: ((prompt: string) => string) | undefined; asks: string[] } = { answer: undefined, asks: [] }
+// What pbpaste prints; left undefined, the clipboard cannot be read.
+const clipboard: { text: string | undefined } = { text: undefined }
 
 async function flush(): Promise<void> {
   for (let i = 0; i < 5000; i++) await Promise.resolve()
@@ -58,6 +60,7 @@ function engine(
   bridge.calls = []
   model.answer = undefined
   model.asks = []
+  clipboard.text = undefined
   const clock = mock.clock(on, { now: new Date(2026, 9, 26, 10, 58).getTime() })
   mock.store(on, store)
   mock.env(on, { HOME })
@@ -91,6 +94,9 @@ function engine(
       laya.asks.push(ask)
       const stdout = laya.answer === undefined ? '' : JSON.stringify(laya.answer(ask))
       return { value: { exitCode: laya.answer === undefined ? 1 : 0, stdout, stderr: laya.answer === undefined ? 'boom' : '', isStdoutTruncated: false, isStderrTruncated: false } }
+    }
+    if (e.argv[0] === 'pbpaste') {
+      return { value: { exitCode: clipboard.text === undefined ? 1 : 0, stdout: clipboard.text ?? '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
     }
     if (e.argv[0] === BRIDGE) {
       bridge.calls.push(e.argv[1] ?? '')
@@ -259,6 +265,19 @@ test('a write with no notes file starts one, tells the user, and never takes the
   expect(ui.toasts).toEqual([`Notes started: ${NOW}`])
   expect(fs[NOW]).toBe(`# Objectives\n\nSessions: ${SESSION}\n\n## Updates\n\n# Important\n\n[USER] keep me\n\n# Chat\n`)
   expect(commits(git)).toEqual([`init: ${FILE}`, `important: ${FILE}`])
+})
+
+// $.fs.read rejects on a missing file: a binding to a deleted notes file failed every write, prompt and refresh.
+test('a session bound to a notes file that was deleted starts a new one on its next write', async ($, on) => {
+  const fs: Fs = {}
+  const { ui } = engine(on, fs, { [`session:${SESSION}`]: `${DIR}/2026-10-20-09-00-firstmate-abcdef12.md` })
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: false })
+  expect((await run($, 'important keep me')).text).toBe('Added to # Important.')
+  expect(ui.toasts).toEqual([`Notes started: ${NOW}`])
+  expect(fs[NOW]).toContain('[USER] keep me')
+  await run($, 'important and me')
+  expect(fs[NOW]).toContain('[USER] and me')
+  expect(ui.toasts).toHaveLength(1)
 })
 
 test('an unknown subcommand names the nearest one; a bare command or a bare objectives prints usage and writes nothing', async ($, on) => {
@@ -769,6 +788,32 @@ test('a selection still changing between polls, as during a drag, opens nothing 
   await clock.advance(600)
   expect(ui.opened).toEqual([])
   await clock.advance(600)
+  expect(ui.opened).toEqual([{ id: 'notes-keeping-select', focus: true }])
+})
+
+// The engine copies a mouse selection to the clipboard when the button comes up; a held button has copied nothing yet.
+test('a selection held still with the mouse button down opens nothing; the pane opens once the release copies it', async ($, on) => {
+  let selection: string | undefined
+  const { clock, ui } = engine(on, { [BOUND]: NOTES }, { [`session:${SESSION}`]: BOUND }, () => selection)
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
+  clipboard.text = 'copied earlier'
+  selection = 'alpha bravo'
+  await clock.advance(2400)
+  expect(ui.opened).toEqual([])
+  clipboard.text = 'alpha bravo\n'
+  await clock.advance(600)
+  expect(ui.opened).toEqual([{ id: 'notes-keeping-select', focus: true }])
+})
+
+test('with copy on select off the clipboard never takes the selection: a still selection opens the pane after three seconds', async ($, on) => {
+  let selection: string | undefined
+  const { clock, ui } = engine(on, { [BOUND]: NOTES }, { [`session:${SESSION}`]: BOUND }, () => selection)
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
+  clipboard.text = 'copied earlier'
+  selection = 'alpha bravo'
+  await clock.advance(3000)
+  expect(ui.opened).toEqual([])
+  await clock.advance(1200)
   expect(ui.opened).toEqual([{ id: 'notes-keeping-select', focus: true }])
 })
 

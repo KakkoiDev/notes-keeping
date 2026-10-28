@@ -248,13 +248,40 @@ function tokens(text: string): Set<string> {
 const same = (a: string, b: string): boolean => a === b || (Math.min(a.length, b.length) >= 3 && (a.startsWith(b) || b.startsWith(a)))
 const shares = (words: Iterable<string>, reply: ReadonlySet<string>): boolean => [...words].some(word => [...reply].some(other => same(word, other)))
 
+// Token sets and each item's own words, kept per siblings array: a todo run passes one array to every moved() call,
+// which otherwise rebuilds every sibling's tokens for every sentence and every item, seconds of CPU on a 50-item list.
+type Words = { tokens: Map<string, Set<string>>; own: Map<string, Iterable<string>> }
+const memo = new WeakMap<readonly string[], Words>()
+
+function wordsOf(siblings: readonly string[]): Words {
+  const found = memo.get(siblings)
+  if (found !== undefined) return found
+  const made: Words = { tokens: new Map(), own: new Map() }
+  memo.set(siblings, made)
+  return made
+}
+
+function tokensIn(words: Words, text: string): Set<string> {
+  const found = words.tokens.get(text)
+  if (found !== undefined) return found
+  const made = tokens(text)
+  words.tokens.set(text, made)
+  return made
+}
+
 // Items of one list share domain words ("notes", "pane"); a reply must share a word only this item has to move it.
 // An item with no word of its own falls back to all its words. Words match by stem and by prefix.
 export function mentions(item: string, answer: string, siblings: readonly string[] = []): boolean {
-  const all = tokens(item)
-  const others = [...new Set(siblings.filter(text => text !== item).flatMap(text => [...tokens(text)]))]
-  const own = [...all].filter(token => !others.some(other => same(token, other)))
-  return shares(own.length === 0 ? all : own, tokens(answer))
+  const words = wordsOf(siblings)
+  let own = words.own.get(item)
+  if (own === undefined) {
+    const all = tokensIn(words, item)
+    const others = [...new Set(siblings.filter(text => text !== item).flatMap(text => [...tokensIn(words, text)]))]
+    const mine = [...all].filter(token => !others.some(other => same(token, other)))
+    own = mine.length === 0 ? all : mine
+    words.own.set(item, own)
+  }
+  return shares(own, tokensIn(words, answer))
 }
 
 // The cue the reply gives for this item, read only from the sentences about it and the ones that carry on from them,
@@ -263,7 +290,7 @@ function cueFor(item: string, answer: string, siblings: readonly string[]): stri
   const sentences = answer.split(/(?<=[.!?。！？])\s+|\n+|;\s+/).filter(s => s.trim() !== '')
   const about = sentences.map(s => mentions(item, s, siblings))
   const other = sentences.map(s => siblings.some(text => text !== item && mentions(text, s, siblings)))
-  const own = tokens(item)
+  const own = tokensIn(wordsOf(siblings), item)
   const text = sentences
     .filter((_, i) => about[i] || (i > 0 && about[i - 1] && !other[i]))
     .map(s => (s.match(/[\p{L}\p{N}_']+/gu) ?? []).filter(word => ![...own].some(token => same(stem(word.toLowerCase()), token))).join(' '))
