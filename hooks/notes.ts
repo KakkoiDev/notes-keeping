@@ -292,3 +292,7 @@ export function summary(md: string): string {
 export function inject(md: string, path: string): string {
   return `Session notes kept by notes-keeping: ${path}\nThe user writes this file; you never edit it.\n\n${md.trimEnd()}`
 }
+
+export function injectPrevious(md: string, path: string): string {
+  return `Previous session's notes, attached to this session's notes as ${CONTINUATION} ${path}\nRead only: the context of the work this session continues; you never edit it.\n\n${md.trimEnd()}`
+}

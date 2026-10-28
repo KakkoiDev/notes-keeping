@@ -124,7 +124,16 @@ out.
 Every prompt carries the list (each item with its marker, `[~]` for in-progress, and an instruction to start every
 open item now, in parallel, not waiting on one answer before starting another independent one), each item as `label: text` with the text cut to 120 characters, or the cut text alone when it has no
 label. A prompt that already
-carries the whole notes file, after a compaction or a resume, does not repeat it.
+carries the whole notes file, after a compaction or a resume, does not repeat it. A compaction is seen through
+`session.compact` (the main conversation's, not a skipped or precomputed one, nor a subagent's), or by a changed first
+message where the engine puts its summary there.
+
+After an attach from the History view (`a`, `y`), the next prompt also carries the attached file whole, read only,
+labeled `Previous session's notes`: its Important, Chat and done or declined items included, which the copy leaves
+behind. Later prompts do not repeat it. Every prompt that carries the whole notes file carries it again while the
+notes still open with `Continuation of:` that file, a notes file of the folder (a line edited to name any other path
+puts nothing in). Only the directly attached file goes in, not the file it continued in turn. No size cap: it is a notes file of the same kind as the current one, which goes in whole too (the largest
+here were about 43 KB). `/notes-keeping history <n|file>` puts the attached file in context with its own output instead.
 
 ### In the pane
 

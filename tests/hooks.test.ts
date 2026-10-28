@@ -542,6 +542,19 @@ test('a fresh session gets no notes on its first prompt', async ($, on) => {
   expect(sent.map(row => row.context)).toEqual([undefined])
 })
 
+// Live, the first prompt of a session reads an empty transcript: its own message is not in it yet.
+test('the second prompt of a fresh session, the first one the transcript holds, gets no whole notes file', async ($, on) => {
+  const head = { text: '' }
+  const sent = submitting(on)
+  engine(on, { [BOUND]: NOTES }, { [`session:${SESSION}`]: BOUND }, undefined, head)
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: false })
+  await submit($, 'one')
+  head.text = 'one'
+  await submit($, 'two')
+  await submit($, 'three')
+  expect(sent.map(row => (row.context ?? []).some(text => text.startsWith('Session notes kept by notes-keeping')))).toEqual([false, false, false])
+})
+
 test('a session with no notes file gets no context after a compaction', async ($, on) => {
   const head = { text: 'First prompt of the session' }
   const sent = submitting(on)
@@ -550,6 +563,119 @@ test('a session with no notes file gets no context after a compaction', async ($
   head.text = 'summary'
   await submit($, 'two')
   expect(sent.map(row => row.context)).toEqual([undefined, undefined])
+})
+
+const OLDER = `${DIR}/2026-10-23-08-00-firstmate-00000000.md`
+const OLD = `${DIR}/2026-10-24-09-00-firstmate-11111111.md`
+const OLD_NOTES = '# Objectives\n\nContinuation of: 2026-10-23-08-00-firstmate-00000000.md\n\nOld plan\n\n## Updates\n\n[UPDATE] 2026-10-24-10-00\nold change\n\n# Todo\n\n- [x] shipped\n- [-] dropped\n- [ ] not yet\n\n# Important\n\n[USER] old fact\n\n# Chat\n\n[AI_AGENT] old question\n[USER] old answer\n'
+
+// Attaches OLD through the History view of the panel (h, pick it, a, y) in a fresh session, not a resumed one.
+async function attachInPane($: Engine, on: On, fs: Fs, head: { text: string }) {
+  const first = head.text
+  head.text = ''
+  engine(on, fs, { [`session:${SESSION}`]: BOUND }, undefined, head)
+  engineDraws(on)
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: false })
+  await flush()
+  head.text = first
+  await run($, 'show')
+  const pane = await $.ui.mount({ ...NOTES_PANE, surface: 'terminal' })
+  await pane.press({ key: 'view:history' })
+  await pane.press({ key: `note:${OLD.split('/').pop()}` })
+  await pane.press({ key: 'attach' })
+  await pane.press({ key: 'confirm' })
+  await pane.unmount()
+}
+
+test('the prompt after an attach from the panel carries the attached file whole, labeled as the previous notes, once', async ($, on) => {
+  const head = { text: 'First prompt of the session' }
+  const sent = submitting(on)
+  const fs: Fs = { [BOUND]: NOTES, [OLD]: OLD_NOTES, [OLDER]: '# Objectives\n\nOlder plan\n' }
+  await attachInPane($, on, fs, head)
+  await submit($, 'one')
+  await submit($, 'two')
+
+  const first = sent[0]?.context ?? []
+  const previous = first.find(text => text.includes(OLD_NOTES.trimEnd()))
+  expect(previous).toBeDefined()
+  expect(previous?.startsWith(`Previous session's notes, attached to this session's notes as Continuation of: ${OLD}`)).toBe(true)
+  expect(first.join('\n')).not.toContain('Older plan')
+  expect((sent[1]?.context ?? []).join('\n')).not.toContain('old answer')
+  expect(fs[OLD]).toBe(OLD_NOTES)
+})
+
+test('after a compaction the prompt carries the attached file again while the notes still continue it', async ($, on) => {
+  const head = { text: 'First prompt of the session' }
+  const sent = submitting(on)
+  const fs: Fs = { [BOUND]: NOTES, [OLD]: OLD_NOTES, [OLDER]: '# Objectives\n\nOlder plan\n' }
+  await attachInPane($, on, fs, head)
+  await submit($, 'one')
+  await submit($, 'two')
+  head.text = `This session is being continued from a previous conversation that ran out of context. ${'x'.repeat(300)} summary`
+  await submit($, 'three')
+  await submit($, 'four')
+  fs[BOUND] = (fs[BOUND] ?? '').replace(/Continuation of: .*\n\n/, '')
+  head.text = `${head.text} again`
+  await submit($, 'five')
+
+  const carries = (i: number) => (sent[i]?.context ?? []).some(text => text.includes('[USER] old answer'))
+  expect([0, 1, 2, 3, 4].map(carries)).toEqual([true, false, true, false, false])
+  const after = (sent[2]?.context ?? []).join('\n')
+  expect(after).toContain(`Session notes kept by notes-keeping: ${BOUND}`)
+  expect(after).toContain(`Previous session's notes, attached to this session's notes as Continuation of: ${OLD}`)
+  expect(after).not.toContain('Older plan')
+})
+
+// Claude Code 2.1.312 keeps the rows from before a compaction in session.messages(): the first message does not change.
+test('a compaction of the main conversation makes the next prompt carry the whole notes file and the attached one, once; a skipped, precomputed or subagent one does not', async ($, on) => {
+  const head = { text: 'First prompt of the session' }
+  const sent = submitting(on)
+  const fs: Fs = { [BOUND]: NOTES, [OLD]: OLD_NOTES }
+  const compacting = { skip: undefined as string | undefined }
+  on('session.compact', (_$, e) => (compacting.skip === undefined ? { messages: e.messages } : { skip: compacting.skip }))
+  await attachInPane($, on, fs, head)
+  await submit($, 'one')
+  await submit($, 'two')
+  const compact = (input: { trigger?: 'manual' | 'precompute'; agentId?: string } = {}) => $.session.compact({ trigger: 'manual', messages: [{ role: 'user', text: 'one', toolUses: [] }], ...input })
+  await compact()
+  await submit($, 'three')
+  await submit($, 'four')
+  compacting.skip = 'nothing to compact'
+  await compact()
+  await submit($, 'five')
+  compacting.skip = undefined
+  await compact({ trigger: 'precompute' })
+  await compact({ agentId: 'agent-1' })
+  await submit($, 'six')
+
+  const whole = (i: number) => (sent[i]?.context ?? []).some(text => text.startsWith(`Session notes kept by notes-keeping: ${BOUND}`))
+  const previous = (i: number) => (sent[i]?.context ?? []).some(text => text.includes('[USER] old answer'))
+  expect([0, 1, 2, 3, 4, 5].map(whole)).toEqual([false, false, true, false, false, false])
+  expect([0, 1, 2, 3, 4, 5].map(previous)).toEqual([true, false, true, false, false, false])
+})
+
+test('a Continuation of: line edited to name a file that is not a notes file puts nothing of it in context', async ($, on) => {
+  const head = { text: 'First prompt of the session' }
+  const sent = submitting(on)
+  const secret = `${HOME}/.ssh/id_rsa`
+  const fs: Fs = { [BOUND]: NOTES.replace('The plan', 'Continuation of: ../.ssh/id_rsa\n\nThe plan'), [secret]: 'PRIVATE KEY' }
+  engine(on, fs, { [`session:${SESSION}`]: BOUND }, undefined, head)
+  await submit($, 'one')
+  head.text = 'summary'
+  await submit($, 'two')
+  expect(sent[1]?.context?.[0]).toContain('Continuation of: ../.ssh/id_rsa')
+  expect(sent.flatMap(row => row.context ?? []).join('\n')).not.toContain('PRIVATE KEY')
+})
+
+test('with nothing attached no prompt carries previous notes, before or after a compaction', async ($, on) => {
+  const head = { text: 'First prompt of the session' }
+  const sent = submitting(on)
+  engine(on, { [BOUND]: NOTES, [OLD]: OLD_NOTES }, { [`session:${SESSION}`]: BOUND }, undefined, head)
+  await submit($, 'one')
+  head.text = 'summary'
+  await submit($, 'two')
+  expect(sent.flatMap(row => row.context ?? []).join('\n')).not.toContain('Previous session')
+  expect(sent.flatMap(row => row.context ?? []).join('\n')).not.toContain('old answer')
 })
 
 const SELECT_PANE = {

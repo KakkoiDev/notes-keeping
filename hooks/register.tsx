@@ -15,6 +15,7 @@ import {
   create,
   fileName,
   inject,
+  injectPrevious,
   nameParts,
   newestFirst,
   projectName,
@@ -95,6 +96,16 @@ function bindKey(sessionId: string): string {
 
 function headKey(sessionId: string): string {
   return `head:${sessionId}`
+}
+
+// Set by an attach from the panel: the next prompt carries the attached file.
+function attachedKey(sessionId: string): string {
+  return `attached:${sessionId}`
+}
+
+// Set by a compaction of the main conversation: the next prompt carries the whole notes file.
+function compactedKey(sessionId: string): string {
+  return `compacted:${sessionId}`
 }
 
 // The file a /clear or a /resume left behind; the next session id to look for its notes takes it.
@@ -716,6 +727,12 @@ export const register: Register = on => {
     return done
   })
 
+  on('session.compact', async ($, e, next) => {
+    const done = await next(e)
+    if (e.trigger !== 'precompute' && e.agentId === undefined && done.skip === undefined) await $.store.set(compactedKey(await $.session.id()), true)
+    return done
+  })
+
   on('session.end', async ($, e, next) => {
     if (e.reason === 'clear' || e.reason === 'resume') carried = await boundPath($)
     if (e.reason === 'clear') {
@@ -805,9 +822,9 @@ export const register: Register = on => {
   }).catch(($, e, next) => (next.called ? next(e) : { deny: `${NAME}: its notes guard failed.` }))
 
   // Queued replies go out ahead of the user's own Enter, and that turn is recorded in # Chat.
-  // Compaction puts its summary in place of the first message, so a changed first message means one ran.
-  // On this machine the managed-settings plugin bypasses classic.SessionStart, prompt.context and
-  // session.compact for user plugins; prompt.submit is the hook that still reaches the model.
+  // A compaction is the flag session.compact sets, or a changed first message where compaction puts its summary there.
+  // Claude Code 2.1.312 keeps the first message, and fires session.compact for this plugin in a HOME with no other plugins;
+  // a managed-settings plugin has bypassed classic.SessionStart, prompt.context and session.compact for user plugins.
   on('prompt.submit', async ($, e, next) => {
     if (e.command !== undefined) return next(e)
     const pending = e.origin.kind === 'composer' && e.isMeta !== true ? await read($, queue) : []
@@ -827,12 +844,26 @@ export const register: Register = on => {
     // Every summary opens with the same sentence, so the tail and the length tell two apart.
     const first = (await $.session.messages())[0]?.text ?? ''
     const head = `${first.length}:${first.slice(-HEAD_CHARS)}`
-    await $.store.set(key, head)
+    // The first prompt reads an empty transcript; the head is the first message once there is one.
+    if (first !== '') await $.store.set(key, head)
+    const compactedAt = compactedKey(await $.session.id())
+    const isCompacted = (await $.store.get(compactedAt)) === true
+    if (isCompacted) await $.store.delete(compactedAt)
     const md = await readText($, path)
     // The whole file carries the todo list; every other prompt carries the list alone.
-    const isWhole = isResumed || (typeof seen === 'string' && seen !== head)
+    const isWhole = isResumed || isCompacted || (typeof seen === 'string' && seen !== head)
     const todo = isWhole || e.isMeta === true ? undefined : context(sections(md).todo)
     const added = isWhole ? [inject(md, path)] : todo === undefined ? [] : [todo]
+    // The file the notes continue: once after a panel attach, and again with the whole notes file.
+    // Only a notes file of the folder: the line can be edited by hand to name any path.
+    const attachedAt = attachedKey(await $.session.id())
+    const isAttached = e.isMeta !== true && (await $.store.get(attachedAt)) === true
+    const continued = sections(md).continuation
+    if ((isWhole || isAttached) && continued !== undefined && (await listNotes($)).includes(continued)) {
+      const previous = `${await notesDir($)}/${continued}`
+      added.push(injectPrevious(await readText($, previous), previous))
+    }
+    if (isAttached) await $.store.delete(attachedAt)
     if (added.length === 0) return next({ ...e, text })
     return next({ ...e, text, context: [...(e.context ?? []), ...added] })
   })
@@ -1019,6 +1050,7 @@ export const register: Register = on => {
                 label="Yes, attach"
                 onPress={async () => {
                   warn($, told('', (await attach($, step.name)).said))
+                  await $.store.set(attachedKey(await $.session.id()), true)
                   $.ui.toast(`Attached ${step.name}: its objectives, updates and open todo items are copied here; the original is unchanged.`)
                   await update($, picked, () => null)
                   await update($, view, () => 'todos')
