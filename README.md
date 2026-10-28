@@ -112,8 +112,8 @@ is kept whole and is what the item is matched and keyed by. See [Labels](#labels
 
 ### In Claude's context
 
-Every prompt carries the list (each item with its marker, `[~]` for in-progress, and `Work on:` the ongoing item, else
-the first to-do), each item as `label: text` with the text cut to 120 characters, or the cut text alone when it has no
+Every prompt carries the list (each item with its marker, `[~]` for in-progress, and an instruction to start every
+open item now, in parallel, not waiting on one answer before starting another independent one), each item as `label: text` with the text cut to 120 characters, or the cut text alone when it has no
 label. A prompt that already
 carries the whole notes file, after a compaction or a resume, does not repeat it.
 

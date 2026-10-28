@@ -436,13 +436,14 @@ function brief(item: Item): string {
   return item.label === undefined ? clip(item.text) : `${item.label}: ${clip(item.text)}`
 }
 
-// What Claude reads each turn: the list, and what to work on next.
+// What Claude reads each turn: the list, and to work every open item at once.
 export function context(body: string): string | undefined {
   const list = items(body)
   if (list.length === 0) return undefined
-  const open = list.filter(item => item.status === 'todo' || item.status === 'in-progress')
-  const focus = open.find(item => item.status === 'in-progress') ?? open[0]
-  const head = focus === undefined ? 'Nothing is open.' : `Work on: ${brief(focus)}`
+  const isOpen = list.some(item => item.status === 'todo' || item.status === 'in-progress')
+  const head = isOpen
+    ? 'Start every open item ([ ] and [~]) now, in parallel: do not wait on one answer before starting another independent item.'
+    : 'Nothing is open.'
   const shown = list.slice(0, SECTION_CAP).map(item => `- [${MARKS[item.status]}] ${brief(item)}`)
   const more = list.length > SECTION_CAP ? [`(${list.length - SECTION_CAP} more in the notes file)`] : []
   return ['Todo list kept by notes-keeping ([ ] todo, [~] in-progress, [x] done, [-] declined). The captain and the plugin set them; you never edit the notes file.', head, ...shown, ...more].join('\n')

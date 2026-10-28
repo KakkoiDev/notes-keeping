@@ -368,18 +368,24 @@ describe('memory and reconcile', () => {
 })
 
 describe('context for Claude', () => {
-  test('names the in-progress item first, else the first todo, and lists every item', () => {
+  test('lists every item under the legend', () => {
     const text = context('- [ ] a\n- [~] b\n- [x] c')
-    expect(text).toContain('Work on: b')
+    expect(text).toContain('([ ] todo, [~] in-progress, [x] done, [-] declined)')
     expect(text).toContain('- [ ] a\n- [~] b\n- [x] c')
-    expect(context('- [ ] a\n- [ ] b')).toContain('Work on: a')
     expect(context('- [x] a')).toContain('Nothing is open.')
     expect(context('')).toBeUndefined()
   })
 
+  test('tells Claude to work every open item now, in parallel, instead of naming one', () => {
+    const text = context('- [ ] a\n- [~] b\n- [x] c') ?? ''
+    expect(text).toContain('Start every open item ([ ] and [~]) now, in parallel')
+    expect(text).toContain('do not wait on one answer before starting another independent item')
+    expect(text).not.toContain('Work on:')
+    expect(context('- [x] a')).not.toContain('in parallel')
+  })
+
   test('a labeled item is named by its label, with its text cut short after it', () => {
     const text = context(`- [ ] **Short name**: ${'word '.repeat(40)}end`) ?? ''
-    expect(text).toContain('Work on: Short name: word word')
     expect(text).toContain('- [ ] Short name: word word')
     expect(text).toContain('…')
   })

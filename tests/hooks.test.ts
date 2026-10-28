@@ -524,7 +524,7 @@ test('a session continued with claude -c carries the notes on its first prompt, 
   await submit($, 'and more')
   expect(sent.map(row => row.context?.length ?? 0)).toEqual([1, 1])
   expect(sent[0]?.context?.[0]).toContain(NOTES.replace('# Important', '# Todo\n\n- [ ] new goal\n\n# Important').trimEnd())
-  expect(sent[1]?.context?.[0]).toContain('Work on: new goal')
+  expect(sent[1]?.context?.[0]).toContain('- [ ] new goal')
 })
 
 test('a fresh session gets no notes on its first prompt', async ($, on) => {
@@ -1340,7 +1340,7 @@ test('every prompt carries the todo list; a prompt that carries the whole file d
   expect(sent[0]?.context?.[0]).toContain('# Todo')
   for (const row of sent.slice(1)) {
     expect(row.context).toHaveLength(1)
-    expect(row.context?.[0]).toContain('Work on: Write the docs')
+    expect(row.context?.[0]).toContain('in parallel')
     expect(row.context?.[0]).toContain('- [ ] Add a ctrl+q toggle\n- [~] Write the docs')
   }
 })
@@ -1547,7 +1547,7 @@ test('a new item gets a short label from the model once, written beside its whol
   expect((await run($, 'todo')).text).toBe('[~] I want a\n[ ] ongoing: being worked\n[ ] I want to')
 
   await submit($, 'next')
-  expect(sent.at(-1)?.context?.[0]).toContain('Work on: I want a: I want a todo list kept by the plugin')
+  expect(sent.at(-1)?.context?.[0]).toContain('- [~] I want a: I want a todo list kept by the plugin')
 
   // Labels are kept: later runs ask the model nothing.
   await run($, 'todo sync')
