@@ -71,7 +71,7 @@ const USAGE = [
   '  replies                    open the panel at the queue: every reply editable, s moves all into the prompt',
   '  todo [sync]                show the todo list; sync runs Laya over the objectives and the last reply now',
   '  history [n|file]           list earlier notes; pick one to copy its objectives, updates and open todo items here',
-  `  show | hide                open or close the notes panel (also ${CHORD}) at the todo list; t todos, o objectives, i important, c chat, e queue, h history, s send queue`,
+  `  show | hide                open or close the notes panel (also ${CHORD}) at the todo list; t todos, o objectives (u update, e editor), i important, c chat, q queue, h history, s send queue`,
   '  debug                      the selection poll: how often it ran, when last, the live selection, and why recent ones opened no pane',
   `${CHORD} works once ~/.claude/keybindings.json binds it: { "bindings": [{ "context": "Global", "bindings": { "${CHORD}": "${ACTION}" } }] }`,
   'Every write starts the notes file when the session has none.',
@@ -638,6 +638,30 @@ async function refresh($: EngineInterface): Promise<void> {
   await publish($, path, await readText($, path))
 }
 
+// The engine keeps the terminal, so the editor runs in a tmux popup; `display-popup -E` returns when the editor exits.
+async function openEditor($: EngineInterface): Promise<void> {
+  const editor = (await $.env.get('VISUAL')) || (await $.env.get('EDITOR'))
+  if (!editor) {
+    $.ui.toast(`${NAME}: set $VISUAL or $EDITOR to open the notes file in your editor.`)
+    return
+  }
+  if (!(await $.env.get('TMUX'))) {
+    $.ui.toast(`${NAME}: e opens the editor in a tmux popup; this session runs outside tmux.`)
+    return
+  }
+  const { path, said } = await bound($)
+  const popup = $.process.spawn({ argv: ['tmux', 'display-popup', '-E', '-w', '90%', '-h', '90%', `${editor} '${path.replaceAll("'", "'\\''")}'`] })
+  let errors = ''
+  for await (const chunk of popup) if (chunk.stream === 'stderr') errors += chunk.text
+  const ended = await popup.result
+  if (ended.code !== 0 && errors.trim() !== '') $.ui.toast(`${NAME}: the editor popup failed: ${errors.trim().split('\n')[0]}`)
+  const written = await locked(async () => {
+    await refresh($)
+    return commit($, await notesDir($), `editor: ${path.split('/').pop()}`)
+  })
+  warn($, told('', [...said, ...written]))
+}
+
 async function showNotes($: EngineInterface, at: View = 'todos'): Promise<void> {
   await refresh($)
   await update($, view, () => at)
@@ -1055,7 +1079,7 @@ export const register: Register = on => {
         {tab('objectives', 'o', 'Objectives', 'objectives')}
         {tab('important', 'i', 'Important', 'important')}
         {tab('chat', 'c', 'Chat', 'chat')}
-        {tab('queue', 'e', `Queue (${list.length})`, 'queue')}
+        {tab('queue', 'q', `Queue (${list.length})`, 'queue')}
         {tab('history', 'h', 'History', 'history')}
         <Button key="send" plain hotkey="s" label="Send queue" onPress={() => sendQueue($)} />
         {at === 'todos' ? null : <Button key="view:back" plain hotkey="b" label="Back" onPress={back} />}
@@ -1228,9 +1252,10 @@ export const register: Register = on => {
       content = (
         <Box key="content" flexDirection="column">
           {control}
+          <Button key="editor" plain hotkey="e" label="Open in editor" onPress={() => openEditor($)} />
           {body('Objectives', goals)}
           {body('Updates', s?.updates ?? '')}
-          {hint(hasObjectives ? 'u adds an update under Updates, Enter keeps it, b goes back' : 'u sets the objectives, Enter keeps it, b goes back')}
+          {hint(`${hasObjectives ? 'u adds an update under Updates' : 'u sets the objectives'}, Enter keeps it, e opens the notes file in your editor, b goes back`)}
         </Box>
       )
     } else if (at === 'important') {
@@ -1242,7 +1267,7 @@ export const register: Register = on => {
         <Box key="content" flexDirection="column">
           {slot}
           {current === null ? <Text dimColor>No notes for this session yet; the first write starts them.</Text> : <Text dimColor wrap="truncate-start">{current.path}</Text>}
-          {hint('t todos, o objectives (u adds an update there), i important, c chat, e queue, h history, s send queue, Esc closes')}
+          {hint('t todos, o objectives (u adds an update there), i important, c chat, q queue, h history, s send queue, Esc closes')}
         </Box>
       )
     }

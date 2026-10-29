@@ -28,6 +28,8 @@ const laya: { answer: ((ask: Ask) => unknown) | undefined; asks: Ask[] } = { ans
 const model: { answer: ((prompt: string) => string) | undefined; asks: string[] } = { answer: undefined, asks: [] }
 // What pbpaste prints; left undefined, the clipboard cannot be read.
 const clipboard: { text: string | undefined } = { text: undefined }
+// The environment past HOME, the commands spawned, what the fake editor writes into the file it opens, and the stderr it fails with.
+const shell: { vars: Record<string, string>; spawned: string[][]; edit: ((text: string) => string) | undefined; error: string | undefined } = { vars: {}, spawned: [], edit: undefined, error: undefined }
 
 async function flush(): Promise<void> {
   for (let i = 0; i < 5000; i++) await Promise.resolve()
@@ -66,9 +68,13 @@ function engine(
   model.answer = undefined
   model.asks = []
   clipboard.text = undefined
+  shell.spawned = []
+  shell.edit = undefined
+  shell.error = undefined
   const clock = mock.clock(on, { now: new Date(2026, 9, 26, 10, 58).getTime() })
   mock.store(on, store)
-  mock.env(on, { HOME })
+  mock.env(on, { HOME, ...shell.vars })
+  shell.vars = {}
   const git: Git = { calls: [], remotes: '' }
   const ui: Ui = { panes: new Map(), shown: undefined, opened: [], closed: [], status: [], toasts: [], isPlaced: true, isFocusable: true, fills: [], isFillable: true }
   on('session.start', (_$, e) => ({ cwd: e.cwd }))
@@ -113,6 +119,16 @@ function engine(
     if (e.argv[3] === 'init') fs[`${DIR}/.git/HEAD`] = 'ref: refs/heads/main\n'
     const stdout = e.argv[3] === 'remote' ? git.remotes : ''
     return { value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
+  on('process.spawn', async function* (_$, e) {
+    shell.spawned.push([...e.argv])
+    const path = /'(.*)'$/.exec(e.argv.at(-1) ?? '')?.[1]
+    if (shell.error !== undefined) {
+      yield { stream: 'stderr' as const, text: shell.error }
+      return { value: { code: 1, signal: null } }
+    }
+    if (path !== undefined && shell.edit !== undefined) fs[path] = shell.edit(fs[path] ?? '')
+    return { value: { code: 0, signal: null } }
   })
   on('model.complete', (_$, e) => {
     model.asks.push(e.prompt)
@@ -1215,6 +1231,85 @@ test('o opens the objectives view and u focuses an inline field that sets the ob
 })
 
 
+test('e in the objectives view opens the notes file in $EDITOR in a tmux popup, then shows and commits what it saved', async ($, on) => {
+  const fs: Fs = { [BOUND]: NOTES }
+  shell.vars = { EDITOR: 'hx', TMUX: '/tmp/tmux-1/default,1,0' }
+  const { git } = engine(on, fs, { [`session:${SESSION}`]: BOUND })
+  shell.edit = text => text.replace('The plan', 'The new plan')
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: false })
+  await run($, 'show')
+  const pane = await $.ui.mount({ ...NOTES_PANE, surface: 'terminal' })
+  await pane.press({ key: 'view:objectives' })
+  expect((await pane.find({ key: 'editor' }))?.props).toMatchObject({ hotkey: 'e', label: 'Open in editor' })
+  expect(await pane.find({ type: 'Text', text: 'u adds an update under Updates, Enter keeps it, e opens the notes file in your editor, b goes back' })).toBeDefined()
+  await pane.press({ key: 'editor' })
+  await flush()
+  expect(shell.spawned).toEqual([['tmux', 'display-popup', '-E', '-w', '90%', '-h', '90%', `hx '${BOUND}'`]])
+  expect(await pane.find({ type: 'Text', text: 'The new plan' })).toBeDefined()
+  expect(commits(git).at(-1)).toBe('editor: 2026-10-26-10-50-firstmate-abcdef12.md')
+  await pane.unmount()
+})
+
+test('e prefers $VISUAL over $EDITOR, and quotes a path holding a quote', async ($, on) => {
+  const path = `${DIR}/it's.md`
+  const fs: Fs = { [path]: NOTES }
+  shell.vars = { VISUAL: 'code -w', EDITOR: 'hx', TMUX: '/tmp/tmux-1/default,1,0' }
+  engine(on, fs, { [`session:${SESSION}`]: path })
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: false })
+  await run($, 'show')
+  const pane = await $.ui.mount({ ...NOTES_PANE, surface: 'terminal' })
+  await pane.press({ key: 'view:objectives' })
+  await pane.press({ key: 'editor' })
+  await flush()
+  expect(shell.spawned.map(argv => argv.at(-1))).toEqual([`code -w '${DIR}/it'\\''s.md'`])
+  await pane.unmount()
+})
+
+test('e says so when the tmux popup fails', async ($, on) => {
+  const fs: Fs = { [BOUND]: NOTES }
+  shell.vars = { EDITOR: 'hx', TMUX: '/tmp/tmux-1/default,1,0' }
+  const { ui } = engine(on, fs, { [`session:${SESSION}`]: BOUND })
+  shell.error = 'unknown command: display-popup\n'
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: false })
+  await run($, 'show')
+  const pane = await $.ui.mount({ ...NOTES_PANE, surface: 'terminal' })
+  await pane.press({ key: 'view:objectives' })
+  await pane.press({ key: 'editor' })
+  await flush()
+  expect(ui.toasts.at(-1)).toBe('notes-keeping: the editor popup failed: unknown command: display-popup')
+  await pane.unmount()
+})
+
+test('e outside tmux says why and opens nothing', async ($, on) => {
+  const fs: Fs = { [BOUND]: NOTES }
+  shell.vars = { EDITOR: 'hx' }
+  const { ui } = engine(on, fs, { [`session:${SESSION}`]: BOUND })
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: false })
+  await run($, 'show')
+  const pane = await $.ui.mount({ ...NOTES_PANE, surface: 'terminal' })
+  await pane.press({ key: 'view:objectives' })
+  await pane.press({ key: 'editor' })
+  await flush()
+  expect(ui.toasts.at(-1)).toBe('notes-keeping: e opens the editor in a tmux popup; this session runs outside tmux.')
+  expect(shell.spawned).toEqual([])
+  await pane.unmount()
+})
+
+test('e with neither $VISUAL nor $EDITOR set says so and opens nothing', async ($, on) => {
+  const fs: Fs = { [BOUND]: NOTES }
+  shell.vars = { TMUX: '/tmp/tmux-1/default,1,0' }
+  const { ui } = engine(on, fs, { [`session:${SESSION}`]: BOUND })
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: false })
+  await run($, 'show')
+  const pane = await $.ui.mount({ ...NOTES_PANE, surface: 'terminal' })
+  await pane.press({ key: 'view:objectives' })
+  await pane.press({ key: 'editor' })
+  await flush()
+  expect(ui.toasts.at(-1)).toBe('notes-keeping: set $VISUAL or $EDITOR to open the notes file in your editor.')
+  expect(shell.spawned).toEqual([])
+  await pane.unmount()
+})
+
 test('the panel opens on the Todos view, t brings it back, and the other views carry no todo list', async ($, on) => {
   const fs: Fs = { [BOUND]: '# Objectives\n\nSessions: s\n\nShip it\n\n## Updates\n\n# Todo\n\n- [ ] Ship it\n\n# Important\n\n[AI_AGENT] a fact\n\n# Chat\n\n[USER] hello\n' }
   engine(on, fs, { [`session:${SESSION}`]: BOUND })
@@ -1225,7 +1320,7 @@ test('the panel opens on the Todos view, t brings it back, and the other views c
   expect((await pane.find({ key: 'todo:ship it' }))?.props.label).toBe('[ ] Ship it')
   expect((await pane.find({ key: 'view:todos' }))?.props).toMatchObject({ hotkey: 't', dimColor: false })
   expect((await pane.findAll({ type: 'Button' })).map(button => button.key)).toEqual(['view:todos', 'view:objectives', 'view:important', 'view:chat', 'view:queue', 'view:history', 'send', 'todo:ship it'])
-  expect(await pane.find({ type: 'Text', text: 't todos, o objectives (u adds an update there), i important, c chat, e queue, h history, s send queue, Esc closes' })).toBeDefined()
+  expect(await pane.find({ type: 'Text', text: 't todos, o objectives (u adds an update there), i important, c chat, q queue, h history, s send queue, Esc closes' })).toBeDefined()
   for (const at of ['view:objectives', 'view:important', 'view:chat', 'view:queue']) {
     await pane.press({ key: at })
     expect(await pane.find({ key: 'todo:ship it' })).toBeUndefined()
@@ -1259,7 +1354,7 @@ test('the queue view lists every queued reply in its own editable field, removes
   await hint.press({ key: 'edit-queue' })
   expect(ui.opened.at(-1)).toEqual({ id: 'notes-keeping', focus: true })
   const pane = await $.ui.mount({ ...NOTES_PANE, surface: 'terminal' })
-  expect((await pane.find({ key: 'view:queue' }))?.props).toMatchObject({ hotkey: 'e', label: 'Queue (2)' })
+  expect((await pane.find({ key: 'view:queue' }))?.props).toMatchObject({ hotkey: 'q', label: 'Queue (2)' })
   expect((await pane.find({ key: 'reply:0' }))?.props).toMatchObject({ value: 'one' })
   expect((await pane.find({ key: 'reply:1' }))?.props).toMatchObject({ value: 'two' })
   await pane.input({ key: 'reply:1', text: 'two, reworded' })
@@ -1290,6 +1385,7 @@ test('the replies command opens the panel at the queue view', async ($, on) => {
   const pane = await $.ui.mount({ ...NOTES_PANE, surface: 'terminal' })
   expect(await pane.find({ key: 'reply:0' })).toBeDefined()
   expect((await run($, '')).text).toContain('open the panel at the queue: every reply editable')
+  expect((await run($, '')).text).toContain('t todos, o objectives (u update, e editor), i important, c chat, q queue, h history, s send queue')
   await pane.unmount()
 })
 
@@ -1307,7 +1403,7 @@ test('u in the objectives view opens an input whose text lands as a new [UPDATE]
   await run($, 'show')
   const pane = await $.ui.mount({ ...NOTES_PANE, surface: 'terminal' })
   await pane.press({ key: 'view:objectives' })
-  expect(await pane.find({ type: 'Text', text: 'u adds an update under Updates, Enter keeps it, b goes back' })).toBeDefined()
+  expect(await pane.find({ type: 'Text', text: 'u adds an update under Updates, Enter keeps it, e opens the notes file in your editor, b goes back' })).toBeDefined()
   expect((await pane.find({ key: 'objectives' }))?.props).toMatchObject({ hotkey: 'u', label: 'Update objectives' })
   await pane.press({ key: 'objectives' })
   expect((await pane.find({ key: 'objectives' }))?.type).toBe('Input')
@@ -1855,6 +1951,8 @@ test('an item cut at 120 characters before the text was kept whole is not added 
 function marking(on: On, marks: number[]): On {
   return ((event: string, ...rest: unknown[]) => {
     const hook = rest.pop() as (...args: unknown[]) => unknown
+    // A process.spawn hook must stay an async generator; the editor's spawn is not part of the todo run.
+    if (event === 'process.spawn') return (on as (...args: unknown[]) => unknown)(event, ...rest, hook)
     return (on as (...args: unknown[]) => unknown)(event, ...rest, (...args: unknown[]) => {
       marks.push(performance.now())
       return hook(...args)
