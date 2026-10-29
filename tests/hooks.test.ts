@@ -2,7 +2,7 @@ import { expect, mock, test } from 'claude-code/testing'
 import type { On, RenderElement } from 'claude-code'
 import type { Engine } from 'claude-code/testing'
 import { nextStatus } from '../hooks/todos'
-import { idFor, withoutIds } from '../hooks/todo'
+import { context, idFor, withoutIds } from '../hooks/todo'
 
 const HOME = '/home/me'
 const ROOT = '/work/firstmate'
@@ -1319,7 +1319,22 @@ test('the panel opens on the Todos view, t brings it back, and the other views c
   expect(await pane.find({ type: 'Text', text: 'Todo' })).toBeDefined()
   expect((await pane.find({ key: 'todo:ship it' }))?.props.label).toBe('[ ] Ship it')
   expect((await pane.find({ key: 'view:todos' }))?.props).toMatchObject({ hotkey: 't', dimColor: false })
-  expect((await pane.findAll({ type: 'Button' })).map(button => button.key)).toEqual(['view:todos', 'view:objectives', 'view:important', 'view:chat', 'view:queue', 'view:history', 'send', 'todo:ship it'])
+  expect((await pane.findAll({ type: 'Button' })).map(button => button.key)).toEqual([
+    'view:todos',
+    'view:objectives',
+    'view:important',
+    'view:chat',
+    'view:queue',
+    'view:history',
+    'send',
+    'show:todo',
+    'show:in-progress',
+    'show:done',
+    'show:declined',
+    'todo:ship it',
+    'status:next',
+    'status:prev',
+  ])
   expect(await pane.find({ type: 'Text', text: 't todos, o objectives (u adds an update there), i important, c chat, q queue, h history, s send queue, Esc closes' })).toBeDefined()
   for (const at of ['view:objectives', 'view:important', 'view:chat', 'view:queue']) {
     await pane.press({ key: at })
@@ -1982,4 +1997,192 @@ test('the todo run after a turn over 100 items and a long reply never holds the 
   expect(bare(fs[BOUND])).toContain(`- [x] ${texts[99]}`)
   const held = Math.max(...marks.slice(1).map((at, i) => at - (marks[i] ?? at)))
   expect(held).toBeLessThan(1000)
+})
+
+const KEYNAV = '# Objectives\n\nSessions: s\n\n## Updates\n\n# Todo\n\n- [ ] One\n- [~] Two\n- [x] Three\n- [-] Four\n\n# Important\n\n# Chat\n'
+
+// The Todos view of a panel opened on four items, one per status. The kit draws no focus ring: the selection is read
+// from the drawing (the one item not dimmed, the one autoFocus starts on), and the ring following it is checked live.
+async function keynav($: Engine, on: On, extra: Fs = {}) {
+  const fs: Fs = { [BOUND]: KEYNAV, ...extra }
+  const { git } = engine(on, fs, { ...SESSION_BOUND })
+  // Answers the ring helper's $.ui.focus; the plugin's own $.ui.focus never reaches a test hook.
+  on('ui.focus', () => ({ value: {} }) as never)
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: false })
+  await flush()
+  await run($, 'show')
+  const pane = await $.ui.mount({ ...NOTES_PANE, surface: 'terminal' })
+  return { fs, git, pane }
+}
+
+// The person's Up or Down landing the notes pane's focus ring on `element`, as the engine raises it.
+function ring($: Engine, element: string) {
+  return $.ui.focus({ component: 'Pane', requestId: 'notes-keeping', plugin: 'notes-keeping', element, origin: { kind: 'person' } } as never)
+}
+
+function marker(fs: Fs, text: string): string | undefined {
+  return fs[BOUND]?.match(new RegExp(`- \\[(.)\\] ${text}(?: <!-- id:[a-z0-9]+ -->)?\\n`))?.[1]
+}
+
+// The todo rows drawn, in order: `todo:<id>`, or `todo#<n>:<id>` for the row the selection was handed to.
+async function todoRows(pane: Awaited<ReturnType<typeof keynav>>['pane']) {
+  return (await pane.findAll({ type: 'Button' })).flatMap(button => {
+    const id = /^todo(?:#\d+)?:([^]*)$/.exec(button.key ?? '')?.[1]
+    return id === undefined ? [] : [{ id, key: button.key ?? '', props: button.props }]
+  })
+}
+
+// The ids of the rows drawn as selected: the one not dimmed, the one autoFocus starts on.
+async function selectedTodo(pane: Awaited<ReturnType<typeof keynav>>['pane']): Promise<string[]> {
+  const rows = await todoRows(pane)
+  const lit = rows.filter(row => row.props.dimColor === false).map(row => row.id)
+  expect(rows.filter(row => row.props.autoFocus === true).map(row => row.id)).toEqual(lit)
+  return lit
+}
+
+async function selectedKey(pane: Awaited<ReturnType<typeof keynav>>['pane']): Promise<string | undefined> {
+  return (await todoRows(pane)).find(row => row.props.dimColor === false)?.key
+}
+
+test('the Todos view starts the focus ring on the first shown item, and the ringed item is drawn as the selected one', async ($, on) => {
+  const { pane } = await keynav($, on)
+  expect((await pane.findAll({ type: 'Button' })).filter(button => button.props.autoFocus === true).map(button => button.key)).toEqual(['todo:one'])
+  expect(await selectedTodo(pane)).toEqual(['one'])
+  await ring($, 'todo:three')
+  expect(await selectedTodo(pane)).toEqual(['three'])
+  expect((await pane.find({ key: 'todo:three' }))?.props.autoFocus).toBe(true)
+  await pane.unmount()
+})
+
+test('f steps the selected item forward and p back, stopping at declined and at todo; each change notifies the bridge once', async ($, on) => {
+  const { fs, git, pane } = await keynav($, on, { [BRIDGE]: '' })
+  expect((await pane.find({ key: 'status:next' }))?.props).toMatchObject({ hotkey: 'f' })
+  expect((await pane.find({ key: 'status:prev' }))?.props).toMatchObject({ hotkey: 'p' })
+  await ring($, 'todo:one')
+  const notified = bridge.notified.length
+  const writes = commits(git).length
+  const seen: (string | undefined)[] = []
+  for (const key of ['status:next', 'status:next', 'status:next', 'status:next', 'status:prev', 'status:prev', 'status:prev', 'status:prev']) {
+    await pane.press({ key })
+    await flush()
+    seen.push(marker(fs, 'One'))
+  }
+  expect(seen).toEqual(['~', 'x', '-', '-', 'x', '~', ' ', ' '])
+  expect(bridge.notified.slice(notified).map(line => line.replace(/ \[id:[a-z0-9]+\]\n$/, '\n'))).toEqual([
+    'One: todo -> in-progress (captain)\n',
+    'One: in-progress -> done (captain)\n',
+    'One: done -> declined (captain)\n',
+    'One: declined -> done (captain)\n',
+    'One: done -> in-progress (captain)\n',
+    'One: in-progress -> todo (captain)\n',
+  ])
+  expect(commits(git).length - writes).toBe(6)
+  expect(marker(fs, 'Two')).toBe('~')
+  await pane.unmount()
+})
+
+test('the row of toggles is the legend Claude reads with the todo list, mark and name, in its order', async ($, on) => {
+  const { pane } = await keynav($, on)
+  const legend = /notes-keeping \((.*?)\)\./.exec(context('- [ ] a') ?? '')?.[1]?.split(', ') ?? []
+  expect(legend).toHaveLength(4)
+  const toggles = (await pane.findAll({ type: 'Button' })).filter(button => button.key?.startsWith('show:') === true)
+  expect(toggles.map(button => button.props.label)).toEqual(legend.map(entry => `${entry}: shown`))
+  const keys = (await pane.findAll({ type: 'Button' })).map(button => button.key ?? '')
+  expect(keys.indexOf('show:declined')).toBeLessThan(keys.findIndex(key => key.startsWith('todo')))
+  await pane.unmount()
+})
+
+test('keys 1 to 4 hide and show todo, in-progress, done and declined items, and the pane says which are shown and which marker each status is', async ($, on) => {
+  const { pane } = await keynav($, on)
+  const toggles = ['show:todo', 'show:in-progress', 'show:done', 'show:declined']
+  expect(await Promise.all(toggles.map(async key => (await pane.find({ key }))?.props))).toMatchObject([
+    { hotkey: '1', label: '[ ] todo: shown' },
+    { hotkey: '2', label: '[~] in-progress: shown' },
+    { hotkey: '3', label: '[x] done: shown' },
+    { hotkey: '4', label: '[-] declined: shown' },
+  ])
+  await pane.press({ key: 'show:done' })
+  expect((await pane.find({ key: 'show:done' }))?.props.label).toBe('[x] done: hidden')
+  expect((await todoRows(pane)).map(row => row.id)).toEqual(['one', 'two', 'four'])
+  await pane.press({ key: 'show:done' })
+  expect((await pane.find({ key: 'show:done' }))?.props.label).toBe('[x] done: shown')
+  expect((await todoRows(pane)).map(row => row.id)).toEqual(['one', 'two', 'three', 'four'])
+  for (const key of toggles) await pane.press({ key })
+  expect(await todoRows(pane)).toEqual([])
+  expect(await pane.find({ type: 'Text', text: '(4 items, every status hidden)' })).toBeDefined()
+  const hotkeys = (await pane.findAll({ type: 'Button' })).map(button => button.props.hotkey).filter(hotkey => hotkey !== undefined)
+  expect(new Set(hotkeys).size).toBe(hotkeys.length)
+  await pane.unmount()
+})
+
+test('a status change that hides the selected item moves the selection to the next shown item, or to the one before at the end', async ($, on) => {
+  const { fs, pane } = await keynav($, on)
+  await pane.press({ key: 'show:done' })
+  await ring($, 'todo:two')
+  await pane.press({ key: 'todo:two' })
+  await flush()
+  expect(marker(fs, 'Two')).toBe('x')
+  expect((await todoRows(pane)).map(row => row.id)).toEqual(['one', 'four'])
+  expect(await selectedTodo(pane)).toEqual(['four'])
+
+  await pane.press({ key: 'status:prev' })
+  await flush()
+  expect(marker(fs, 'Four')).toBe('x')
+  expect(await selectedTodo(pane)).toEqual(['one'])
+  await pane.unmount()
+})
+
+test('hiding the status of the selected item moves the selection to the next shown item', async ($, on) => {
+  const { pane } = await keynav($, on)
+  await ring($, 'todo:two')
+  await pane.press({ key: 'show:in-progress' })
+  await flush()
+  expect(await selectedTodo(pane)).toEqual(['three'])
+  await pane.unmount()
+})
+
+// The engine keeps the ring at its position through a redraw that drops or adds rows, and a $.ui.focus on a row
+// already drawn lands before that redraw: a key not drawn before is one a focus waits for. The ring landing is
+// checked live; here, that each hand-over draws the selected row under a new key and that key still selects it.
+test('a toggle, or a status change that hides a row, draws the selected row under a key not drawn before, and the ring on it selects it', async ($, on) => {
+  const { pane } = await keynav($, on)
+  const drawn = new Set((await todoRows(pane)).map(row => row.key))
+  const handed = async () => {
+    const key = await selectedKey(pane)
+    expect(key !== undefined && !drawn.has(key)).toBe(true)
+    for (const row of await todoRows(pane)) drawn.add(row.key)
+    return key ?? ''
+  }
+  await pane.press({ key: 'show:done' })
+  await flush()
+  const one = await handed()
+  expect(await selectedTodo(pane)).toEqual(['one'])
+  await ring($, 'todo:two')
+  expect(await selectedTodo(pane)).toEqual(['two'])
+  await ring($, one)
+  expect(await selectedTodo(pane)).toEqual(['one'])
+
+  await ring($, 'todo:two')
+  await pane.press({ key: 'todo:two' })
+  await flush()
+  await handed()
+  expect(await selectedTodo(pane)).toEqual(['four'])
+
+  await pane.press({ key: 'show:done' })
+  await flush()
+  await handed()
+  expect(await selectedTodo(pane)).toEqual(['four'])
+  await pane.unmount()
+})
+
+test('the shown statuses stay as set when the panel is closed and opened again', async ($, on) => {
+  const { pane } = await keynav($, on)
+  await pane.press({ key: 'show:declined' })
+  await pane.unmount()
+  await run($, 'hide')
+  await run($, 'show')
+  const again = await $.ui.mount({ ...NOTES_PANE, surface: 'terminal' })
+  expect((await again.find({ key: 'show:declined' }))?.props.label).toBe('[-] declined: hidden')
+  expect(await again.find({ key: 'todo:four' })).toBeUndefined()
+  await again.unmount()
 })

@@ -26,9 +26,10 @@ import {
   stampIds,
   summary,
 } from './notes'
-import { EMPTY, bridgeMoves, candidateKeys, candidates, cleanLabel, context, cycleItem, diffSnapshot, format, idOf, isBackground, items, keyOf, labelPrompt, moved, parse, pin, reconcile, row, settle, shown, snapshotOf, withoutIds } from './todo'
+import { EMPTY, bridgeMoves, candidateKeys, candidates, cleanLabel, context, cycle, cycleItem, diffSnapshot, format, idOf, isBackground, items, keyOf, labelPrompt, moved, parse, pin, reconcile, row, settle, shown, snapshotOf, withoutIds } from './todo'
 import type { Applied, Candidate, Item, Memory, Move, Status, Verdict } from './todo'
-import { TodoSlot } from './todos'
+import { TodoSlot, nextShown, rowId, rowKey, selectedOf, stepStatus } from './todos'
+import type { Landing } from './todos'
 
 const NAME = 'notes-keeping'
 const PANE = 'notes-keeping'
@@ -86,6 +87,8 @@ const view = atom({ plugin: 'notes-keeping', key: 'view' } as const, 'todos' as 
 const isNotesOpen = atom({ plugin: 'notes-keeping', key: 'isNotesOpen' } as const, false)
 const picked = atom({ plugin: 'notes-keeping', key: 'picked' } as const, null as Opened | null)
 const cursor = atom({ plugin: 'notes-keeping', key: 'cursor' } as const, null as string | null)
+const todoCursor = atom({ plugin: 'notes-keeping', key: 'todoCursor' } as const, null as string | null)
+const hidden = atom({ plugin: 'notes-keeping', key: 'hidden' } as const, [] as Status[])
 
 function message(error: unknown): string {
   return (error instanceof Error ? error.message : String(error)).split('\n')[0] ?? 'unknown error'
@@ -127,6 +130,7 @@ let isTold = false
 let ticks = 0
 let lastTick = 0
 const outcomes: { at: number; text: string }[] = []
+let landing: Landing | undefined
 
 async function boundPath($: EngineInterface): Promise<string | undefined> {
   const id = await $.session.id()
@@ -424,15 +428,18 @@ async function syncTodo($: EngineInterface, answer: string): Promise<void> {
   if (next !== undefined) await syncTodo($, next)
 }
 
-// A click sets the next status. It counts as set by hand: the log says so when Laya later changes it.
-async function clickItem($: EngineInterface, key: string): Promise<void> {
+// A click or Enter sets the next status, f and p the next or previous one. It counts as set by hand: the log says
+// so when Laya later changes it. A change that leaves the line as it was writes nothing.
+async function clickItem($: EngineInterface, key: string, change: (status: Status) => Status = cycle): Promise<void> {
   const path = await boundPath($)
   if (path === undefined) return
   const bridge = await bridgeOf($)
   const changes = await locked(async () => {
-    await $.store.set(memoryKey(path), pin(await readMemory($, path), key))
     const md = await readText($, path)
-    const body = cycleItem(sections(md).todo, key)
+    const before = sections(md).todo
+    const body = cycleItem(before, key, change)
+    if (body === cycleItem(before, key, status => status)) return []
+    await $.store.set(memoryKey(path), pin(await readMemory($, path), key))
     await save($, path, stampIds(setTodo(md, body), items(body)), 'todo')
     return bridge === undefined ? [] : await snapshot($, path, items(body), items(body))
   })
@@ -818,9 +825,11 @@ export const register: Register = on => {
     return next(e)
   })
 
-  // The row the focus ring stands on is the note a, in the History list, attaches.
+  // The row the focus ring stands on is the note a, in the History list, attaches, and the todo item f and p step.
   on('ui.focus', { requestId: PANE }, async ($, e, next) => {
     if (e.element?.startsWith(NOTE) === true) await update($, cursor, () => e.element?.slice(NOTE.length) ?? null)
+    const id = rowId(e.element ?? '')
+    if (id !== undefined) await update($, todoCursor, () => id)
     return next(e)
   })
 
@@ -1085,6 +1094,24 @@ export const register: Register = on => {
         {at === 'todos' ? null : <Button key="view:back" plain hotkey="b" label="Back" onPress={back} />}
       </Box>
     )
+    const hide = await read($, hidden)
+    const selected = selectedOf(rows, hide, await read($, todoCursor))
+    // Selects `id` after `write` changes which rows show, and moves the ring there. The engine keeps the ring at its
+    // position through the redraw that drops or adds rows, and a focus on a row already drawn lands before that
+    // redraw; the row is drawn under a key not drawn before, which the focus waits for.
+    const handOver = async (id: string | undefined, write: () => Promise<unknown>) => {
+      if (id !== undefined) landing = { id, count: (landing?.count ?? 0) + 1 }
+      const key = id === undefined ? undefined : rowKey(id, landing)
+      await write()
+      await update($, todoCursor, () => id ?? null)
+      // The engine answers {} or { deny }; `claude plugin test` has no ring and rejects.
+      if (key !== undefined) await $.ui.focus({ requestId: PANE, key }).catch(() => undefined)
+    }
+    const change = async (id: string, to: (status: Status) => Status) => {
+      const item = rows.find(row => row.id === id)
+      const write = () => clickItem($, id, to)
+      await (item !== undefined && hide.includes(to(item.status)) ? handOver(nextShown(rows, id, hide), write) : write())
+    }
     const slot = (
       <TodoSlot
         key="todos"
@@ -1092,7 +1119,17 @@ export const register: Register = on => {
         Button={Button}
         Text={Text}
         todos={rows}
-        onCycle={id => clickItem($, id)}
+        hidden={hide}
+        selected={selected}
+        landing={landing}
+        onCycle={id => change(id, cycle)}
+        onStep={(id, by) => change(id, status => stepStatus(status, by))}
+        onToggle={async status => {
+          const now = hide.includes(status) ? hide.filter(other => other !== status) : [...hide, status]
+          const at = rows.find(item => item.id === selected)
+          const id = selectedOf(rows, now, at !== undefined && now.includes(at.status) ? (nextShown(rows, at.id, now) ?? null) : (selected ?? null))
+          await handOver(id, () => update($, hidden, () => now))
+        }}
       />
     )
     const hint = (text: string) => (

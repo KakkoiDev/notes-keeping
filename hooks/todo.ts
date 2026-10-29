@@ -29,6 +29,15 @@ export const HAND_FLOOR = 0.9
 const CUE_WEIGHT = 8
 
 const MARKS: Record<Status, string> = { todo: ' ', 'in-progress': '~', done: 'x', declined: '-' }
+
+export function markOf(status: Status): string {
+  return `[${MARKS[status]}]`
+}
+
+// One entry of the marker legend Claude reads with the list and the pane draws: `[~] in-progress`.
+export function legend(status: Status): string {
+  return `${markOf(status)} ${status}`
+}
 const ITEM = /^\s*[-*]\s+\[([ ~xX-])\]\s+(\S.*?)\s*$/
 const UPDATE_TAG = /^\[update\]/i
 // - [ ] **Short label**: the whole text
@@ -427,9 +436,9 @@ export function pin(memory: Memory, key: string): Memory {
 }
 
 // A click on an item, by id or text key, sets its next status; the caller pins it. The write gives every item an id.
-export function cycleItem(body: string, key: string): string {
+export function cycleItem(body: string, key: string, change: (status: Status) => Status = cycle): string {
   const isIt = (item: Item) => idOf(item) === key || keyOf(item.text) === key
-  return format(withIds(parse(body).map(line => ('item' in line && isIt(line.item) ? { item: { ...line.item, status: cycle(line.item.status) } } : line))))
+  return format(withIds(parse(body).map(line => ('item' in line && isIt(line.item) ? { item: { ...line.item, status: change(line.item.status) } } : line))))
 }
 
 export type Move = { from: Status; to: Status }
@@ -536,5 +545,5 @@ export function context(body: string): string | undefined {
     : 'Nothing is open.'
   const shown = list.slice(0, SECTION_CAP).map(item => `- [${MARKS[item.status]}] ${brief(item)}`)
   const more = list.length > SECTION_CAP ? [`(${list.length - SECTION_CAP} more in the notes file)`] : []
-  return ['Todo list kept by notes-keeping ([ ] todo, [~] in-progress, [x] done, [-] declined). The captain and the plugin set them; you never edit the notes file.', head, ...shown, ...more].join('\n')
+  return [`Todo list kept by notes-keeping (${STATUSES.map(legend).join(', ')}). The captain and the plugin set them; you never edit the notes file.`, head, ...shown, ...more].join('\n')
 }

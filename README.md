@@ -102,8 +102,9 @@ out.
 - Every status Laya changes is appended to `~/.notes-keeping/todo-changes.log` (committed with the write): time, notes
   file, item, `from -> to`, Laya's answer and confidence, and `replaced a hand-set status` when the item was one you
   set by click or by hand. Review it there.
-- Click an item in the pane to cycle todo, in-progress, done, declined and back, or edit the marker by hand. Those
-  statuses are yours until Laya moves them under the rule above.
+- Click an item in the pane (or Enter on it) to cycle todo, in-progress, done, declined and back, step it with `f` and
+  `p` (see [In the pane](#in-the-pane)), or edit the marker by hand. Those statuses are yours until Laya moves them
+  under the rule above.
 - Firstmate, when the session root holds an executable `config/notes-keeping-bridge` (a firstmate home that opted in;
   the bridge is this plugin's `bin/notes-keeping-bridge`, and `FM_ROOT` / `FM_HOME` name the firstmate checkout and home
   when it is run from here rather than through a link in `config/`):
@@ -140,6 +141,26 @@ here were about 43 KB). `/notes-keeping history <n|file>` puts the attached file
 ### In the pane
 
 The list is the Todos view of the panel (`TodoSlot` in `hooks/todos.tsx`), read from the notes file on every draw; a click calls the same status cycle as above. It refreshes every five seconds while the pane is open and on every write.
+
+The focus ring starts on the first shown item as the panel opens, no click needed; the selected item is drawn bright,
+the others dim.
+
+| Key | Does |
+| --- | --- |
+| Up, Down | select an item |
+| Enter | cycle its status: todo, in-progress, done, declined, todo |
+| `f` | step it forward one status; at declined it stays declined |
+| `p` | step it back one status; at todo it stays todo |
+| `1` `2` `3` `4` | show or hide the `[ ]` todo, `[~]` in-progress, `[x]` done, `[-]` declined items |
+
+The row of toggles above the list is also the marker legend: `1: [ ] todo: shown  2: [~] in-progress: shown ...`,
+the same marks and names, in the same order, as the legend Claude reads with the list (both come from `MARKS` in
+`hooks/todo.ts`).
+A hidden status is drawn dim and its items are skipped by Up and Down; when every status is hidden the list reads
+`(n items, every status hidden)`. A status change or a toggle that hides the selected item moves the selection to the
+next shown item, or to the one before when it was the last. A step that leaves the status as it was (`f` at declined,
+`p` at todo) writes nothing and notifies nothing. The shown statuses are kept for the session: closing and opening
+the panel keeps them, a new Claude session starts with all shown.
 
 ### `/notes-keeping todo [sync]`
 

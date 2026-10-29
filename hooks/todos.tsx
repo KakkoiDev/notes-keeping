@@ -1,33 +1,98 @@
 import type { Todo } from '../types'
+import { legend, markOf } from './todo'
 
 export const STATUSES: readonly Todo['status'][] = ['todo', 'in-progress', 'done', 'declined']
+
+// The row the selection was last handed to, and the count of hand-overs.
+export type Landing = { id: string; count: number }
+
+// The key of a todo row: `todo:<id>`, or `todo#<count>:<id>` for the row the selection was last handed to, a key not
+// drawn before.
+export function rowKey(id: string, landing: Landing | undefined): string {
+  return landing?.id === id ? `todo#${landing.count}:${id}` : `todo:${id}`
+}
+
+export function rowId(key: string): string | undefined {
+  return /^todo(?:#\d+)?:([^]*)$/.exec(key)?.[1]
+}
 
 export function nextStatus(status: Todo['status']): Todo['status'] {
   return STATUSES[(STATUSES.indexOf(status) + 1) % STATUSES.length] ?? 'todo'
 }
 
-const MARK: Record<Todo['status'], string> = { todo: '[ ]', 'in-progress': '[~]', done: '[x]', declined: '[-]' }
+// One status forward or back, staying put at todo and at declined.
+export function stepStatus(status: Todo['status'], by: 1 | -1): Todo['status'] {
+  return STATUSES[Math.min(STATUSES.length - 1, Math.max(0, STATUSES.indexOf(status) + by))] ?? status
+}
+
+// The ringed item while it is shown, else the first shown one.
+export function selectedOf(todos: readonly Todo[], hidden: readonly Todo['status'][], cursor: string | null): string | undefined {
+  const shown = todos.filter(item => !hidden.includes(item.status))
+  return (shown.find(item => item.id === cursor) ?? shown[0])?.id
+}
+
+// Where the selection goes when `id` is no longer shown: the next shown item, else the last shown one before it.
+export function nextShown(todos: readonly Todo[], id: string, hidden: readonly Todo['status'][]): string | undefined {
+  const at = todos.findIndex(item => item.id === id)
+  const isShown = (item: Todo) => item.id !== id && !hidden.includes(item.status)
+  return (todos.slice(at + 1).find(isShown) ?? todos.slice(0, Math.max(at, 0)).reverse().find(isShown))?.id
+}
+
+const SHOW: Record<Todo['status'], string> = { todo: '1', 'in-progress': '2', done: '3', declined: '4' }
 
 // The todo list of the notes panel's Todos view. The notes-todo work owns this file and the `todos` atom in
-// register.tsx: it fills the atom, and `onCycle(id)` is called when a row is clicked.
+// register.tsx: it fills the atom, and `onCycle(id)` is called when a row is clicked or Enter is pressed on it.
 export function TodoSlot(props: {
   Box: any
   Button: any
   Text: any
   todos: readonly Todo[]
+  hidden: readonly Todo['status'][]
+  selected: string | undefined
+  landing: Landing | undefined
   onCycle: (id: string) => unknown
+  onStep: (id: string, by: 1 | -1) => unknown
+  onToggle: (status: Todo['status']) => unknown
 }) {
-  const { Box, Button, Text, todos, onCycle } = props
+  const { Box, Button, Text, todos, hidden, selected, landing, onCycle, onStep, onToggle } = props
+  const shown = todos.filter(item => !hidden.includes(item.status))
+  const step = (by: 1 | -1) => () => (selected === undefined ? undefined : onStep(selected, by))
   return (
     <Box flexDirection="column" marginBottom={1}>
       <Text bold>Todo</Text>
+      <Box flexDirection="row" gap={2}>
+        {STATUSES.map(status => (
+          <Button
+            key={`show:${status}`}
+            plain
+            hotkey={SHOW[status]}
+            dimColor={hidden.includes(status)}
+            label={`${legend(status)}: ${hidden.includes(status) ? 'hidden' : 'shown'}`}
+            onPress={() => onToggle(status)}
+          />
+        ))}
+      </Box>
       {todos.length === 0 ? (
         <Text dimColor>(no todos yet)</Text>
+      ) : shown.length === 0 ? (
+        <Text dimColor>{`(${todos.length} items, every status hidden)`}</Text>
       ) : (
-        todos.map(item => (
-          <Button key={`todo:${item.id}`} plain label={`${MARK[item.status]} ${item.text}`} onPress={() => onCycle(item.id)} />
+        shown.map(item => (
+          <Button
+            key={rowKey(item.id, landing)}
+            plain
+            autoFocus={item.id === selected ? true : undefined}
+            dimColor={item.id !== selected}
+            label={`${markOf(item.status)} ${item.text}`}
+            onPress={() => onCycle(item.id)}
+          />
         ))
       )}
+      <Box flexDirection="row" gap={2}>
+        <Button key="status:next" plain hotkey="f" label="next status" onPress={step(1)} />
+        <Button key="status:prev" plain hotkey="p" label="previous status" onPress={step(-1)} />
+      </Box>
+      <Text dimColor>Up and Down select an item, Enter cycles its status, f and p step it forward and back, 1 to 4 show or hide a status</Text>
     </Box>
   )
 }

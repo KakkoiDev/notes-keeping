@@ -36,6 +36,8 @@ declare module 'claude-code' {
       isNotesOpen: boolean
       picked: Opened | null
       cursor: string | null
+      todoCursor: string | null
+      hidden: Todo['status'][]
     }
   }
 }
