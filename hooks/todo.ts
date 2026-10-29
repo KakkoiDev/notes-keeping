@@ -196,7 +196,7 @@ function head(raw: readonly string[]): string {
 // ats: the index of each line in the section.
 type Block = { isNumbered: boolean; lines: string[]; ats: number[]; first: number; last: number }
 // A candidate with where its first line sits: that line carries its id.
-type Source = Candidate & { section: 'objectives' | 'updates'; at: number }
+type Source = Candidate & { section: 'objectives' | 'updates'; at: number; whole: string }
 
 // A numbered line opens a block that runs to the next numbered line, blank lines and bullets inside it; outside one, a
 // blank line ends a paragraph.
@@ -222,8 +222,9 @@ function blocks(text: string): Block[] {
 }
 
 // A paragraph of bullets is a list of items; a paragraph that opens with text and then lists is one item, its bullets details.
-function objectiveHeads(block: Block): { text: string; id?: string; at: number }[] {
-  const of = (lines: string[], at: number) => ({ text: head(lines), id: splitId(lines[0] ?? '').id, at })
+// whole: the lines the head was read from, its bullets and links included.
+function objectiveHeads(block: Block): { text: string; id?: string; at: number; whole: string }[] {
+  const of = (lines: string[], at: number) => ({ text: head(lines), id: splitId(lines[0] ?? '').id, at, whole: lines.join('\n') })
   if (block.isNumbered || !BULLET.test(block.lines[0] ?? '')) return [of(block.lines, block.first)]
   const lists: { lines: string[]; at: number }[] = []
   block.lines.forEach((line, i) => {
@@ -234,18 +235,20 @@ function objectiveHeads(block: Block): { text: string; id?: string; at: number }
 }
 
 // Each [UPDATE] block is one candidate: its first line of text, past a "Project: x" label. Text before the first tag is a block too.
-function updateBlocks(updates: string): { text: string; id?: string; at: number }[] {
+// whole: the block with its [UPDATE] header.
+function updateBlocks(updates: string): { text: string; id?: string; at: number; whole: string }[] {
   const parts: { line: string; at: number }[][] = [[]]
   updates.split('\n').forEach((line, at) => {
-    if (UPDATE_TAG.test(line.trim())) parts.push([])
+    if (UPDATE_TAG.test(line.trim())) parts.push([{ line, at }])
     else parts[parts.length - 1]?.push({ line, at })
   })
   return parts.flatMap(part => {
-    const lines = part.filter(({ line }) => line.trim() !== '')
+    const lines = part.filter(({ line }) => line.trim() !== '' && !UPDATE_TAG.test(line.trim()))
     const at = lines.findIndex(({ line }) => !LABEL.test(stripBullet(splitId(line).line)))
     const first = lines[at]
     if (at < 0 || first === undefined) return []
-    return [{ text: head(lines.slice(at).map(({ line }) => line)), id: splitId(first.line).id, at: first.at }]
+    const whole = part.map(({ line }) => line).join('\n').trim()
+    return [{ text: head(lines.slice(at).map(({ line }) => line)), id: splitId(first.line).id, at: first.at, whole }]
   })
 }
 
@@ -288,13 +291,13 @@ export function cleanLabel(reply: string): string | undefined {
 // introduces a list (ends in a colon), is a heading or is a single word.
 function sources(s: Pick<Sections, 'objectives' | 'updates'>): Source[] {
   const goals = blocks(s.objectives).flatMap(block =>
-    objectiveHeads(block).flatMap(({ text, id, at }): Source[] => {
+    objectiveHeads(block).flatMap(({ text, id, at, whole }): Source[] => {
       const clean = block.isNumbered ? text.replace(/:$/, '') : text
       if (clean === '' || text.startsWith('#') || !isPhrase(clean) || (!block.isNumbered && text.endsWith(':'))) return []
-      return [{ text: oneLine(clean), isSure: block.isNumbered, id, section: 'objectives', at }]
+      return [{ text: oneLine(clean), isSure: block.isNumbered, id, section: 'objectives', at, whole }]
     }),
   )
-  const updates = updateBlocks(s.updates).map(({ text, id, at }): Source => ({ text: oneLine(text), isSure: true, id, section: 'updates', at }))
+  const updates = updateBlocks(s.updates).map(({ text, id, at, whole }): Source => ({ text: oneLine(text), isSure: true, id, section: 'updates', at, whole }))
   return [...goals, ...updates]
 }
 
@@ -305,6 +308,14 @@ export function candidates(s: Pick<Sections, 'objectives' | 'updates'>): Candida
 // The keys a candidate is matched by: its id, if its line carries one, and its text keys.
 export function candidateKeys(c: Candidate): string[] {
   return c.id === undefined ? keysOf(c.text) : [c.id, ...keysOf(c.text)]
+}
+
+// The objective or update an item came from, whole and without ids: matched by id, else by text.
+export function sourceOf(s: Pick<Sections, 'objectives' | 'updates'>, item: Item): { section: 'objectives' | 'updates'; text: string } | undefined {
+  const all = sources(s)
+  const keys = keysOf(item.text)
+  const found = all.find(source => item.id !== undefined && source.id === item.id) ?? all.find(source => keysOf(source.text).some(key => keys.includes(key)))
+  return found === undefined ? undefined : { section: found.section, text: withoutIds(found.whole) }
 }
 
 // Puts an item's id on the objective or update line it came from, matched by text, when that line carries none yet.

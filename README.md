@@ -109,8 +109,8 @@ out.
   keeps the other cues from counting. Done and declined items are never moved by the plugin. A move is dropped if you
   changed that item while Laya was running.
 - Every change is logged in the notes file's `# Logs` section with who made it (see [Action log](#action-log)). A Laya
-  move carries Laya's answer and its own probability. Undo one by clicking the item.
-- Click an item in the pane (or Enter on it) to cycle todo, in-progress, done, declined and back, step it with `f` and
+  move carries Laya's answer and its own probability. Undo one by clicking the item's marker.
+- Click an item's marker in the pane (or Enter on it) to cycle todo, in-progress, done, declined and back, step it with `f` and
   `p` (see [In the pane](#in-the-pane)), or edit the marker by hand. Blocked is not in the cycle: a click, `f` or `p`
   on a blocked item sets it to todo. Those statuses are yours: Laya leaves them, and a firstmate bridge report or
   another click moves them.
@@ -196,7 +196,12 @@ it was. The `l` view shows the newest 200 rows.
 
 ### In the pane
 
-The list is the Todos view of the panel (`TodoSlot` in `hooks/todos.tsx`), read from the notes file on every draw; a click calls the same status cycle as above. It refreshes every five seconds while the pane is open and on every write.
+The list is the Todos view of the panel (`TodoSlot` in `hooks/todos.tsx`), read from the notes file on every draw. Each
+row is two click targets: the marker (`[ ]`) calls the same status cycle as above, logged as the captain; the text opens
+the Item view: the item's label, status and whole text, and the objective or update it came from, whole (a numbered
+objective with its details and links, an update with its `[UPDATE]` header), found by id, else by text. An item written
+in the list by hand says so. `b` goes back. The list refreshes every five seconds while the pane is open and on every
+write.
 
 The focus ring starts on the first shown item as the panel opens, no click needed; the selected item is drawn bright,
 the others dim.
@@ -204,7 +209,8 @@ the others dim.
 | Key | Does |
 | --- | --- |
 | Up, Down | select an item |
-| Enter | cycle its status: todo, in-progress, done, declined, todo; blocked goes to todo |
+| Enter | with the ring on its marker, cycle its status: todo, in-progress, done, declined, todo; blocked goes to todo. With the ring on its text, open it as `d` does |
+| `d` | open it in the Item view, as a click on its text does |
 | `f` | step it forward one status; at declined it stays declined |
 | `p` | step it back one status; at todo it stays todo |
 | `1` `2` `3` `4` `5` | show or hide the `[ ]` todo, `[~]` in-progress, `[x]` done, `[-]` declined, `[!]` blocked items |

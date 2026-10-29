@@ -35,7 +35,7 @@ import {
   updateLine,
   withoutLogs,
 } from './notes'
-import { EMPTY, bridgeMoves, candidateKeys, candidates, changeLine, cleanLabel, context, cycle, cycleItem, diffSnapshot, emptyUpdates, format, idFor, idOf, isBackground, items, keyOf, labelPrompt, moved, parse, pin, reconcile, row, settle, shown, snapshotOf, withIds, withoutIds } from './todo'
+import { EMPTY, bridgeMoves, candidateKeys, candidates, changeLine, cleanLabel, context, cycle, cycleItem, diffSnapshot, emptyUpdates, format, idFor, idOf, isBackground, items, keyOf, labelPrompt, legend, moved, parse, pin, reconcile, row, settle, shown, snapshotOf, sourceOf, withIds, withoutIds } from './todo'
 import type { Applied, Candidate, Change, Item, Memory, Move, Status, Verdict } from './todo'
 import { TodoSlot, nextShown, rowId, rowKey, selectedOf, stepStatus } from './todos'
 import type { Landing } from './todos'
@@ -106,6 +106,8 @@ const picked = atom({ plugin: 'notes-keeping', key: 'picked' } as const, null as
 const cursor = atom({ plugin: 'notes-keeping', key: 'cursor' } as const, null as string | null)
 const todoCursor = atom({ plugin: 'notes-keeping', key: 'todoCursor' } as const, null as string | null)
 const hidden = atom({ plugin: 'notes-keeping', key: 'hidden' } as const, [] as Status[])
+// The todo item the Item view shows, by its row id.
+const todoOpen = atom({ plugin: 'notes-keeping', key: 'todoOpen' } as const, null as string | null)
 
 function message(error: unknown): string {
   return (error instanceof Error ? error.message : String(error)).split('\n')[0] ?? 'unknown error'
@@ -1306,6 +1308,10 @@ export const register: Register = on => {
         selected={selected}
         landing={landing}
         onCycle={id => change(id, cycle)}
+        onOpen={async id => {
+          await update($, todoOpen, () => id)
+          await update($, view, () => 'item')
+        }}
         onStep={(id, by) => change(id, status => stepStatus(status, by))}
         onToggle={async status => {
           const now = hide.includes(status) ? hide.filter(other => other !== status) : [...hide, status]
@@ -1511,6 +1517,29 @@ export const register: Register = on => {
           {hint('Read-only. Times are UTC. b goes back')}
         </Box>
       )
+    } else if (at === 'item') {
+      const openId = await read($, todoOpen)
+      const item = s === undefined ? undefined : items(s.todo).find(one => keyOf(one.text) === openId)
+      const from = s === undefined || item === undefined ? undefined : sourceOf(s, item)
+      content =
+        item === undefined ? (
+          <Box key="content" flexDirection="column">
+            <Text dimColor>This item is no longer in the todo list.</Text>
+            {hint('b goes back')}
+          </Box>
+        ) : (
+          <Box key="content" flexDirection="column">
+            <Text bold>{item.label ?? 'Item'}</Text>
+            <Text>{legend(item.status)}</Text>
+            <Text>{item.text}</Text>
+            {from === undefined ? (
+              <Text dimColor>No objective or update holds this item: it was written in the todo list.</Text>
+            ) : (
+              body(from.section === 'objectives' ? 'From the objectives' : 'From an update', from.text)
+            )}
+            {hint('Read-only. b goes back')}
+          </Box>
+        )
     } else if (at === 'important') {
       content = body('Important', s?.important ?? '')
     } else if (at === 'chat') {

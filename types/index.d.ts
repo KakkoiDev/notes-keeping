@@ -18,7 +18,8 @@ export type Select = { mode: 'menu' | 'reply'; selection: string; isPlaced: bool
 
 export type Pair = { agent: string; user: string }
 
-export type View = 'todos' | 'objectives' | 'important' | 'chat' | 'queue' | 'history' | 'logs'
+// item: one todo item whole, opened from the Todos view.
+export type View = 'todos' | 'objectives' | 'important' | 'chat' | 'queue' | 'history' | 'logs' | 'item'
 
 // The note the History view shows whole (preview) or is about to attach (confirm).
 export type Opened = { name: string; step: 'preview' | 'confirm' }
@@ -39,6 +40,7 @@ declare module 'claude-code' {
       picked: Opened | null
       cursor: string | null
       todoCursor: string | null
+      todoOpen: string | null
       hidden: Todo['status'][]
     }
   }

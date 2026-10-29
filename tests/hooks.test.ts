@@ -1485,7 +1485,8 @@ test('the panel opens on the Todos view, t brings it back, and the other views c
   await run($, 'show')
   const pane = await $.ui.mount({ ...NOTES_PANE, surface: 'terminal' })
   expect(await pane.find({ type: 'Text', text: 'Todo' })).toBeDefined()
-  expect((await pane.find({ key: 'todo:ship it' }))?.props.label).toBe('[ ] Ship it')
+  expect((await pane.find({ key: 'todo:ship it' }))?.props.label).toBe('[ ]')
+  expect((await pane.find({ key: 'open:ship it' }))?.props.label).toBe('Ship it')
   expect((await pane.find({ key: 'view:todos' }))?.props).toMatchObject({ hotkey: 't', dimColor: false })
   expect((await pane.findAll({ type: 'Button' })).map(button => button.key)).toEqual([
     'view:todos',
@@ -1502,8 +1503,10 @@ test('the panel opens on the Todos view, t brings it back, and the other views c
     'show:declined',
     'show:blocked',
     'todo:ship it',
+    'open:ship it',
     'status:next',
     'status:prev',
+    'item:open',
   ])
   expect(await pane.find({ type: 'Text', text: 't todos, o objectives (u adds an update there), i important, c chat, q queue, h history, l logs, s send queue, Esc closes' })).toBeDefined()
   for (const at of ['view:objectives', 'view:important', 'view:chat', 'view:queue', 'view:logs']) {
@@ -1517,7 +1520,7 @@ test('the panel opens on the Todos view, t brings it back, and the other views c
   await pane.press({ key: 'view:chat' })
   expect(await pane.find({ type: 'Text', text: '[USER] hello' })).toBeDefined()
   await pane.press({ key: 'view:todos' })
-  expect((await pane.find({ key: 'todo:ship it' }))?.props.label).toBe('[ ] Ship it')
+  expect((await pane.find({ key: 'todo:ship it' }))?.props.label).toBe('[ ]')
   await pane.press({ key: 'view:chat' })
   expect((await pane.find({ key: 'view:back' }))?.props).toMatchObject({ hotkey: 'b' })
   await pane.press({ key: 'view:back' })
@@ -1832,7 +1835,8 @@ test('a click on a todo item in the notes pane sets the next status, writes the 
   await run($, 'show')
   const pane = await $.ui.mount({ ...NOTES_PANE, surface: 'terminal' })
   const key = 'todo:add a ctrl+q toggle'
-  expect((await pane.find({ key }))?.props.label).toBe('[ ] Add a ctrl+q toggle')
+  expect((await pane.find({ key }))?.props.label).toBe('[ ]')
+  expect((await pane.find({ key: 'open:add a ctrl+q toggle' }))?.props.label).toBe('Add a ctrl+q toggle')
   const seen: string[] = []
   for (let i = 0; i < 4; i++) {
     await pane.press({ key })
@@ -1859,8 +1863,10 @@ test('the todo list is the Todos view of the notes pane', async ($, on) => {
   await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: false })
   await run($, 'show')
   const pane = await $.ui.mount({ ...NOTES_PANE, surface: 'terminal' })
-  expect((await pane.find({ key: 'todo:done one' }))?.props).toMatchObject({ label: '[x] Done one' })
-  expect((await pane.find({ key: 'todo:dropped one' }))?.props).toMatchObject({ label: '[-] Dropped one' })
+  expect((await pane.find({ key: 'todo:done one' }))?.props).toMatchObject({ label: '[x]' })
+  expect((await pane.find({ key: 'open:done one' }))?.props).toMatchObject({ label: 'Done one' })
+  expect((await pane.find({ key: 'todo:dropped one' }))?.props).toMatchObject({ label: '[-]' })
+  expect((await pane.find({ key: 'open:dropped one' }))?.props).toMatchObject({ label: 'Dropped one' })
   await pane.unmount()
 })
 
@@ -1902,7 +1908,8 @@ test('a linked item whose task could not be started is blocked with the reason l
   expect(logsOf(fs[BOUND])).toContain(`- ${UTC} | firstmate | status | id:${idFor('Review this pr', new Set())} Review this pr | todo -> blocked | pr-review, by firstmate: no free worktree slot`)
   const pane = await $.ui.mount({ ...NOTES_PANE, surface: 'terminal' })
   expect((await pane.find({ key: 'show:blocked' }))?.props).toMatchObject({ hotkey: '5', label: '[!] blocked: shown' })
-  expect((await pane.find({ key: 'todo:review this pr' }))?.props.label).toBe('[!] Review this pr')
+  expect((await pane.find({ key: 'todo:review this pr' }))?.props.label).toBe('[!]')
+  expect((await pane.find({ key: 'open:review this pr' }))?.props.label).toBe('Review this pr')
   await pane.unmount()
   bridge.links = { 'review this pr': { status: 'in-progress', task: 'pr-review', by: 'firstmate' } }
   await complete($, 'Nothing.')
@@ -2158,7 +2165,7 @@ test('a new item gets a short label from the model once, written beside its whol
 
   await run($, 'show')
   const pane = await $.ui.mount({ ...NOTES_PANE, surface: 'terminal' })
-  expect((await pane.find({ key: 'todo:i want a todo list kept by the plugin' }))?.props.label).toBe('[ ] I want a')
+  expect((await pane.find({ key: 'open:i want a todo list kept by the plugin' }))?.props.label).toBe('I want a')
   await pane.press({ key: 'todo:i want a todo list kept by the plugin' })
   expect(bare(fs[BOUND])).toContain('- [~] **I want a**: I want a todo list kept by the plugin')
   await pane.unmount()
@@ -2199,8 +2206,8 @@ test('without a label from the model an item shows its text cut short, the whole
 
   await run($, 'show')
   const pane = await $.ui.mount({ ...NOTES_PANE, surface: 'terminal' })
-  const label = (await pane.find({ key: `todo:${long.toLowerCase()}` }))?.props.label as string
-  expect(label.startsWith('[ ] Ship the todo labels')).toBe(true)
+  const label = (await pane.find({ key: `open:${long.toLowerCase()}` }))?.props.label as string
+  expect(label.startsWith('Ship the todo labels')).toBe(true)
   expect(label.endsWith('…')).toBe(true)
   await pane.unmount()
 
@@ -2565,6 +2572,86 @@ test('hiding the status of the selected item moves the selection to the next sho
 // The engine keeps the ring at its position through a redraw that drops or adds rows, and a $.ui.focus on a row
 // already drawn lands before that redraw: a key not drawn before is one a focus waits for. The ring landing is
 // checked live; here, that each hand-over draws the selected row under a new key and that key still selects it.
+// A notes file whose items came from a numbered objective with details under it and from an update, plus one written by hand.
+const SOURCED = [
+  '# Objectives',
+  '',
+  'Sessions: s',
+  '',
+  '1. Ship the bridge',
+  '   See the notes',
+  '   - https://example.com/spec',
+  '',
+  '## Updates',
+  '',
+  '[UPDATE] 2026-10-29 08:00',
+  'Project: dotfiles',
+  'Add a pane with two keys.',
+  'Then show it on the phone.',
+  '',
+  '# Todo',
+  '',
+  '- [ ] Ship the bridge',
+  '- [~] Add a pane with two keys.',
+  '- [ ] Written by hand',
+  '',
+  '# Important',
+  '',
+  '# Chat',
+  '',
+].join('\n')
+
+test('a todo row is its marker, which cycles the status, and its text, which opens the item with the objective or update it came from, whole', async ($, on) => {
+  const { fs, git, pane } = await keynav($, on, { [BOUND]: SOURCED })
+  expect((await pane.find({ key: 'todo:ship the bridge' }))?.props.label).toBe('[ ]')
+  expect((await pane.find({ key: 'open:ship the bridge' }))?.props.label).toBe('Ship the bridge')
+  const writes = commits(git).length
+  await pane.press({ key: 'todo:ship the bridge' })
+  await flush()
+  expect(marker(fs, 'Ship the bridge')).toBe('~')
+  expect(logsOf(fs[BOUND]).at(-1)).toBe(`- ${UTC} | captain | status | ${cell('Ship the bridge')} | todo -> in-progress`)
+  expect(commits(git).length - writes).toBe(1)
+
+  // A press on the text writes nothing and opens the item.
+  await pane.press({ key: 'open:ship the bridge' })
+  await flush()
+  expect(commits(git).length - writes).toBe(1)
+  expect(marker(fs, 'Ship the bridge')).toBe('~')
+  expect(await pane.find({ key: 'todo:ship the bridge' })).toBeUndefined()
+  expect(await pane.find({ type: 'Text', text: '[~] in-progress' })).toBeDefined()
+  expect(await pane.find({ type: 'Text', text: 'Ship the bridge' })).toBeDefined()
+  expect(await pane.find({ type: 'Text', text: 'From the objectives' })).toBeDefined()
+  expect(await pane.find({ type: 'Text', text: '1. Ship the bridge\n   See the notes\n   - https://example.com/spec' })).toBeDefined()
+  expect((await pane.find({ key: 'view:back' }))?.props).toMatchObject({ hotkey: 'b' })
+  await pane.press({ key: 'view:back' })
+  expect(await pane.find({ key: 'todo:ship the bridge' })).toBeDefined()
+
+  await pane.press({ key: 'open:add a pane with two keys.' })
+  expect(await pane.find({ type: 'Text', text: 'From an update' })).toBeDefined()
+  expect(await pane.find({ type: 'Text', text: '[UPDATE] 2026-10-29 08:00\nProject: dotfiles\nAdd a pane with two keys.\nThen show it on the phone.' })).toBeDefined()
+  await pane.press({ key: 'view:back' })
+
+  await pane.press({ key: 'open:written by hand' })
+  expect(await pane.find({ type: 'Text', text: 'No objective or update holds this item: it was written in the todo list.' })).toBeDefined()
+  await pane.unmount()
+})
+
+test('d opens the selected item, the ring on the text of a row selects it, and the help names the keys', async ($, on) => {
+  const { pane } = await keynav($, on, { [BOUND]: SOURCED })
+  expect((await pane.find({ key: 'item:open' }))?.props).toMatchObject({ hotkey: 'd' })
+  expect(
+    await pane.find({ type: 'Text', text: 'Up and Down select an item, Enter or a click on its marker cycles its status, d or a click on its text opens it, f and p step it forward and back, 1 to 5 show or hide a status' }),
+  ).toBeDefined()
+  await pane.press({ key: 'item:open' })
+  expect(await pane.find({ type: 'Text', text: '1. Ship the bridge\n   See the notes\n   - https://example.com/spec' })).toBeDefined()
+  await pane.press({ key: 'view:back' })
+  await ring($, 'open:add a pane with two keys.')
+  expect(await selectedTodo(pane)).toEqual(['add a pane with two keys.'])
+  await pane.press({ key: 'item:open' })
+  expect(await pane.find({ type: 'Text', text: 'From an update' })).toBeDefined()
+  await pane.unmount()
+})
+
 test('a toggle, or a status change that hides a row, draws the selected row under a key not drawn before, and the ring on it selects it', async ($, on) => {
   const { pane } = await keynav($, on)
   const drawn = new Set((await todoRows(pane)).map(row => row.key))

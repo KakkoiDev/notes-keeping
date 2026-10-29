@@ -17,6 +17,7 @@ import {
   isBackground,
   openObjectives,
   snapshotOf,
+  sourceOf,
   stamped,
   items,
   keyOf,
@@ -694,5 +695,24 @@ describe('ids', () => {
 
   test('an objective without an id still finds its item by text', () => {
     expect(openObjectives('1. Ship it\n\n2. Keep it', [{ status: 'done', text: 'Ship it', id: 'aaaaaaa' }, { status: 'todo', text: 'Keep it' }])).toBe('2. Keep it')
+  })
+
+  test('an item finds the objective or update it came from, whole: by id, else by text; a hand-written item finds none', () => {
+    const s = {
+      objectives: 'Context paragraph\n\n- fix the flicker\n  on resize too\n- write the docs <!-- id:bbbbbbb -->\n\n1. Ship the bridge <!-- id:aaaaaaa -->\n   See the notes\n   - https://example.com/spec\n\n2. Second goal',
+      updates: '[UPDATE] t1\nProject: x\nAdd a pane, edited <!-- id:ccccccc -->\nwith two keys.\n\n[UPDATE] t2\nLast one',
+    }
+    expect(sourceOf(s, { status: 'todo', text: 'Ship the bridge, edited', id: 'aaaaaaa' })).toEqual({
+      section: 'objectives',
+      text: '1. Ship the bridge\n   See the notes\n   - https://example.com/spec',
+    })
+    expect(sourceOf(s, { status: 'todo', text: 'write the docs', id: 'bbbbbbb' })).toEqual({ section: 'objectives', text: '- write the docs' })
+    expect(sourceOf(s, { status: 'todo', text: 'fix the flicker on resize too' })).toEqual({ section: 'objectives', text: '- fix the flicker\n  on resize too' })
+    expect(sourceOf(s, { status: 'done', text: 'Add a pane', id: 'ccccccc' })).toEqual({
+      section: 'updates',
+      text: '[UPDATE] t1\nProject: x\nAdd a pane, edited\nwith two keys.',
+    })
+    expect(sourceOf(s, { status: 'todo', text: 'Last one', id: 'ddddddd' })).toEqual({ section: 'updates', text: '[UPDATE] t2\nLast one' })
+    expect(sourceOf(s, { status: 'todo', text: 'Written by hand', id: 'eeeeeee' })).toBeUndefined()
   })
 })

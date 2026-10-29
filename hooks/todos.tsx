@@ -14,8 +14,9 @@ export function rowKey(id: string, landing: Landing | undefined): string {
   return landing?.id === id ? `todo#${landing.count}:${id}` : `todo:${id}`
 }
 
+// The id of a row's marker key, or of its text key `open:<id>`.
 export function rowId(key: string): string | undefined {
-  return /^todo(?:#\d+)?:([^]*)$/.exec(key)?.[1]
+  return /^(?:todo(?:#\d+)?|open):([^]*)$/.exec(key)?.[1]
 }
 
 export function nextStatus(status: Todo['status']): Todo['status'] {
@@ -43,7 +44,8 @@ export function nextShown(todos: readonly Todo[], id: string, hidden: readonly T
 const SHOW: Record<Todo['status'], string> = { todo: '1', 'in-progress': '2', done: '3', declined: '4', blocked: '5' }
 
 // The todo list of the notes panel's Todos view. The notes-todo work owns this file and the `todos` atom in
-// register.tsx: it fills the atom, and `onCycle(id)` is called when a row is clicked or Enter is pressed on it.
+// register.tsx: it fills the atom, `onCycle(id)` is called when a row's marker is clicked or Enter is pressed on it, and
+// `onOpen(id)` when its text is clicked or d is pressed.
 export function TodoSlot(props: {
   Box: any
   Button: any
@@ -53,10 +55,11 @@ export function TodoSlot(props: {
   selected: string | undefined
   landing: Landing | undefined
   onCycle: (id: string) => unknown
+  onOpen: (id: string) => unknown
   onStep: (id: string, by: 1 | -1) => unknown
   onToggle: (status: Todo['status']) => unknown
 }) {
-  const { Box, Button, Text, todos, hidden, selected, landing, onCycle, onStep, onToggle } = props
+  const { Box, Button, Text, todos, hidden, selected, landing, onCycle, onOpen, onStep, onToggle } = props
   const shown = todos.filter(item => !hidden.includes(item.status))
   const step = (by: 1 | -1) => () => (selected === undefined ? undefined : onStep(selected, by))
   return (
@@ -80,21 +83,25 @@ export function TodoSlot(props: {
         <Text dimColor>{`(${todos.length} items, every status hidden)`}</Text>
       ) : (
         shown.map(item => (
-          <Button
-            key={rowKey(item.id, landing)}
-            plain
-            autoFocus={item.id === selected ? true : undefined}
-            dimColor={item.id !== selected}
-            label={`${markOf(item.status)} ${item.text}`}
-            onPress={() => onCycle(item.id)}
-          />
+          <Box key={`row:${item.id}`} flexDirection="row" gap={1}>
+            <Button
+              key={rowKey(item.id, landing)}
+              plain
+              autoFocus={item.id === selected ? true : undefined}
+              dimColor={item.id !== selected}
+              label={markOf(item.status)}
+              onPress={() => onCycle(item.id)}
+            />
+            <Button key={`open:${item.id}`} plain dimColor={item.id !== selected} label={item.text} onPress={() => onOpen(item.id)} />
+          </Box>
         ))
       )}
       <Box flexDirection="row" gap={2}>
         <Button key="status:next" plain hotkey="f" label="next status" onPress={step(1)} />
         <Button key="status:prev" plain hotkey="p" label="previous status" onPress={step(-1)} />
+        <Button key="item:open" plain hotkey="d" label="open item" onPress={() => (selected === undefined ? undefined : onOpen(selected))} />
       </Box>
-      <Text dimColor>Up and Down select an item, Enter cycles its status, f and p step it forward and back, 1 to 5 show or hide a status</Text>
+      <Text dimColor>Up and Down select an item, Enter or a click on its marker cycles its status, d or a click on its text opens it, f and p step it forward and back, 1 to 5 show or hide a status</Text>
     </Box>
   )
 }
