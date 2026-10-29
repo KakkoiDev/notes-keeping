@@ -9,6 +9,8 @@ home opted in). Four verbs are the plugin's; five are firstmate's.
                              link made with --by carries a "by" field. blocked: the task's latest block came after its last
                              state line, printed with a "reason" field. done: the
                              last state line of state/<task>.status is done. in-progress: else state/<task>.meta exists.
+                             done: else the task's latest outcome record, appended by firstmate's cleanup as
+                             {"task", "outcome", "at"} with no key, is done and not older than the link.
                              null: anything else; the plugin leaves the item where it is.
   notify <notes-file>        change lines on stdin become one captain inbox note (bin/fm-inbox.sh note), one wake.
                              The note's first line is the first change, with who made it, and "(+N more)" when there are
@@ -141,9 +143,27 @@ def blocks():
     return out
 
 
-def derive(task, block):
+def outcomes():
+    """Latest outcome record per task: a links record with a task and an outcome and no key."""
+    out = {}
+    try:
+        f = open(LINKS, encoding='utf-8')
+    except FileNotFoundError:
+        return out
+    with f:
+        for line in f:
+            try:
+                record = json.loads(line)
+            except ValueError:
+                continue
+            if 'key' not in record and isinstance(record.get('task'), str) and isinstance(record.get('outcome'), str) and isinstance(record.get('at'), int):
+                out[record['task']] = record
+    return out
+
+
+def derive(task, block, outcome=None):
     """The task's status and, while it is blocked, the block's reason. A block holds while the status file has no state
-    line written after it."""
+    line written after it. With no meta, a done outcome reports done."""
     if not TASK_ID.match(task):
         return None, None
     lines = state_lines(task)
@@ -153,14 +173,19 @@ def derive(task, block):
         return 'done', None
     if os.path.exists(os.path.join(STATE, f'{task}.meta')):
         return 'in-progress', None
+    if outcome is not None and outcome['outcome'] == 'done':
+        return 'done', None
     return None, None
 
 
 def status():
     out = {}
     blocked = blocks()
+    ended = outcomes()
     for r in links().values():
-        state, reason = derive(r['task'], blocked.get(r['task']))
+        outcome = ended.get(r['task'])
+        # An outcome older than the link belongs to an earlier task with the same id.
+        state, reason = derive(r['task'], blocked.get(r['task']), outcome if outcome is not None and outcome['at'] >= r.get('at', 0) else None)
         extra = {**({'by': r['by']} if isinstance(r.get('by'), str) else {}), **({'reason': reason} if reason is not None else {})}
         if 'id' in r:
             out[f"id:{r['id']}"] = {'status': state, 'task': r['task'], 'id': r['id'], **extra}

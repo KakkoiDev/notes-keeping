@@ -55,6 +55,20 @@ b unlink 'ship the bridge' 2>/dev/null
 check 'unlink of an unlinked item fails' '1' "$?"
 
 home
+b link pr-review id:ab12cd3 --by firstmate
+printf '{"task": "pr-review", "outcome": "done", "at": %d, "report": "/r.md"}\n' "$(( $(date +%s) + 1 ))" >> "$H/state/notes-todo-links.jsonl"
+check 'a done outcome recorded at cleanup reports done once the status and meta are gone' '{"id:ab12cd3": {"status": "done", "task": "pr-review", "id": "ab12cd3", "by": "firstmate"}}' "$(b status /n.md)"
+printf '{"task": "pr-review", "outcome": "failed", "at": %d}\n' "$(( $(date +%s) + 2 ))" >> "$H/state/notes-todo-links.jsonl"
+check 'a later failed outcome reports null' 'None' "$(b status /n.md | python3 -c 'import json,sys; print(next(iter(json.load(sys.stdin).values()))["status"])')"
+
+home
+printf '{"task": "pr-review", "outcome": "done", "at": 1}\n' >> "$H/state/notes-todo-links.jsonl"
+b link pr-review 'Review again'
+check 'an outcome older than the link is an earlier run of the task id and reports null' '{"Review again": {"status": null, "task": "pr-review"}}' "$(b status /n.md)"
+: > "$H/state/pr-review.meta"
+check 'a meta still reports in-progress over an outcome' 'in-progress' "$(printf '{"task": "pr-review", "outcome": "done", "at": %d}\n' "$(( $(date +%s) + 1 ))" >> "$H/state/notes-todo-links.jsonl"; b status /n.md | python3 -c 'import json,sys; print(next(iter(json.load(sys.stdin).values()))["status"])')"
+
+home
 b link pr-review id:ab12cd3
 check 'a link by id prints under id:<id> with the id' '{"id:ab12cd3": {"status": null, "task": "pr-review", "id": "ab12cd3"}}' "$(b status /n.md)"
 : > "$H/state/pr-review.meta"
