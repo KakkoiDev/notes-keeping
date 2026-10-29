@@ -55,9 +55,10 @@ const REPLY: Record<string, Status> = { started: 'in-progress', finished: 'done'
 // Checked in this order, so a refusal wins over a start and a start over a finish.
 const CUES: [string, RegExp][] = [
   ['rejected', /\b(rejected|won't|will not|not (do|doing|build|building|write|writing|add|adding|worth|something)|(was|were|is|are|been|being|be|i|we|got|get) (\w+ )?skipp(ed|ing)|decided against|leav(e|ing) (it )?(out|undone|as it is)|leav(e|ing) .{0,30} out|out of scope|dropp(ed|ing)|refus\w+|declin\w+)\b|見送|やらない|行わない|手を付けません|範囲外|しません/i],
-  ['started', /\b(started|starting|begun|began|begin|beginning|working on|in progress|under ?way|partway|partly|half|in the middle|continu\w+|still|more (to do|remains|is open)|not (yet|drawn|hooked|connected|wired))\b|着手|始め|途中|進めて|半分/i],
+  ['started', /\b(started|starting|begun|began|begin|beginning|working on|in progress|under ?way|partway|partly|half|in the middle|continu\w+|still|more (to do|remains|is open)|not (yet|drawn|hooked|connected|wired)|but not)\b|着手|始め|途中|進めて|半分/i],
   ['finished', /\b(done|finish\w*|complete[d]?|implemented|landed|committed|fixed|verified|works|written|added|merged|in and)\b|完了|実装し|済み|仕上げ|通りました/i],
 ]
+const QUOTED = /"[^"\n]*"|“[^”\n]*”|`[^`\n]*`|「[^」\n]*」/g
 const STOP = new Set(['this', 'that', 'with', 'from', 'have', 'will', 'your', 'should', 'must', 'into', 'also', 'then', 'than', 'when', 'what', 'they', 'them', 'their', 'there', 'here', 'just', 'make', 'been', 'were', 'does', 'done'])
 
 export function keyOf(text: string): string {
@@ -367,6 +368,12 @@ function tokensIn(words: Words, text: string): Set<string> {
   return made
 }
 
+const LINK_IN = /https?:\/\/[^\s<>()`"']*[^\s<>()`"'.,:;!?]/g
+// Links in the reply the item does not hold are removed: their owner and path words (KakkoiDev, pull) are not about it.
+function ownLinks(item: string, answer: string): string {
+  return answer.replace(LINK_IN, link => (item.includes(link) ? link : ''))
+}
+
 // Items of one list share domain words ("notes", "pane"); a reply must share a word only this item has to move it.
 // An item with no word of its own falls back to all its words. Words match by stem and by prefix.
 export function mentions(item: string, answer: string, siblings: readonly string[] = []): boolean {
@@ -379,12 +386,12 @@ export function mentions(item: string, answer: string, siblings: readonly string
     own = mine.length === 0 ? all : mine
     words.own.set(item, own)
   }
-  return shares(own, tokensIn(words, answer))
+  return shares(own, tokensIn(words, ownLinks(item, answer)))
 }
 
 // The cue the reply gives for this item, read only from the sentences about it and the ones that carry on from them,
 // with the item's own words (four letters or more, as tokens are) removed so that "skipped-move counter" does not read
-// as a refusal.
+// as a refusal, and quoted text removed so that Pushback on "done" does not read as a finish.
 function cueFor(item: string, answer: string, siblings: readonly string[]): string | undefined {
   const sentences = answer.split(/(?<=[.!?。！？])\s+|\n+|;\s+/).filter(s => s.trim() !== '')
   const about = sentences.map(s => mentions(item, s, siblings))
@@ -392,7 +399,7 @@ function cueFor(item: string, answer: string, siblings: readonly string[]): stri
   const own = tokensIn(wordsOf(siblings), item)
   const text = sentences
     .filter((_, i) => about[i] || (i > 0 && about[i - 1] && !other[i]))
-    .map(s => (s.match(/[\p{L}\p{N}_']+/gu) ?? []).filter(word => word.length < 4 || ![...own].some(token => same(stem(word.toLowerCase()), token))).join(' '))
+    .map(s => (s.replace(QUOTED, ' ').match(/[\p{L}\p{N}_']+/gu) ?? []).filter(word => word.length < 4 || ![...own].some(token => same(stem(word.toLowerCase()), token))).join(' '))
     .join(' ')
   return CUES.find(([, rx]) => rx.test(text))?.[0]
 }

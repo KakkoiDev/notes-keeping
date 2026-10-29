@@ -97,8 +97,9 @@ out.
   A line already judged is never asked twice, so an item you delete stays deleted.
 - At the end of every turn: Laya reads Claude's last reply against every open item (todo or in-progress), the ones you
   set by click or by hand included, and may move it forward (todo to in-progress, either to done). A move needs the
-  reply to share a word only that item has (two-character runs for Japanese). A start cue ("started", "partway",
-  "still") or a finish cue ("done", "merged", "fixed") in the reply plus Laya at 0.5 on that option moves it; with no
+  reply to share a word only that item has (two-character runs for Japanese); a link in the reply counts only for the
+  item holding that same link. A start cue ("started", "partway", "still", "but not") or a finish cue ("done",
+  "merged", "fixed") outside quotes in the reply plus Laya at 0.5 on that option moves it; with no
   cue Laya needs 0.9, and 0.9 for a status you set (see How accurate it is). Laya never declines an item, on a refusal
   cue ("skipped", "won't", "dropped") or on its own however sure: only you or firstmate decline. A refusal cue also
   keeps the other cues from counting. Done and declined items are never moved by the plugin. A move is dropped if you
@@ -266,6 +267,12 @@ What changed: reply statuses are scored by the English checkpoint, the multiling
   editor-key item on "Dropping" in a carry-on sentence with Laya at 0.19). Start and finish cues count as before. A
   reply word under four letters is no longer removed as the start of an item word ("not" in "notes"), so "will not be
   written" reads as a refusal, not a finish.
+- Since 2026-10-29 (three false dones, each Laya under 0.32 on finished, lifted to 1.00 by a cue the reply did not
+  say of the item): a link in the reply names only the item holding that same link, so the owner in
+  `github.com/KakkoiDev/example/pull/45` does not name an item that says "KakkoiDev"; quoted text ("...", `...`, “...”,
+  「...」) is not read for cues, so `Pushback on "done"` closes nothing; "but not" is a start cue, so "written but not
+  posted" is partway. Same eval scores as before. Not fixed: one incidental word an item alone has ("ticket",
+  "validation") next to a finish word about something else still closes it.
 
 Real moves that landed right, landed wrong, or did not land (right / wrong / missed):
 

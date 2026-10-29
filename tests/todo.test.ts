@@ -333,6 +333,47 @@ describe('Laya answers', () => {
     expect(moved(notes, 'Release notes are written.', { label: 'rejected', p: 0.39, probs })).toMatchObject({ status: 'done' })
   })
 
+  // 2026-10-29: three Laya moves to done on a finish word the reply did not say of the item. Replies cut from firstmate's
+  // real ones; probabilities are Laya's (aac6fef/laya-mlx) on the whole real reply and item.
+  const publicRepo = { status: 'todo' as const, text: "I want to move notes-keeping's plugin to a public repo on KakkoiDev" }
+  const review = { status: 'in-progress' as const, text: 'review this pr https://github.com/acme/webapp/pull/27921' }
+  const reviewSiblings = [review.text, 'review this pr: https://github.com/acme/webapp/pull/27787']
+  const tickets = { status: 'in-progress' as const, text: 'i want to update the notion tickets, indicate all the closed prs and also update the status on all the poc experiments we ran' }
+
+  test('a word inside a link in the reply names only the item holding that link', () => {
+    const reply = [
+      'Done this turn:',
+      '- **pr-review-enhanced is installed** and working. PR https://github.com/KakkoiDev/example/pull/45 is merged and applied to `~/dotfiles`.',
+      '  - exploration-video and terminal-demo work again too. The cause was an agent-skills version that was never pushed.',
+    ].join('\n')
+    const probs = { 'not-mentioned': 0.21, started: 0.338, finished: 0.24, rejected: 0.211 }
+    expect(moved(publicRepo, reply, { label: 'started', p: 0.338, probs })).toBeUndefined()
+    const linked = 'The PR 27921 review is posted: request changes, 4 inline comments on https://github.com/acme/webapp/pull/27921. Done.'
+    expect(moved(review, linked, { label: 'started', p: 0.477, probs: { 'not-mentioned': 0.202, started: 0.477, finished: 0.273, rejected: 0.049 } }, reviewSiblings)).toMatchObject({ status: 'done' })
+    const moved45 = 'The notes-keeping plugin is moved to a public repo on KakkoiDev: https://github.com/KakkoiDev/notes-keeping. Merged.'
+    expect(moved(publicRepo, moved45, { label: 'finished', p: 0.603, probs: { 'not-mentioned': 0.135, started: 0.228, finished: 0.603, rejected: 0.034 } })).toMatchObject({ status: 'done' })
+  })
+
+  test('a finish word followed by "but not" says the work is partway, not finished', () => {
+    const reply = [
+      'Captain, the PR 27921 review is written but not posted. It is waiting on you.',
+      '',
+      '**PR 27921 review** (https://github.com/acme/webapp/pull/27921):',
+      '- Drafted: request changes, 4 inline comments. Not posted; the PR still shows 0 reviews.',
+    ].join('\n')
+    const probs = { 'not-mentioned': 0.221, started: 0.336, finished: 0.308, rejected: 0.136 }
+    expect(moved(review, reply, { label: 'started', p: 0.336, probs }, reviewSiblings)).toBeUndefined()
+    expect(moved({ ...review, status: 'todo' }, reply, { label: 'started', p: 0.336, probs }, reviewSiblings)).toMatchObject({ status: 'in-progress' })
+  })
+
+  test('a cue word inside quotes is a word talked about, not a status', () => {
+    const reply = ['- **To close it:** open ego-lite, find the space "ego-lite-check", close it.', '', 'Pushback on "done":', '- `/reload-plugins` reloaded plugins, not hooks ("0 hooks").'].join('\n')
+    const probs = { 'not-mentioned': 0.469, started: 0.092, finished: 0.224, rejected: 0.215 }
+    expect(moved(tickets, reply, { label: 'not-mentioned', p: 0.469, probs })).toBeUndefined()
+    const finished = 'The Notion tickets now mark every closed PR, and the POC experiment statuses are updated. Done.'
+    expect(moved(tickets, finished, { label: 'started', p: 0.543, probs: { 'not-mentioned': 0.17, started: 0.543, finished: 0.23, rejected: 0.058 } })).toMatchObject({ status: 'done' })
+  })
+
   test('a cue only counts in a sentence about the item, and not inside the item own words', () => {
     const counter = 'Keep a count of moves Laya declined to make'
     expect(moved({ status: 'todo', text: counter }, 'The skipped-move counter is started and shows in the log.', verdict('finished', 0.71), [counter])).toMatchObject({ status: 'in-progress' })
