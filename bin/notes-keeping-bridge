@@ -5,14 +5,17 @@ The notes-keeping plugin runs this file when it exists under the session root (c
 home opted in). Two verbs are the plugin's; two are firstmate's.
 
   status <notes-file>        print {"<item text>": {"status": "in-progress" | "done" | null, "task": "<id>"}} for every
-                             linked item; an item linked by id is printed as "id:<id>" with an "id" field. done: the
+                             linked item; an item linked by id is printed as "id:<id>" with an "id" field, and a link
+                             made with --by carries a "by" field. done: the
                              last state line of state/<task>.status is done. in-progress: else state/<task>.meta exists.
                              null: anything else; the plugin leaves the item where it is.
   notify <notes-file>        change lines on stdin become one captain inbox note (bin/fm-inbox.sh note), one wake.
-                             The note's first line is the first change, with "(+N more)" when there are several. A
-                             change line ends in [id:<id>] when the item has one.
-  link <task-id> <item>      link the item to the task; the latest link for an item wins. <item> is id:<id> (the id a
-                             change line names; it survives edits to the item's text) or the item text.
+                             The note's first line is the first change, with who made it, and "(+N more)" when there are
+                             several. A change line ends in [id:<id>] when the item has one.
+  link <task-id> <item> [--by <name>]
+                             link the item to the task; the latest link for an item wins. <item> is id:<id> (the id a
+                             change line names; it survives edits to the item's text) or the item text. --by names who
+                             made the link (firstmate, a crewmate); the plugin logs the item's moves with it.
   unlink <item>              drop the item's link.
 
 Links are appended to state/notes-todo-links.jsonl. An item's key is id:<id>, or its text lowercased with whitespace
@@ -39,7 +42,7 @@ ADDED = re.compile(r'^\+ \[.\] ')
 ID_TAG = re.compile(r' \[id:[a-z0-9]+\]$')
 ITEM_ID = re.compile(r'^id:([a-z0-9]+)$')
 TASK_ID = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]*$')
-USAGE = 'usage: notes-keeping-bridge status <notes-file> | notify <notes-file> | link <task-id> <item> | unlink <item>'
+USAGE = 'usage: notes-keeping-bridge status <notes-file> | notify <notes-file> | link <task-id> <item> [--by <name>] | unlink <item>'
 
 
 def die(text, code=2):
@@ -102,16 +105,17 @@ def derive(task):
 def status():
     out = {}
     for r in links().values():
+        by = {'by': r['by']} if isinstance(r.get('by'), str) else {}
         if 'id' in r:
-            out[f"id:{r['id']}"] = {'status': derive(r['task']), 'task': r['task'], 'id': r['id']}
+            out[f"id:{r['id']}"] = {'status': derive(r['task']), 'task': r['task'], 'id': r['id'], **by}
         else:
-            out[r['text']] = {'status': derive(r['task']), 'task': r['task']}
+            out[r['text']] = {'status': derive(r['task']), 'task': r['task'], **by}
     print(json.dumps(out, ensure_ascii=False))
 
 
 def headline(lines):
-    """The first change without its add marker, id tag or (captain) suffix, plus the count of the rest."""
-    first = ID_TAG.sub('', ADDED.sub('', lines[0], count=1)).removesuffix(' (captain)')
+    """The first change without its add marker or id tag, plus the count of the rest."""
+    first = ID_TAG.sub('', ADDED.sub('', lines[0], count=1))
     return first if len(lines) == 1 else f'{first} (+{len(lines) - 1} more)'
 
 
@@ -135,13 +139,20 @@ def main(argv):
     elif verb == 'notify' and len(args) == 1:
         notify(args[0])
     elif verb == 'link' and len(args) >= 2:
-        task, text = args[0], ' '.join(args[1:]).strip()
+        task, rest, by = args[0], args[1:], {}
+        if '--by' in rest:
+            at = rest.index('--by')
+            if at + 1 >= len(rest) or not TASK_ID.match(rest[at + 1]):
+                die('--by needs a name')
+            by = {'by': rest[at + 1]}
+            rest = rest[:at] + rest[at + 2:]
+        text = ' '.join(rest).strip()
         if not TASK_ID.match(task):
             die(f'not a task id: {task}')
         if text == '':
             die('empty item text')
         m = ITEM_ID.match(text)
-        append({'task': task, 'key': text, 'id': m.group(1), 'at': int(time.time())} if m else {'task': task, 'key': key_of(text), 'text': text, 'at': int(time.time())})
+        append({'task': task, 'key': text, 'id': m.group(1), **by, 'at': int(time.time())} if m else {'task': task, 'key': key_of(text), 'text': text, **by, 'at': int(time.time())})
     elif verb == 'unlink' and len(args) >= 1:
         key = key_of(' '.join(args))
         if key not in links():

@@ -31,6 +31,7 @@ Toggle with ctrl+q (see below), `/notes-keeping show` / `hide`, or the `Notes` b
 | `c` | Chat view |
 | `q` | Queue view: every queued reply in its own editable field |
 | `h` | History view: earlier notes, newest first; Up and Down pick one, Enter opens a read-only preview of what it holds, `a` attaches the picked note after a `y` / `n` confirmation (same copy as `/notes-keeping history <n\|file>`, so done and declined items stay behind); the original is never written. `b` in a preview or the confirmation steps back |
+| `l` | Logs view: the `# Logs` section of the notes file, newest first, read-only: time (UTC), who, item, `from -> to` (or the text of an objective or update) |
 | `s` | Send queue: put every queued reply into the prompt box, clear the queue, record them in `# Chat`; you press Enter |
 | `b` | Back to the Todos view (shown in every view but Todos) |
 | `u` | in the Objectives view: opens an input; Enter appends the text as a new `[UPDATE]` under `## Updates` (while the objectives are still empty it sets them instead) |
@@ -95,13 +96,16 @@ out.
   unless Laya is at least 0.8 sure it is background. Lines ending in `:`, headings and single-word lines are skipped.
   A line already judged is never asked twice, so an item you delete stays deleted.
 - At the end of every turn: Laya reads Claude's last reply against every open item (todo or in-progress), the ones you
-  set by hand included, and may move it forward (todo to in-progress, in-progress to done, either to declined). A move
-  needs the reply to share a word only that item has (two-character runs for Japanese) and the reply's cue words plus
-  Laya to reach 0.5 on the option the reply's cue words name, 0.9 on another, or 0.9 for a status you set by hand (see How accurate it is). Done and
-  declined items are never moved by the plugin. A move is dropped if you changed that item while Laya was running.
-- Every status Laya changes is appended to `~/.notes-keeping/todo-changes.log` (committed with the write): time, notes
-  file, item, `from -> to`, Laya's answer and confidence, and `replaced a hand-set status` when the item was one you
-  set by click or by hand. Review it there.
+  set by click or by hand included, and may move it forward (todo to in-progress, either to done). A move needs the
+  reply to share a word only that item has (two-character runs for Japanese). A start cue ("started", "partway",
+  "still") or a finish cue ("done", "merged", "fixed") in the reply plus Laya at 0.5 on that option moves it; with no
+  cue Laya needs 0.9, and 0.9 for a status you set (see How accurate it is). Laya never declines an item, on a refusal
+  cue ("skipped", "won't", "dropped") or on its own however sure: only you or firstmate decline. A refusal cue also
+  keeps the other cues from counting. Done and declined items are never moved by the plugin. A move is dropped if you
+  changed that item while Laya was running.
+- Every change is logged in the notes file's `# Logs` section with who made it (see [Action log](#action-log)). A Laya
+  move carries Laya's answer and its own probability, and `replaced a hand-set status` when the item was one you set by
+  click or by hand. Undo one by clicking the item.
 - Click an item in the pane (or Enter on it) to cycle todo, in-progress, done, declined and back, step it with `f` and
   `p` (see [In the pane](#in-the-pane)), or edit the marker by hand. Those statuses are yours until Laya moves them
   under the rule above.
@@ -112,13 +116,16 @@ out.
     `{"<item text>": {"status": "in-progress" | "done" | null, "task": "<id>"}}` for every item linked to a firstmate
     task; an item linked by id (`bridge link <task> id:<id>`) is printed as `"id:<id>"` with an `"id"` field and
     matched by id, an item linked by text (older links) by its text. A linked item follows that status forward and Laya is never asked about it; a null status leaves it where it
-    is. The move is logged with `firstmate <task>`. A status you set on a linked item stays until the bridge reports a
-    different one.
+    is. The move is logged as `firstmate` with the task id. `bridge link <task> <item> --by <name>` records who made
+    the link (firstmate, a crewmate); `status` then prints a `"by"` field and the log row names it. A status you set on
+    a linked item stays until the bridge reports a different one.
   - After every todo write, every click, and every five seconds, the plugin runs `bridge notify <notes file>` with the
-    changes since its last write on stdin: `+ [ ] <item>` for a new item, `<item>: <from> -> <to> (captain)` for a
-    status set by click or by hand, each followed by ` [id:<id>]` when the item has an id. Moves Laya or the bridge made are not sent. The bridge files them as one inbox note
-    whose first line, the part firstmate's notification shows, is the first change (`<item>` or
-    `<item>: <from> -> <to>`), with `(+N more)` when there are several.
+    changes since its last write on stdin: `+ [ ] <item>` for a new item, `<item>: <from> -> <to> (<who>)` for every
+    status change, each followed by ` [id:<id>]` when the item has an id. `<who>` is `captain` for a click, `laya`
+    for a Laya move, `firstmate <task>` for a bridge move, and `unknown` for a change found in the file that the plugin
+    did not make (a hand edit, another program). The bridge files them as one inbox note whose first line, the part
+    firstmate's notification shows, is the first change (`<item>` or `<item>: <from> -> <to> (<who>)`), with
+    `(+N more)` when there are several.
   - Without the file nothing of this runs.
 - Claude never edits the notes file; its Edit and Write on the notes folder are denied.
 
@@ -137,6 +144,37 @@ behind. Later prompts do not repeat it. Every prompt that carries the whole note
 notes still open with `Continuation of:` that file, a notes file of the folder (a line edited to name any other path
 puts nothing in). Only the directly attached file goes in, not the file it continued in turn. No size cap: it is a notes file of the same kind as the current one, which goes in whole too (the largest
 here were about 43 KB). `/notes-keeping history <n|file>` puts the attached file in context with its own output instead.
+
+### Action log
+
+Every action on the objectives and the todo list is one row at the end of the notes file, under `# Logs`, oldest first:
+
+```
+# Logs
+
+- 2026-10-28T08:49:00Z | laya | status | id:1uxnkut Investigate the Sentry alert | in-progress -> declined | rejected 0.95
+- 2026-10-28T09:07:22Z | captain | status | id:1uxnkut Investigate the Sentry alert | declined -> todo
+- 2026-10-28T09:08:00Z | captain | update | - | - | Add a logs tab
+```
+
+Columns: UTC time, actor id, action (`status`, `added`, `objective`, `update`, `attach`), item id and label (`-` for
+none), `from -> to` (`none -> <status>` for an added item, `-` for none), and a note (Laya's answer and probability,
+the firstmate task, the copied file). The actors are listed once in `hooks/actors.ts`:
+
+| id | kind | who |
+| --- | --- | --- |
+| `captain` | human | a click or key in the pane, or a command typed at the prompt or sent from the phone |
+| `firstmate` | AI agent | a bridge move (Claude Opus 5.5 via the bridge), with the task id and `--by` name |
+| `laya` | AI classifier | a Laya move or a line Laya judged a task (`aac6fef/laya-mlx` on replies, the multilingual checkpoint on objective lines) |
+| `plugin` | plugin | an item made from an objective or update as written, with no Laya call |
+| `unknown` | unknown | a change found in the file that the plugin did not make, or a command from another origin |
+
+A change the plugin did not make is never logged as the captain. The section is excluded from Claude's context and
+from what Laya reads; every prompt carries one line saying where it is, so Claude reads it when asked about the
+history of actions or who changed a status. Only content in the objectives and updates makes todo items: lines in
+`# Important`, `# Chat` or `# Logs` never do, and a write to them is not a todo change. The first rows a notes file
+gets bring along its rows from the old `~/.notes-keeping/todo-changes.log`, which is no longer written and is left as
+it was. The `l` view shows the newest 200 rows.
 
 ### In the pane
 
@@ -215,6 +253,11 @@ What changed: reply statuses are scored by the English checkpoint, the multiling
   for the `rejected`, `started` and `finished` regexes in `hooks/todo.ts` (checked in that order), with the item's own
   words removed first so "the skipped-move counter" is not a refusal. The cued option gets +8 nats on Laya's log
   probability. The result must reach 0.5 on the cued option, 0.9 on any other, and 0.9 when the captain set the status by hand (also on a cued option).
+- Since the actor log change, Laya never moves an item to declined: a refusal cue lifts nothing, and rejected at any
+  probability leaves the item (the Sentry item was declined on one refusal cue with Laya at 0.05 on rejected, and the
+  editor-key item on "Dropping" in a carry-on sentence with Laya at 0.19). Start and finish cues count as before. A
+  reply word under four letters is no longer removed as the start of an item word ("not" in "notes"), so "will not be
+  written" reads as a refusal, not a finish.
 
 Real moves that landed right, landed wrong, or did not land (right / wrong / missed):
 
@@ -234,13 +277,25 @@ noun phrase, and "instead of" firing on any reply) were fixed and it was re-scor
 untouched set remains. The honest estimate is the fresh-set number: about 1 move in 5 wrong on replies written
 after the rules, before those two fixes.
 
+Per status over all five sets (`base` scores, same gate; right / wrong / missed of the real moves to that status,
+wrong counting a move to that status on a case that said anything else):
+
+| status | before | now |
+| --- | --- | --- |
+| started (62) | 60 / 1 / 2 | 60 / 1 / 2 |
+| done (62) | 59 / 2 / 3 | 59 / 1 / 3 |
+| declined (62) | 54 / 0 / 7 | 0 / 0 / 62 (never moved by Laya) |
+
+The wrong done left is the decoy below; the other was the "not" in "notes" bug. These sets are tuning data (see above),
+so read the zeros as optimistic.
+
 The hand-set floor of 0.9 (the captain's choice) is not backed by a measurement that separates it from the others, and the 0.9 floor for a
 reply with no cue is the first one that was chosen on one tune set.
 
 Limits:
 
-- The cue words decide, Laya breaks ties. With a cue in the reply the result is near 1.0 whatever Laya said, so the
-  hand-set floor only bites on replies with no cue word. Cues are read per sentence, and a sentence that follows one
+- A start or finish cue decides, Laya breaks ties. With one in the reply the result is near 1.0 whatever Laya said, so
+  the hand-set floor only bites on replies with no cue. Cues are read per sentence, and a sentence that follows one
   naming the item is assumed to carry on about it ("The counter is begun. I dropped the retry." reads as a refusal).
   The lists are short and English plus a few Japanese words; wording they miss falls back to Laya alone at 0.9.
 - A decoy that shares two or three domain words with an item and carries a cue ("The notes folder is committed after

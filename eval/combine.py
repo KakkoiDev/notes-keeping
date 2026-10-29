@@ -67,7 +67,7 @@ def cue3(item, reply, siblings=()):
     # a sentence right after one that names the item carries on about it unless it names another item
     near = [s for i, s in enumerate(sents) if hit[i] or (i > 0 and hit[i-1] and not other[i])]
     toks = {x for x in tokens2(item)}
-    def clean(s): return ' '.join(w for w in re.findall(r"[\w']+", s) if not any(same(stem(w.lower()), x) for x in toks))
+    def clean(s): return ' '.join(w for w in re.findall(r"[\w']+", s) if len(w) < 4 or not any(same(stem(w.lower()), x) for x in toks))
     text = ' '.join(clean(s) for s in near)
     for k in ['rejected', 'started', 'finished']:
         if re.search(CUES3[k], text, re.I): return k

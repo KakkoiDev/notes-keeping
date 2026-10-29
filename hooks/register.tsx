@@ -2,11 +2,16 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
 import type { Notes, Opened, Pair, Select, Todo, View } from '../types'
+import type { ActorId } from './actors'
+import { actorLabel } from './actors'
+import type { Entry } from './logs'
+import { importLegacy, logRow, readRows } from './logs'
 import {
   AGENT_TAG,
   USER_TAG,
   addChat,
   addImportant,
+  addLogs,
   addSession,
   addTurn,
   addUpdate,
@@ -17,6 +22,7 @@ import {
   fileName,
   inject,
   injectPrevious,
+  logsHint,
   nameParts,
   newestFirst,
   projectName,
@@ -27,9 +33,10 @@ import {
   stampIds,
   summary,
   updateLine,
+  withoutLogs,
 } from './notes'
-import { EMPTY, bridgeMoves, candidateKeys, candidates, cleanLabel, context, cycle, cycleItem, diffSnapshot, format, idOf, isBackground, items, keyOf, labelPrompt, moved, parse, pin, reconcile, row, settle, shown, snapshotOf, withoutIds } from './todo'
-import type { Applied, Candidate, Item, Memory, Move, Status, Verdict } from './todo'
+import { EMPTY, bridgeMoves, candidateKeys, candidates, changeLine, cleanLabel, context, cycle, cycleItem, diffSnapshot, format, idOf, isBackground, items, keyOf, labelPrompt, moved, parse, pin, reconcile, row, settle, shown, snapshotOf, withIds, withoutIds } from './todo'
+import type { Applied, Candidate, Change, Item, Memory, Move, Status, Verdict } from './todo'
 import { TodoSlot, nextShown, rowId, rowKey, selectedOf, stepStatus } from './todos'
 import type { Landing } from './todos'
 
@@ -60,7 +67,9 @@ const LAYA_PYTHON = '.laya-venv/bin/python'
 const LAYA_MS = 60_000
 const LABEL_MODEL = 'haiku'
 const LABEL_MS = 20_000
-const LOG = 'todo-changes.log'
+// Where Laya and bridge moves were logged before the # Logs section; read once per notes file, never written.
+const LEGACY_LOG = 'todo-changes.log'
+const LOG_ROWS = 200
 // An executable under the session root, run only when present: `status` reports linked items' statuses, `notify` takes changes on stdin.
 const BRIDGE = 'config/notes-keeping-bridge'
 const BRIDGE_MS = 10_000
@@ -77,7 +86,7 @@ const USAGE = [
   '  replies                    open the panel at the queue: every reply editable, s moves all into the prompt',
   '  todo [sync]                show the todo list; sync runs Laya over the objectives and the last reply now',
   '  history [n|file]           list earlier notes; pick one to copy its objectives, updates and open todo items here',
-  `  show | hide                open or close the notes panel (also ${CHORD}) at the todo list; t todos, o objectives (u update, e editor), i important, c chat, q queue, h history, s send queue`,
+  `  show | hide                open or close the notes panel (also ${CHORD}) at the todo list; t todos, o objectives (u update, e editor), i important, c chat, q queue, h history, l logs, s send queue`,
   '  debug                      the selection poll: how often it ran, when last, the live selection, and why recent ones opened no pane',
   `${CHORD} works once ~/.claude/keybindings.json binds it: { "bindings": [{ "context": "Global", "bindings": { "${CHORD}": "${ACTION}" } }] }`,
   `${EDITOR_CHORD} in the update box opens the editor on the new update once it binds { "context": "PaneField", "bindings": { "${EDITOR_CHORD}": "${EDITOR_ACTION}" } }`,
@@ -264,15 +273,17 @@ async function runBridge($: EngineInterface, bridge: string, verb: 'status' | 'n
   return done.stdout
 }
 
-type Link = { status: Status | undefined; task: string }
+// by: who firstmate says set up the link, when it says.
+type Link = { status: Status | undefined; task: string; by?: string }
 
 // Every linked item by id, or by text key for a link made by text; status is undefined when the linked task has no state to report.
 async function linked($: EngineInterface, bridge: string, path: string): Promise<Record<string, Link>> {
-  const raw = JSON.parse(await runBridge($, bridge, 'status', path)) as Record<string, { status?: unknown; task?: unknown; id?: unknown }>
+  const raw = JSON.parse(await runBridge($, bridge, 'status', path)) as Record<string, { status?: unknown; task?: unknown; id?: unknown; by?: unknown }>
   const links: Record<string, Link> = {}
   for (const [text, link] of Object.entries(raw)) {
     const status = link.status === 'in-progress' || link.status === 'done' ? link.status : undefined
-    links[typeof link.id === 'string' ? link.id : keyOf(text)] = { status, task: typeof link.task === 'string' ? link.task : '' }
+    const task = typeof link.task === 'string' ? link.task : ''
+    links[typeof link.id === 'string' ? link.id : keyOf(text)] = typeof link.by === 'string' && link.by !== '' ? { status, task, by: link.by } : { status, task }
   }
   return links
 }
@@ -282,11 +293,31 @@ function linkOf(links: Record<string, Link>, item: Item): Link | undefined {
 }
 
 // Diffs the list against the last snapshot and stores the new one; called inside `locked` with the list as read and as written.
-async function snapshot($: EngineInterface, path: string, before: readonly Item[], after: readonly Item[]): Promise<string[]> {
+async function snapshot($: EngineInterface, path: string, before: readonly Item[], after: readonly Item[]): Promise<Change[]> {
   const saved = await $.store.get(snapshotKey(path))
   const changes = diffSnapshot(typeof saved === 'object' && saved !== null ? (saved as Record<string, Status>) : undefined, before, after)
   await $.store.set(snapshotKey(path), snapshotOf(after))
   return changes
+}
+
+// A change found in the file was written outside the plugin: its writer is unknown.
+function foundEntries(changes: readonly Change[], at: number): Entry[] {
+  return changes
+    .filter(change => change.isFound === true)
+    .map(change => ({ at, actor: 'unknown' as const, action: change.from === undefined ? ('added' as const) : ('status' as const), item: change.item, from: change.from, to: change.to }))
+}
+
+function foundLines(changes: readonly Change[]): string[] {
+  return changes.filter(change => change.isFound === true).map(change => changeLine(change, 'unknown'))
+}
+
+// The md with the entries under # Logs. The rows a file gets first bring along its rows from the old todo-changes.log.
+async function logged($: EngineInterface, path: string, md: string, entries: readonly Entry[]): Promise<string> {
+  if (entries.length === 0) return md
+  const legacy = `${await notesDir($)}/${LEGACY_LOG}`
+  const isFirst = withoutLogs(md) === md
+  const old = isFirst && (await $.fs.exists(legacy)) ? importLegacy(await readText($, legacy), path.split('/').pop() ?? '', items(sections(md).todo)) : []
+  return addLogs(md, [...old, ...entries.map(logRow)])
 }
 
 async function notify($: EngineInterface, bridge: string, path: string, changes: readonly string[]): Promise<void> {
@@ -298,17 +329,26 @@ async function notify($: EngineInterface, bridge: string, path: string, changes:
   }
 }
 
-// A captain's hand edit made while no todo run happens is noticed here.
+// The file this session is bound to, without taking a file a /clear carried over.
+async function keptPath($: EngineInterface): Promise<string | undefined> {
+  const path = await $.store.get(bindKey(await $.session.id()))
+  return typeof path === 'string' && (await $.fs.exists(path)) ? path : undefined
+}
+
+// A todo change made in the file outside the plugin while no todo run happens is noticed here, logged, and sent on.
 async function watchTodo($: EngineInterface): Promise<void> {
-  const bridge = await bridgeOf($)
-  if (bridge === undefined) return
-  const path = await boundPath($)
+  const path = await keptPath($)
   if (path === undefined) return
+  const bridge = await bridgeOf($)
   const changes = await locked(async () => {
-    const list = items(sections(await readText($, path)).todo)
-    return snapshot($, path, list, list)
+    const md = await readText($, path)
+    const list = items(sections(md).todo)
+    const found = await snapshot($, path, list, list)
+    const entries = foundEntries(found, await $.clock.now())
+    if (entries.length > 0) warn($, told('', await save($, path, await logged($, path, md, entries), 'log')))
+    return foundLines(found)
   })
-  await notify($, bridge, path, changes)
+  if (bridge !== undefined) await notify($, bridge, path, changes)
 }
 
 // Laya only picks among given answers, so the label comes from a small model through the session's own client.
@@ -321,20 +361,6 @@ async function askLabel($: EngineInterface, text: string): Promise<string | unde
   if (!isToldNoLabel) $.ui.toast(`notes-keeping todo: no label from ${LABEL_MODEL} (${reply.reason}); items show their text cut short.`)
   isToldNoLabel = true
   return undefined
-}
-
-// One line per status Laya or the bridge changed, committed with the file, so a change can be reviewed; a hand-set status it replaced says so.
-async function logMoves($: EngineInterface, path: string, moves: readonly Applied[], verdicts: Record<string, Verdict>, links: Record<string, Link>): Promise<void> {
-  const log = `${await notesDir($)}/${LOG}`
-  const when = stamp(await $.clock.now())
-  const rows = moves.map(move => {
-    const verdict = verdicts[move.key]
-    const link = links[move.key] ?? links[keyOf(move.text)]
-    const said = link !== undefined ? ` | firstmate ${link.task}` : verdict === undefined ? '' : ` | laya ${verdict.label} ${verdict.p.toFixed(2)}`
-    return `${when} ${path.split('/').pop()} | ${move.text} | ${move.from} -> ${move.to}${said}${move.isHandSet ? ' | replaced a hand-set status' : ''}`
-  })
-  const before = (await $.fs.exists(log)) ? await readText($, log) : ''
-  await $.fs.write(log, `${before}${rows.join('\n')}\n`)
 }
 
 // Items from the objectives and updates Laya or the code accepts, and status moves from the last reply.
@@ -363,19 +389,29 @@ async function runTodo($: EngineInterface, answer: string): Promise<void> {
   const statuses = answer.trim() === '' ? [] : open.map(item => ({ id: keyOf(item.text), text: item.text }))
   const laya = lines.length + statuses.length === 0 ? undefined : await askLaya($, { lines, statuses, answer })
   const add: Item[] = []
+  // Who added each new item, by its text key: the plugin for an item as written, Laya for a line it judged a task.
+  const adders: Record<string, ActorId> = {}
+  const addNotes: Record<string, string> = {}
   const seen: string[] = []
   const itemOf = (c: Candidate): Item => (c.id === undefined ? { status: 'todo', text: c.text } : { status: 'todo', text: c.text, id: c.id })
   for (const c of fresh) {
     const key = keyOf(c.text)
     if (isHad(c) || c.isSure) {
       seen.push(key)
-      if (!isHad(c)) add.push(itemOf(c))
+      if (!isHad(c)) {
+        add.push(itemOf(c))
+        adders[key] = 'plugin'
+      }
       continue
     }
     const p = laya?.lines[key]
     if (p === undefined) continue
     seen.push(key)
-    if (!isBackground(p)) add.push(itemOf(c))
+    if (!isBackground(p)) {
+      add.push(itemOf(c))
+      adders[key] = 'laya'
+      addNotes[key] = `task ${p.toFixed(2)}`
+    }
   }
   const set: Record<string, Move> = {}
   const decided: Record<string, Verdict> = {}
@@ -390,6 +426,13 @@ async function runTodo($: EngineInterface, answer: string): Promise<void> {
     set[key] = { from: item.status, to: next.status }
     decided[key] = { ...verdict, label: next.label, p: next.p }
   }
+  // Laya's own probability for the move, and the one the start cue lifted it to when that differs.
+  const said = (key: string): string => {
+    const verdict = decided[key]
+    if (verdict === undefined) return ''
+    const own = verdict.probs[verdict.label] ?? 0
+    return Math.abs(verdict.p - own) < 0.005 ? `${verdict.label} ${own.toFixed(2)}` : `${verdict.label} ${own.toFixed(2)}, ${verdict.p.toFixed(2)} with the ${verdict.label === 'started' ? 'start' : 'finish'} cue`
+  }
   const reported: Record<string, Status> = {}
   for (const item of list) {
     const status = linkOf(links, item)?.status
@@ -403,17 +446,35 @@ async function runTodo($: EngineInterface, answer: string): Promise<void> {
   const labeled = named.map(([key]) => key)
   const added = add.map(item => (labels[idOf(item)] === undefined ? item : { ...item, label: labels[idOf(item)] }))
   // The file may have changed while Laya ran: apply onto what is there now.
-  const { said, changes } = await locked(async () => {
+  const { warned, changes } = await locked(async () => {
     const latest = await readText($, path)
     const body = sections(latest).todo
     const out = reconcile(body, await readMemory($, path), { add: added, set, seen, labels, labeled, bridge: reported })
     await $.store.set(memoryKey(path), out.memory)
-    const changes = bridge === undefined ? [] : await snapshot($, path, items(body), items(out.body))
-    if (out.body === format(parse(body))) return { said: [], changes }
-    if (out.applied.length > 0) await logMoves($, path, out.applied, decided, links)
-    return { said: await save($, path, stampIds(setTodo(latest, out.body), items(out.body)), 'todo'), changes }
+    const written = items(out.body)
+    const found = await snapshot($, path, items(body), written)
+    const at = await $.clock.now()
+    const entries = foundEntries(found, at)
+    const lines = foundLines(found)
+    for (const change of found.filter(change => change.isFound !== true)) {
+      const key = keyOf(change.item.text)
+      entries.push({ at, actor: adders[key] ?? 'plugin', action: 'added', item: change.item, to: change.to, note: addNotes[key] })
+      lines.push(changeLine(change, adders[key] ?? 'plugin'))
+    }
+    for (const move of out.applied) {
+      const item = written.find(one => idOf(one) === move.key || keyOf(one.text) === keyOf(move.text)) ?? { status: move.to, text: move.text }
+      const link = links[move.key] ?? links[keyOf(move.text)]
+      const why = link === undefined ? said(move.key) : link.by === undefined ? link.task : `${link.task}, by ${link.by}`
+      const note = [why, ...(move.isHandSet ? ['replaced a hand-set status'] : [])].join(', ')
+      entries.push({ at, actor: link === undefined ? 'laya' : 'firstmate', action: 'status', item, from: move.from, to: move.to, note })
+      lines.push(changeLine({ item, from: move.from, to: move.to }, link === undefined ? 'laya' : `firstmate ${link.task}`))
+    }
+    const isSame = out.body === format(parse(body))
+    if (isSame && entries.length === 0) return { warned: [], changes: lines }
+    const todo = isSame ? latest : stampIds(setTodo(latest, out.body), written)
+    return { warned: await save($, path, await logged($, path, todo, entries), 'todo'), changes: lines }
   })
-  warn($, told('', said))
+  warn($, told('', warned))
   if (bridge !== undefined) await notify($, bridge, path, changes)
 }
 
@@ -435,20 +496,32 @@ async function syncTodo($: EngineInterface, answer: string): Promise<void> {
   if (next !== undefined) await syncTodo($, next)
 }
 
-// A click or Enter sets the next status, f and p the next or previous one. It counts as set by hand: the log says
-// so when Laya later changes it. A change that leaves the line as it was writes nothing.
+// A click or Enter sets the next status, f and p the next or previous one: the captain's, logged and sent as theirs.
+// It counts as hand-set: Laya moves it only at its higher floor. A change that leaves the line as it was writes nothing.
 async function clickItem($: EngineInterface, key: string, change: (status: Status) => Status = cycle): Promise<void> {
   const path = await boundPath($)
   if (path === undefined) return
   const bridge = await bridgeOf($)
   const changes = await locked(async () => {
     const md = await readText($, path)
-    const before = sections(md).todo
-    const body = cycleItem(before, key, change)
-    if (body === cycleItem(before, key, status => status)) return []
+    const before = items(sections(md).todo)
+    const body = cycleItem(sections(md).todo, key, change)
+    if (body === cycleItem(sections(md).todo, key, status => status)) return []
+    const after = items(body)
+    const isIt = (item: Item) => idOf(item) === key || keyOf(item.text) === key
+    const was = before.find(isIt)
+    const now = after.find(isIt)
     await $.store.set(memoryKey(path), pin(await readMemory($, path), key))
-    await save($, path, stampIds(setTodo(md, body), items(body)), 'todo')
-    return bridge === undefined ? [] : await snapshot($, path, items(body), items(body))
+    const found = await snapshot($, path, before, after)
+    const at = await $.clock.now()
+    const entries = foundEntries(found, at)
+    const lines = foundLines(found)
+    if (was !== undefined && now !== undefined) {
+      entries.push({ at, actor: 'captain', action: 'status', item: now, from: was.status, to: now.status })
+      lines.push(changeLine({ item: now, from: was.status, to: now.status }, 'captain'))
+    }
+    await save($, path, await logged($, path, stampIds(setTodo(md, body), after), entries), 'todo')
+    return lines
   })
   if (bridge !== undefined) await notify($, bridge, path, changes)
 }
@@ -478,25 +551,28 @@ async function listNotes($: EngineInterface): Promise<string[]> {
 }
 
 // Sets the objectives while they are empty; after that each text is an [UPDATE] under ## Updates.
-async function objectives($: EngineInterface, text: string): Promise<string> {
+async function objectives($: EngineInterface, text: string, actor: ActorId): Promise<string> {
   const { path, said } = await bound($)
-  const when = stamp(await $.clock.now())
+  const at = await $.clock.now()
+  const when = stamp(at)
   const { isSet, written } = await locked(async () => {
     const md = await readText($, path)
     const isSet = sections(md).objectives === ''
-    return { isSet, written: await save($, path, isSet ? setObjectives(md, text) : addUpdate(md, when, text), isSet ? 'objectives' : 'update') }
+    const out = isSet ? setObjectives(md, text) : addUpdate(md, when, text)
+    const entry: Entry = { at, actor, action: isSet ? 'objective' : 'update', note: text }
+    return { isSet, written: await save($, path, await logged($, path, out, [entry]), isSet ? 'objectives' : 'update') }
   })
   void syncTodo($, '')
   return told(isSet ? 'Objectives set.' : 'Objectives updated under ## Updates.', [...said, ...written])
 }
 
-async function init($: EngineInterface, args: string): Promise<string> {
+async function init($: EngineInterface, args: string, actor: ActorId): Promise<string> {
   const isNew = /^--new\b/.test(args)
   const text = args.replace(/^--new\b\s*/, '').trim()
   const current = await boundPath($)
   if (current !== undefined && !isNew) {
     if (text === '') return `This session already keeps ${current}. Run /notes-keeping init --new [objectives] to start a new file for it.`
-    return told(`This session keeps ${current}.`, [await objectives($, text)])
+    return told(`This session keeps ${current}.`, [await objectives($, text, actor)])
   }
   const { path, said } = await start($, text)
   return told(`Notes started: ${path}`, said)
@@ -511,23 +587,32 @@ async function todoCommand($: EngineInterface, args: string): Promise<string> {
 }
 
 // Copies a picked file's objectives, updates and todo items into this session's notes; the picked file is only read.
-async function attach($: EngineInterface, pick: string): Promise<{ previous: string; said: string[] }> {
+// The items it copies are logged as added by the actor who attached it.
+async function attach($: EngineInterface, pick: string, actor: ActorId): Promise<{ previous: string; said: string[] }> {
   const dir = await notesDir($)
   const previous = await readText($, `${dir}/${pick}`)
-  const said = await edit($, 'continue', text => carryOver(text, previous, pick))
-  // Lines the linked file's todo run already judged are not asked again here.
-  const path = await boundPath($)
-  if (path !== undefined) {
-    await locked(async () => {
-      const mine = await readMemory($, path)
-      const seen = [...new Set([...mine.seen, ...(await readMemory($, `${dir}/${pick}`)).seen])]
-      await $.store.set(memoryKey(path), { ...mine, seen })
-    })
-  }
+  const { path, said: started } = await bound($)
+  const said = await locked(async () => {
+    const md = await readText($, path)
+    const carried = carryOver(md, previous, pick)
+    const body = format(withIds(parse(sections(carried).todo)))
+    const out = stampIds(setTodo(carried, body), items(body))
+    const found = await snapshot($, path, items(sections(md).todo), items(body))
+    const at = await $.clock.now()
+    const copied: Entry[] = found
+      .filter(change => change.isFound !== true)
+      .map(change => ({ at, actor, action: 'added', item: change.item, to: change.to, note: `copied from ${pick}` }))
+    const entries = [...foundEntries(found, at), { at, actor, action: 'attach' as const, note: pick }, ...copied]
+    // Lines the linked file's todo run already judged are not asked again here.
+    const mine = await readMemory($, path)
+    const seen = [...new Set([...mine.seen, ...(await readMemory($, `${dir}/${pick}`)).seen])]
+    await $.store.set(memoryKey(path), { ...mine, seen })
+    return [...started, ...(await save($, path, await logged($, path, out, entries), 'continue'))]
+  })
   return { previous, said }
 }
 
-async function history($: EngineInterface, args: string): Promise<{ text: string; context?: string[] }> {
+async function history($: EngineInterface, args: string, actor: ActorId): Promise<{ text: string; context?: string[] }> {
   const current = await boundPath($)
   const names = (await listNotes($)).filter(name => current === undefined || !current.endsWith(`/${name}`))
   if (names.length === 0) return { text: 'No earlier notes.' }
@@ -546,7 +631,7 @@ async function history($: EngineInterface, args: string): Promise<{ text: string
   }
   const pick = /^\d+$/.test(args) ? names[Number(args) - 1] : names.find(name => name === args || name === `${args}.md`)
   if (pick === undefined) return { text: `No earlier notes match "${args}".` }
-  const { previous, said } = await attach($, pick)
+  const { previous, said } = await attach($, pick, actor)
   return {
     text: told(`Continuing ${pick}: its objectives, updates and open todo items are copied here; ${pick} is unchanged. The whole file is now in context.`, said),
     context: [inject(previous, `${dir}/${pick}`)],
@@ -883,17 +968,19 @@ export const register: Register = on => {
   })
 
   on('command.run', { command: NAME }, async ($, e) => {
+    // A command typed at the terminal or sent from the user's phone is the captain's; any other origin is not known to be.
+    const actor: ActorId = e.origin.kind === 'composer' || e.origin.kind === 'bridge' ? 'captain' : 'unknown'
     const trimmed = e.args.trim()
     const sub = trimmed.split(/\s+/)[0] ?? ''
     const rest = trimmed.slice(sub.length).trim()
     try {
       switch (sub) {
         case 'init':
-          return { text: await init($, rest) }
+          return { text: await init($, rest, actor) }
         case 'objectives':
         case 'update':
           if (rest === '') return { text: `Usage: /notes-keeping ${sub} <text>` }
-          return { text: await objectives($, rest) }
+          return { text: await objectives($, rest, actor) }
         case 'important': {
           const text = rest || (await selected($))
           if (text === '') return { text: 'Nothing to keep: give text or select some first.' }
@@ -912,7 +999,7 @@ export const register: Register = on => {
         case 'todo':
           return { text: await todoCommand($, rest) }
         case 'history':
-          return await history($, rest)
+          return await history($, rest, actor)
         case 'show':
           await showNotes($)
           return {}
@@ -973,7 +1060,7 @@ export const register: Register = on => {
     // The whole file carries the todo list; every other prompt carries the list alone.
     const isWhole = isResumed || isCompacted || (typeof seen === 'string' && seen !== head)
     const todo = isWhole || e.isMeta === true ? undefined : context(sections(md).todo)
-    const added = isWhole ? [inject(md, path)] : todo === undefined ? [] : [todo]
+    const added = isWhole ? [inject(md, path)] : todo === undefined ? [] : [`${todo}\n${logsHint(path)}`]
     // The file the notes continue: once after a panel attach, and again with the whole notes file.
     // Only a notes file of the folder: the line can be edited by hand to name any path.
     const attachedAt = attachedKey(await $.session.id())
@@ -1123,6 +1210,7 @@ export const register: Register = on => {
         {tab('chat', 'c', 'Chat', 'chat')}
         {tab('queue', 'q', `Queue (${list.length})`, 'queue')}
         {tab('history', 'h', 'History', 'history')}
+        {tab('logs', 'l', 'Logs', 'logs')}
         <Button key="send" plain hotkey="s" label="Send queue" onPress={() => sendQueue($)} />
         {at === 'todos' ? null : <Button key="view:back" plain hotkey="b" label="Back" onPress={back} />}
       </Box>
@@ -1197,7 +1285,7 @@ export const register: Register = on => {
                 hotkey="y"
                 label="Yes, attach"
                 onPress={async () => {
-                  warn($, told('', (await attach($, step.name)).said))
+                  warn($, told('', (await attach($, step.name, 'captain')).said))
                   await $.store.set(attachedKey(await $.session.id()), true)
                   $.ui.toast(`Attached ${step.name}: its objectives, updates and open todo items are copied here; the original is unchanged.`)
                   await update($, picked, () => null)
@@ -1310,7 +1398,7 @@ export const register: Register = on => {
               await update($, draft, () => value)
             }}
             onSubmit={async (value: string) => {
-              if (value.trim() !== '') warn($, await objectives($, value.trim()))
+              if (value.trim() !== '') warn($, await objectives($, value.trim(), 'captain'))
               await update($, editing, () => false)
             }}
           />
@@ -1346,6 +1434,21 @@ export const register: Register = on => {
           )}
         </Box>
       )
+    } else if (at === 'logs') {
+      const all = readRows(s?.logs ?? '').reverse()
+      content = (
+        <Box key="content" flexDirection="column">
+          <Text bold>Logs ({all.length}), newest first</Text>
+          {all.length === 0 ? <Text dimColor>No actions logged yet.</Text> : null}
+          {all.slice(0, LOG_ROWS).map((one, i) => (
+            <Text key={`log:${i}`} wrap="truncate-end">
+              {[one.time.replace('T', ' ').replace(/Z$/, ''), actorLabel(one.actor), one.item.replace(/^id:[a-z0-9]+ /, ''), one.change === '-' ? one.note : one.change].join('  ')}
+            </Text>
+          ))}
+          {all.length > LOG_ROWS ? <Text dimColor>{`(${all.length - LOG_ROWS} older in the # Logs section of the notes file)`}</Text> : null}
+          {hint('Read-only. Times are UTC. b goes back')}
+        </Box>
+      )
     } else if (at === 'important') {
       content = body('Important', s?.important ?? '')
     } else if (at === 'chat') {
@@ -1355,7 +1458,7 @@ export const register: Register = on => {
         <Box key="content" flexDirection="column">
           {slot}
           {current === null ? <Text dimColor>No notes for this session yet; the first write starts them.</Text> : <Text dimColor wrap="truncate-start">{current.path}</Text>}
-          {hint('t todos, o objectives (u adds an update there), i important, c chat, q queue, h history, s send queue, Esc closes')}
+          {hint('t todos, o objectives (u adds an update there), i important, c chat, q queue, h history, l logs, s send queue, Esc closes')}
         </Box>
       )
     }

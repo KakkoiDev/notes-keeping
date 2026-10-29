@@ -7,6 +7,8 @@ export const UPDATES = '## Updates'
 export const TODO = '# Todo'
 export const IMPORTANT = '# Important'
 export const CHAT = '# Chat'
+// Last in the file: one row per action, kept out of Claude's context.
+export const LOGS = '# Logs'
 export const AGENT_TAG = '[AI_AGENT]'
 export const USER_TAG = '[USER]'
 export const CONTINUATION = 'Continuation of:'
@@ -14,7 +16,7 @@ export const SESSIONS = 'Sessions:'
 
 // Headings a file may open with: this mod's, a hand-written one, and the one files before Objectives used.
 const OBJECTIVE_HEADINGS = [OBJECTIVES, '# Goals', '# Initial Prompt']
-const HEADINGS = [...OBJECTIVE_HEADINGS, UPDATES, TODO, IMPORTANT, CHAT]
+const HEADINGS = [...OBJECTIVE_HEADINGS, UPDATES, TODO, IMPORTANT, CHAT, LOGS]
 const NAME = /^(\d{4})-(\d{2})-(\d{2})-(\d{2})-(\d{2})-(.+)-([0-9a-zA-Z]{8})(?:-(\d+))?\.md$/
 const HEAD_LINE = new RegExp(`^(${CONTINUATION}|${SESSIONS}) (.*)(?:\\n+|$)`)
 
@@ -126,10 +128,14 @@ function ensure(md: string): string {
     out = `${out.slice(0, cut).trimEnd()}\n\n${UPDATES}\n\n${out.slice(cut)}`.trimEnd()
   }
   if (lineStart(out, IMPORTANT) < 0) {
-    const cut = lineStart(out, CHAT) < 0 ? out.length : lineStart(out, CHAT)
+    const at = [CHAT, LOGS].map(h => lineStart(out, h)).filter(i => i >= 0)
+    const cut = at.length === 0 ? out.length : Math.min(...at)
     out = `${out.slice(0, cut).trimEnd()}\n\n${IMPORTANT}\n\n${out.slice(cut)}`.trimEnd()
   }
-  if (lineStart(out, CHAT) < 0) out = `${out}\n\n${CHAT}`
+  if (lineStart(out, CHAT) < 0) {
+    const cut = lineStart(out, LOGS) < 0 ? out.length : lineStart(out, LOGS)
+    out = `${out.slice(0, cut).trimEnd()}\n\n${CHAT}\n\n${out.slice(cut)}`.trimEnd()
+  }
   return `${out}\n`
 }
 
@@ -182,13 +188,13 @@ export function chatPair(agent: string, user: string): string {
 }
 
 export function addChat(md: string, agent: string, user: string): string {
-  return appendTo(md, CHAT, [], chatPair(agent, user))
+  return appendTo(md, CHAT, [LOGS], chatPair(agent, user))
 }
 
 // One turn that carried replies: each pair, then the message the user typed with them.
 export function addTurn(md: string, pairs: readonly { agent: string; user: string }[], message: string): string {
   const blocks = pairs.map(pair => chatPair(pair.agent, pair.user))
-  return appendTo(md, CHAT, [], [...blocks, `${USER_TAG} ${message.trim()}`].join('\n\n'))
+  return appendTo(md, CHAT, [LOGS], [...blocks, `${USER_TAG} ${message.trim()}`].join('\n\n'))
 }
 
 function readObjectives(doc: string): Initial {
@@ -307,7 +313,8 @@ export function sections(md: string): Sections {
     updates: cut(UPDATES, [TODO, IMPORTANT, CHAT]),
     todo: cut(TODO, [IMPORTANT, CHAT]),
     important: cut(IMPORTANT, [CHAT]),
-    chat: cut(CHAT, []),
+    chat: cut(CHAT, [LOGS]),
+    logs: cut(LOGS, []),
   }
 }
 
@@ -316,10 +323,27 @@ export function summary(md: string): string {
   return first?.trim() ?? '(empty)'
 }
 
+// Rows go under # Logs, which is opened at the end of the file by the first one.
+export function addLogs(md: string, rows: readonly string[]): string {
+  if (rows.length === 0) return md
+  const doc = ensure(md)
+  if (lineStart(doc, LOGS) < 0) return `${doc.trimEnd()}\n\n${LOGS}\n\n${rows.join('\n')}\n`
+  return `${doc.trimEnd()}\n${rows.join('\n')}\n`
+}
+
+export function withoutLogs(md: string): string {
+  const start = lineStart(md, LOGS)
+  return start < 0 ? md : md.slice(0, start)
+}
+
+export function logsHint(path: string): string {
+  return `Action log: the ${LOGS} section of ${path} holds who (human or AI agent) created or changed each objective and todo, and when. It is not in this context: read it when asked about the history of actions, a chain of events, or who changed a status.`
+}
+
 export function inject(md: string, path: string): string {
-  return `Session notes kept by notes-keeping: ${path}\nThe user writes this file; you never edit it.\n\n${md.trimEnd()}`
+  return `Session notes kept by notes-keeping: ${path}\nThe user writes this file; you never edit it.\n${logsHint(path)}\n\n${withoutLogs(md).trimEnd()}`
 }
 
 export function injectPrevious(md: string, path: string): string {
-  return `Previous session's notes, attached to this session's notes as ${CONTINUATION} ${path}\nRead only: the context of the work this session continues; you never edit it.\n\n${md.trimEnd()}`
+  return `Previous session's notes, attached to this session's notes as ${CONTINUATION} ${path}\nRead only: the context of the work this session continues; you never edit it.\n\n${withoutLogs(md).trimEnd()}`
 }

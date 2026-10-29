@@ -12,20 +12,21 @@ export type Verdict = { label: string; p: number; probs: Record<string, number> 
 export type Decision = { status: Status; label: string; p: number }
 // What the todo list remembers between runs: candidate lines already judged, the status the AI last wrote
 // per item, the items whose status the captain set (by hand or click), which the log flags when Laya changes them,
-// the items a label was asked for, each asked once, and the status the bridge last reported per linked item.
+// the items a label was asked for, each asked once, the status the bridge last reported per linked item, and the status
+// the captain clicked per item, which Laya leaves alone while the item keeps it.
 export type Memory = { seen: string[]; ai: Record<string, Status>; pins: string[]; labeled: string[]; bridge: Record<string, Status> }
 
 export const STATUSES: readonly Status[] = ['todo', 'in-progress', 'done', 'declined']
 export const EMPTY: Memory = { seen: [], ai: {}, pins: [], labeled: [], bridge: {} }
 // A line is dropped as background only when Laya is this sure it is not a task.
 export const BACKGROUND_FLOOR = 0.8
-// A status moves when Laya, with the reply's cue added, reaches CHANGE_FLOOR on the option the cue names, or CUELESS_FLOOR
-// on any other option; a status the captain set by hand needs HAND_FLOOR. Laya alone is not calibrated: its confidence
-// did not rise with its precision.
+// A status moves to the one a start or finish cue in the reply names when Laya, with the cue added, reaches CHANGE_FLOOR,
+// and to the other at CUELESS_FLOOR. A status set outside the plugin needs HAND_FLOOR. Laya alone is not calibrated: its
+// confidence did not rise with its precision.
 export const CHANGE_FLOOR = 0.5
 export const CUELESS_FLOOR = 0.9
 export const HAND_FLOOR = 0.9
-// How many nats a cue word in the reply adds to the option it names.
+// How many nats a start or finish cue in the reply adds to its option.
 const CUE_WEIGHT = 8
 
 const MARKS: Record<Status, string> = { todo: ' ', 'in-progress': '~', done: 'x', declined: '-' }
@@ -369,7 +370,8 @@ export function mentions(item: string, answer: string, siblings: readonly string
 }
 
 // The cue the reply gives for this item, read only from the sentences about it and the ones that carry on from them,
-// with the item's own words removed so that "skipped-move counter" does not read as a refusal.
+// with the item's own words (four letters or more, as tokens are) removed so that "skipped-move counter" does not read
+// as a refusal.
 function cueFor(item: string, answer: string, siblings: readonly string[]): string | undefined {
   const sentences = answer.split(/(?<=[.!?。！？])\s+|\n+|;\s+/).filter(s => s.trim() !== '')
   const about = sentences.map(s => mentions(item, s, siblings))
@@ -377,7 +379,7 @@ function cueFor(item: string, answer: string, siblings: readonly string[]): stri
   const own = tokensIn(wordsOf(siblings), item)
   const text = sentences
     .filter((_, i) => about[i] || (i > 0 && about[i - 1] && !other[i]))
-    .map(s => (s.match(/[\p{L}\p{N}_']+/gu) ?? []).filter(word => ![...own].some(token => same(stem(word.toLowerCase()), token))).join(' '))
+    .map(s => (s.match(/[\p{L}\p{N}_']+/gu) ?? []).filter(word => word.length < 4 || ![...own].some(token => same(stem(word.toLowerCase()), token))).join(' '))
     .join(' ')
   return CUES.find(([, rx]) => rx.test(text))?.[0]
 }
@@ -393,16 +395,18 @@ export function isBackground(pTask: number): boolean {
   return 1 - pTask >= BACKGROUND_FLOOR
 }
 
-// The status a reply moves an item to, or undefined to leave it. Statuses only move forward.
+// The status a reply moves an item to, or undefined to leave it. Statuses only move forward, and never to declined: a
+// refusal cue only keeps the other cues from counting, and only the captain or firstmate declines an item.
 export function moved(item: Item, answer: string, verdict: Verdict | undefined, siblings: readonly string[] = [], isHandSet = false): Decision | undefined {
   if (verdict === undefined || !mentions(item.text, answer, siblings)) return undefined
-  const cue = cueFor(item.text, answer, siblings)
+  const found = cueFor(item.text, answer, siblings)
+  const cue = found === 'rejected' ? undefined : found
   const odds = posterior(verdict.probs, cue)
   const label = Object.keys(odds).reduce((best, key) => ((odds[key] ?? 0) > (odds[best] ?? 0) ? key : best))
   const next = REPLY[label]
   const p = odds[label] ?? 0
   const floor = Math.max(label === cue ? CHANGE_FLOOR : CUELESS_FLOOR, isHandSet ? HAND_FLOOR : 0)
-  if (next === undefined || RANK[next] <= RANK[item.status] || p < floor) return undefined
+  if (next === undefined || next === 'declined' || RANK[next] <= RANK[item.status] || p < floor) return undefined
   return { status: next, label, p }
 }
 
@@ -505,26 +509,32 @@ export function snapshotOf(list: readonly Item[]): Record<string, Status> {
   return Object.fromEntries(list.map(item => [idOf(item), item.status]))
 }
 
-function tagged(item: Item, line: string): string {
+// A status change, or an added item when from is undefined. isFound: found in the file, so made outside the plugin.
+export type Change = { item: Item; from?: Status; to: Status; isFound?: boolean }
+
+// A line the bridge sends on: the actor in parentheses after a status change, the item's id when it has one.
+export function changeLine(change: Change, actor: string): string {
+  const { item } = change
+  const line = change.from === undefined ? `+ [${MARKS[change.to]}] ${item.text}` : `${item.text}: ${change.from} -> ${change.to} (${actor})`
   return item.id === undefined ? line : `${line} [id:${item.id}]`
 }
 
-// What changed since the plugin last wrote the snapshot. `before` is the list as found, so a status that differs there
-// was set outside the plugin (by the captain); `after` adds the items this write added. Moves the plugin made are not
-// changes. With no snapshot yet nothing is reported. A line names the item's id when it has one.
-export function diffSnapshot(snapshot: Readonly<Record<string, Status>> | undefined, before: readonly Item[], after: readonly Item[]): string[] {
+// What changed since the plugin last wrote the snapshot. `before` is the list as found, so a status that differs there,
+// or an item new there, was written outside the plugin; `after` adds the items this write added. Moves the plugin made
+// are not changes. With no snapshot yet nothing is reported.
+export function diffSnapshot(snapshot: Readonly<Record<string, Status>> | undefined, before: readonly Item[], after: readonly Item[]): Change[] {
   if (snapshot === undefined) return []
-  const out: string[] = []
+  const out: Change[] = []
   const found = new Set<string>()
   for (const item of before) {
     found.add(idOf(item))
     found.add(keyOf(item.text))
     const was = pick(snapshot, item)
-    if (was === undefined) out.push(tagged(item, `+ [${MARKS[item.status]}] ${item.text}`))
-    else if (was !== item.status) out.push(tagged(item, `${item.text}: ${was} -> ${item.status} (captain)`))
+    if (was === undefined) out.push({ item, to: item.status, isFound: true })
+    else if (was !== item.status) out.push({ item, from: was, to: item.status, isFound: true })
   }
   for (const item of after) {
-    if (!found.has(idOf(item)) && !found.has(keyOf(item.text)) && pick(snapshot, item) === undefined) out.push(tagged(item, `+ [${MARKS[item.status]}] ${item.text}`))
+    if (!found.has(idOf(item)) && !found.has(keyOf(item.text)) && pick(snapshot, item) === undefined) out.push({ item, to: item.status, isFound: false })
   }
   return out
 }

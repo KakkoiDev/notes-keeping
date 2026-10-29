@@ -2,7 +2,8 @@ import { expect, mock, test } from 'claude-code/testing'
 import type { On, RenderElement } from 'claude-code'
 import type { Engine } from 'claude-code/testing'
 import { nextStatus } from '../hooks/todos'
-import { context, idFor, withoutIds } from '../hooks/todo'
+import { context, idFor, items, withoutIds } from '../hooks/todo'
+import { sections } from '../hooks/notes'
 
 const HOME = '/home/me'
 const ROOT = '/work/firstmate'
@@ -16,12 +17,18 @@ const PYTHON = `${HOME}/.laya-venv/bin/python`
 
 // An item line or its source line as written, with the id the plugin gives it; the text without ids, for assertions ids are not part of.
 const tag = (text: string) => `${text} <!-- id:${idFor(text, new Set())} -->`
+// The fake clock's time as a log row writes it, and a log row's item cell.
+const UTC = new Date(2026, 9, 26, 10, 58).toISOString().replace(/\.\d{3}Z$/, 'Z')
+// The same after one refresh tick.
+const TICK = new Date(2026, 9, 26, 10, 58, 5).toISOString().replace(/\.\d{3}Z$/, 'Z')
+const cell = (text: string) => `id:${idFor(text, new Set())} ${text}`
+const logsOf = (md: string | undefined) => sections(md ?? '').logs.split('\n').filter(line => line !== '')
 const bare = (text: string | undefined) => withoutIds(text ?? '')
 
 type Ask = { lines: { id: string; text: string }[]; statuses: { id: string; text: string }[]; answer: string }
 const BRIDGE = `${ROOT}/config/notes-keeping-bridge`
 // What the fake bridge reports for status, and the change lines each notify sent.
-const bridge: { links: Record<string, { status: string | null; task: string; id?: string }>; notified: string[]; calls: string[] } = { links: {}, notified: [], calls: [] }
+const bridge: { links: Record<string, { status: string | null; task: string; id?: string; by?: string }>; notified: string[]; calls: string[] } = { links: {}, notified: [], calls: [] }
 // What the fake Laya answers; left undefined, the call fails.
 const laya: { answer: ((ask: Ask) => unknown) | undefined; asks: Ask[] } = { answer: undefined, asks: [] }
 // What the fake label model answers per prompt; left undefined, the call fails as an API error.
@@ -253,6 +260,16 @@ test('init, objectives, update and important write the session notes file and co
       '',
       '# Chat',
       '',
+      '# Logs',
+      '',
+      `- ${UTC} | captain | objective | - | - | Plan the day`,
+      `- ${UTC} | captain | update | - | - | Change of plan`,
+      `- ${UTC} | captain | update | - | - | Later goal`,
+      `- ${UTC} | plugin | added | ${cell('Change of plan')} | none -> todo`,
+      `- ${UTC} | plugin | added | ${cell('Later goal')} | none -> todo`,
+      `- ${UTC} | captain | update | - | - | Via init`,
+      `- ${UTC} | plugin | added | ${cell('Via init')} | none -> todo`,
+      '',
     ].join('\n'),
   )
   expect(commits(git).filter(subject => !subject.startsWith('todo:'))).toEqual([
@@ -437,7 +454,7 @@ test('history lists earlier notes of every project newest first and continues th
   expect(picked.text).toContain('Continuing 2026-10-24-09-00-firstmate-11111111.md')
   expect(picked.context?.[0]).toContain(`Session notes kept by notes-keeping: ${old}`)
   expect(picked.context?.[0]).toContain((fs[old] ?? 'missing').trimEnd())
-  expect(fs[NOW]?.startsWith(`# Objectives\n\nContinuation of: 2026-10-24-09-00-firstmate-11111111.md\n\nSessions: ${SESSION}\n\nOld plan\nA deleted line\n\nToday plan\n\n## Updates\n\n[UPDATE] 2026-10-24-10-00\nold change\n\n# Todo\n\n- [~] old change\n\n# Important`)).toBe(true)
+  expect(bare(fs[NOW]).startsWith(`# Objectives\n\nContinuation of: 2026-10-24-09-00-firstmate-11111111.md\n\nSessions: ${SESSION}\n\nOld plan\nA deleted line\n\nToday plan\n\n## Updates\n\n[UPDATE] 2026-10-24-10-00\nold change\n\n# Todo\n\n- [~] old change\n\n# Important`)).toBe(true)
   expect(fs[NOW]).not.toContain('shipped')
   fs[PYTHON] = ''
   fakeLaya()
@@ -510,6 +527,11 @@ test('the panel History view lists other notes newest first; Enter previews one 
   expect(fs[BOUND]).not.toContain('dropped')
   expect(fs[BOUND]).toContain('The plan')
   expect(ui.toasts.at(-1)).toContain('the original is unchanged')
+  expect(logsOf(fs[BOUND]).slice(-3)).toEqual([
+    `- ${UTC} | captain | attach | - | - | 2026-10-24-09-00-firstmate-11111111.md`,
+    `- ${UTC} | captain | added | ${cell('old change')} | none -> in-progress | copied from 2026-10-24-09-00-firstmate-11111111.md`,
+    `- ${UTC} | captain | added | ${cell('not yet')} | none -> todo | copied from 2026-10-24-09-00-firstmate-11111111.md`,
+  ])
   await pane.unmount()
 })
 
@@ -1426,6 +1448,7 @@ test('the panel opens on the Todos view, t brings it back, and the other views c
     'view:chat',
     'view:queue',
     'view:history',
+    'view:logs',
     'send',
     'show:todo',
     'show:in-progress',
@@ -1435,8 +1458,8 @@ test('the panel opens on the Todos view, t brings it back, and the other views c
     'status:next',
     'status:prev',
   ])
-  expect(await pane.find({ type: 'Text', text: 't todos, o objectives (u adds an update there), i important, c chat, q queue, h history, s send queue, Esc closes' })).toBeDefined()
-  for (const at of ['view:objectives', 'view:important', 'view:chat', 'view:queue']) {
+  expect(await pane.find({ type: 'Text', text: 't todos, o objectives (u adds an update there), i important, c chat, q queue, h history, l logs, s send queue, Esc closes' })).toBeDefined()
+  for (const at of ['view:objectives', 'view:important', 'view:chat', 'view:queue', 'view:logs']) {
     await pane.press({ key: at })
     expect(await pane.find({ key: 'todo:ship it' })).toBeUndefined()
     expect(await pane.find({ type: 'Text', text: 'Todo' })).toBeUndefined()
@@ -1500,7 +1523,7 @@ test('the replies command opens the panel at the queue view', async ($, on) => {
   const pane = await $.ui.mount({ ...NOTES_PANE, surface: 'terminal' })
   expect(await pane.find({ key: 'reply:0' })).toBeDefined()
   expect((await run($, '')).text).toContain('open the panel at the queue: every reply editable')
-  expect((await run($, '')).text).toContain('t todos, o objectives (u update, e editor), i important, c chat, q queue, h history, s send queue')
+  expect((await run($, '')).text).toContain('t todos, o objectives (u update, e editor), i important, c chat, q queue, h history, l logs, s send queue')
   await pane.unmount()
 })
 
@@ -1674,7 +1697,7 @@ test('at the end of a turn Laya reads the reply: a reply that names an item and 
 
 const LOG = `${DIR}/todo-changes.log`
 
-test('Laya also updates a status the captain set by hand, above a higher floor, and each change is logged', async ($, on) => {
+test('Laya also updates a status set by a hand edit of the file, above a higher floor; the edit is logged as an unknown writer, each move as Laya with its own probability', async ($, on) => {
   const fs: Fs = { [BOUND]: setTodoFile('- [ ] Add a ctrl+q toggle\n- [ ] Write the docs\n- [ ] Rename the pane\n- [x] Fix the flicker'), [PYTHON]: '' }
   const { git } = engine(on, fs, { ...SESSION_BOUND })
   fakeLaya({
@@ -1695,13 +1718,14 @@ test('Laya also updates a status the captain set by hand, above a higher floor, 
   expect(bare(fs[BOUND])).toContain('- [x] Add a ctrl+q toggle\n- [x] Write the docs\n- [~] Rename the pane\n- [x] Fix the flicker')
   expect(laya.asks.at(-1)?.statuses.map(status => status.id)).toEqual(expect.arrayContaining(['add a ctrl+q toggle', 'write the docs', 'rename the pane']))
   expect(laya.asks.at(-1)?.statuses.map(status => status.id)).not.toContain('fix the flicker')
-  expect(fs[LOG]).toBe(
-    [
-      `2026-10-26-10-58 ${BOUND.split('/').pop()} | Add a ctrl+q toggle | todo -> done | laya finished 0.96`,
-      `2026-10-26-10-58 ${BOUND.split('/').pop()} | Write the docs | in-progress -> done | laya finished 0.97 | replaced a hand-set status`,
-      '',
-    ].join('\n'),
-  )
+  expect(logsOf(fs[BOUND])).toEqual([
+    `- ${UTC} | unknown | status | ${cell('Write the docs')} | todo -> in-progress`,
+    `- ${UTC} | unknown | status | ${cell('Rename the pane')} | todo -> in-progress`,
+    `- ${UTC} | laya | status | ${cell('Add a ctrl+q toggle')} | todo -> done | finished 0.96`,
+    `- ${UTC} | laya | status | ${cell('Write the docs')} | in-progress -> done | finished 0.97, replaced a hand-set status`,
+  ])
+  // todo-changes.log is no longer written.
+  expect(fs[LOG]).toBeUndefined()
   // The log is committed with the write that changed the statuses.
   expect(git.calls.filter(argv => argv[3] === 'add').length).toBeGreaterThan(0)
   expect(commits(git).at(-1)).toBe(`todo: ${BOUND.split('/').pop()}`)
@@ -1751,7 +1775,7 @@ test('every prompt carries the todo list; a prompt that carries the whole file d
   }
 })
 
-test('a click on a todo item in the notes pane sets the next status and writes the file; Laya may change it afterwards, logged as hand-set', async ($, on) => {
+test('a click on a todo item in the notes pane sets the next status, writes the file and logs it as the captain; Laya still manages it, logged as Laya', async ($, on) => {
   const fs: Fs = { [BOUND]: setTodoFile('- [ ] Add a ctrl+q toggle'), [PYTHON]: '' }
   const { git } = engine(on, fs, { ...SESSION_BOUND })
   fakeLaya({ 'add a ctrl+q toggle': { label: 'finished', p: 0.96 } })
@@ -1771,11 +1795,15 @@ test('a click on a todo item in the notes pane sets the next status and writes t
   expect(seen).toEqual(['~', 'x', '-', ' '])
   expect(commits(git).filter(subject => subject.startsWith('todo:'))).toHaveLength(launched + 4)
 
-  // Clicked back to todo, it is the captain's; a sure reply that names it still moves it, and the log says so.
+  expect(logsOf(fs[BOUND])).toEqual(
+    ['todo -> in-progress', 'in-progress -> done', 'done -> declined', 'declined -> todo'].map(change => `- ${UTC} | captain | status | ${cell('Add a ctrl+q toggle')} | ${change}`),
+  )
+
+  // Clicked back to todo, it is the captain's; a sure reply that names it still moves it, and the log says it was Laya.
   await complete($, 'The ctrl+q toggle was reworked.')
   await flush()
   expect(bare(fs[BOUND])).toContain('- [x] Add a ctrl+q toggle')
-  expect(fs[LOG]).toContain('| Add a ctrl+q toggle | todo -> done | laya finished 0.96 | replaced a hand-set status')
+  expect(logsOf(fs[BOUND]).at(-1)).toBe(`- ${UTC} | laya | status | ${cell('Add a ctrl+q toggle')} | todo -> done | finished 0.96, replaced a hand-set status`)
   await pane.unmount()
 })
 
@@ -1802,7 +1830,7 @@ test('a linked item follows its firstmate task: the bridge moves it to in-progre
   await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: false })
   await flush()
   expect(bare(fs[BOUND])).toContain('- [~] Review this pr\n- [ ] Write the docs')
-  expect(fs[LOG]).toContain('| Review this pr | todo -> in-progress | firstmate pr-review')
+  expect(logsOf(fs[BOUND])).toContain(`- ${UTC} | firstmate | status | id:${idFor('Review this pr', new Set())} Review this pr | todo -> in-progress | pr-review`)
 
   laya.asks.length = 0
   await complete($, 'Finished the review this PR needed; started writing the docs.')
@@ -1849,7 +1877,7 @@ test('a linked item with no task state is left alone and still kept from Laya', 
   expect(laya.asks.at(-1)?.answer).toBe('The review of this PR is finished.')
 })
 
-test('the bridge is told of new items and of a captain click, not of a move Laya or the bridge made', async ($, on) => {
+test('the bridge is told of new items and of every status change with who made it: Laya, firstmate, the captain', async ($, on) => {
   const fs: Fs = { [BOUND]: setTodoFile('- [ ] Add a ctrl+q toggle\n- [ ] Review this pr'), [PYTHON]: '', [BRIDGE]: '' }
   engine(on, fs, { ...SESSION_BOUND })
   fakeLaya({ 'add a ctrl+q toggle': { label: 'finished', p: 0.9 } })
@@ -1865,7 +1893,10 @@ test('the bridge is told of new items and of a captain click, not of a move Laya
   await complete($, 'Nothing.')
   await flush()
   expect(bare(fs[BOUND])).toContain('- [~] Review this pr')
-  expect(bridge.notified.slice(seeded)).toEqual([])
+  expect(bridge.notified.slice(seeded)).toEqual([
+    `Add a ctrl+q toggle: todo -> done (laya) [id:${idFor('Add a ctrl+q toggle', new Set())}]\n`,
+    `Review this pr: todo -> in-progress (firstmate pr-review) [id:${idFor('Review this pr', new Set())}]\n`,
+  ])
 
   await run($, 'update Ship the bridge')
   await flush()
@@ -1888,10 +1919,19 @@ test('a hand edit made between turns reaches the bridge within one refresh', asy
   fs[BOUND] = (fs[BOUND] ?? '').replace(`- [ ] ${tag('Add a ctrl+q toggle')}`, `- [x] ${tag('Add a ctrl+q toggle')}\n- [ ] Typed by hand`)
   await clock.advance(5_000)
   await flush()
-  expect(bridge.notified).toEqual([`Add a ctrl+q toggle: todo -> done (captain) [id:${idFor('Add a ctrl+q toggle', new Set())}]\n+ [ ] Typed by hand\n`])
+  expect(bridge.notified).toEqual([`Add a ctrl+q toggle: todo -> done (unknown) [id:${idFor('Add a ctrl+q toggle', new Set())}]\n+ [ ] Typed by hand\n`])
+  expect(logsOf(fs[BOUND])).toEqual([
+    `- ${TICK} | unknown | status | ${cell('Add a ctrl+q toggle')} | todo -> done`,
+    `- ${TICK} | unknown | added | Typed by hand | none -> todo`,
+  ])
+  // Writing the log rows is not itself a change: the next ticks send and log nothing and write nothing.
+  const written = fs[BOUND]
+  await clock.advance(5_000)
+  await flush()
   await clock.advance(5_000)
   await flush()
   expect(bridge.notified).toHaveLength(1)
+  expect(fs[BOUND]).toBe(written)
 })
 
 test('an item linked by id keeps its link and its bridge status when the captain edits its text', async ($, on) => {
@@ -1911,11 +1951,12 @@ test('an item linked by id keeps its link and its bridge status when the captain
   expect(fs[BOUND]).toContain('- [ ] Review the PR again, with diagrams <!-- id:ab12cd3 -->')
   expect(laya.asks.flatMap(ask => ask.statuses).map(status => status.text)).not.toContain('Review the PR again, with diagrams')
 
-  bridge.links = { 'id:ab12cd3': { status: 'done', task: 'pr-review', id: 'ab12cd3' } }
+  bridge.links = { 'id:ab12cd3': { status: 'done', task: 'pr-review', id: 'ab12cd3', by: 'crew-7' } }
   await complete($, 'Nothing.')
   await flush()
   expect(fs[BOUND]).toContain('- [x] Review the PR again, with diagrams <!-- id:ab12cd3 -->')
-  expect(fs[LOG]).toContain('| Review the PR again, with diagrams | todo -> done | firstmate pr-review')
+  expect(logsOf(fs[BOUND])).toContain(`- ${UTC} | unknown | status | id:ab12cd3 Review the PR again, with diagrams | in-progress -> todo`)
+  expect(logsOf(fs[BOUND]).at(-1)).toBe(`- ${UTC} | firstmate | status | id:ab12cd3 Review the PR again, with diagrams | todo -> done | pr-review, by crew-7, replaced a hand-set status`)
 })
 
 test('an objective line edited after it got its id stays linked to its item: no second item, and the item keeps its text', async ($, on) => {
@@ -1936,7 +1977,7 @@ test('an objective line edited after it got its id stays linked to its item: no 
   expect(bare(fs[BOUND]).match(/^- \[ \] /gm)).toHaveLength(4)
 })
 
-test('without the bridge file the plugin runs no bridge and keeps no snapshot', async ($, on) => {
+test('without the bridge file the plugin runs no bridge, and still logs a todo change made outside it as an unknown writer', async ($, on) => {
   const fs: Fs = { [BOUND]: setTodoFile('- [ ] Add a ctrl+q toggle'), [PYTHON]: '' }
   const store: Record<string, unknown> = { ...SESSION_BOUND }
   const { clock } = engine(on, fs, store)
@@ -1945,12 +1986,13 @@ test('without the bridge file the plugin runs no bridge and keeps no snapshot', 
   await flush()
   await complete($, 'The ctrl+q toggle works.')
   await run($, 'update Ship the bridge')
+  await flush()
   fs[BOUND] = (fs[BOUND] ?? '').replace('- [ ] Ship the bridge', '- [~] Ship the bridge')
   await clock.advance(5_000)
   await flush()
   expect(bare(fs[BOUND])).toContain('- [x] Add a ctrl+q toggle')
   expect(bridge.calls).toEqual([])
-  expect(Object.keys(store).filter(key => key.startsWith('notified:'))).toEqual([])
+  expect(logsOf(fs[BOUND]).at(-1)).toBe(`- ${TICK} | unknown | status | ${cell('Ship the bridge')} | todo -> in-progress`)
 })
 
 test('the refresh tick binds no carried notes file to a new session id while there is no bridge', async ($, on) => {
@@ -2097,6 +2139,157 @@ test('the todo run after a turn over 100 items and a long reply never holds the 
   expect(bare(fs[BOUND])).toContain(`- [x] ${texts[99]}`)
   const held = Math.max(...marks.slice(1).map((at, i) => at - (marks[i] ?? at)))
   expect(held).toBeLessThan(1000)
+})
+
+const SENTRY = 'Investigate the Sentry production alert'
+
+// Audit 2026-10-29, sections 3.1 and 3.5: Laya, leaning "started" with rejected at 0.05, declined the Sentry item on one
+// refusal cue in Claude's reply, firstmate never heard of it, and the captain's four clicks reached firstmate as "(captain)".
+test('the Sentry decline: a refusal cue leaves the item, so does Laya however sure; a finish reaches firstmate as Laya, the clicks as the captain', async ($, on) => {
+  const fs: Fs = { [BOUND]: setTodoFile(`- [~] ${SENTRY}`), [PYTHON]: '', [BRIDGE]: '' }
+  engine(on, fs, { ...SESSION_BOUND })
+  let probs = { 'not-mentioned': 0, started: 0.85, finished: 0.1, rejected: 0.05 }
+  laya.answer = ask => ({ lines: {}, statuses: Object.fromEntries(ask.statuses.map(status => [status.id, { label: 'started', p: probs.started, probs }])), predictMs: 1 })
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: false })
+  await flush()
+  const seeded = bridge.notified.length
+  for (const reply of ['The Sentry alert was skipped this turn.', "I won't touch the Sentry alert now.", 'The Sentry alert is not something I can open without a login.']) {
+    await complete($, reply)
+    await flush()
+    expect(bare(fs[BOUND])).toContain(`- [~] ${SENTRY}`)
+  }
+  expect(bridge.notified.slice(seeded)).toEqual([])
+  expect(logsOf(fs[BOUND])).toEqual([])
+
+  // Laya itself sure of a refusal: still not declined. Only the captain or firstmate declines.
+  probs = { 'not-mentioned': 0, started: 0.03, finished: 0.02, rejected: 0.95 }
+  laya.answer = ask => ({ lines: {}, statuses: Object.fromEntries(ask.statuses.map(status => [status.id, { label: 'rejected', p: 0.95, probs }])), predictMs: 1 })
+  await complete($, 'The Sentry alert is not ours; I dropped it.')
+  await flush()
+  expect(bare(fs[BOUND])).toContain(`- [~] ${SENTRY}`)
+  expect(bridge.notified.slice(seeded)).toEqual([])
+
+  // A finish cue with Laya leaning started closes it, and firstmate hears it was Laya.
+  probs = { 'not-mentioned': 0, started: 0.6, finished: 0.3, rejected: 0.1 }
+  laya.answer = ask => ({ lines: {}, statuses: Object.fromEntries(ask.statuses.map(status => [status.id, { label: 'started', p: 0.6, probs }])), predictMs: 1 })
+  await complete($, 'The Sentry alert is fixed.')
+  await flush()
+  const id = idFor(SENTRY, new Set())
+  expect(bare(fs[BOUND])).toContain(`- [x] ${SENTRY}`)
+  expect(bridge.notified.at(-1)).toBe(`${SENTRY}: in-progress -> done (laya) [id:${id}]\n`)
+  expect(logsOf(fs[BOUND])).toEqual([`- ${UTC} | laya | status | ${cell(SENTRY)} | in-progress -> done | finished 0.30, 1.00 with the finish cue, replaced a hand-set status`])
+
+  // Four clicks go once around the cycle: each is the captain's.
+  await run($, 'show')
+  const pane = await $.ui.mount({ ...NOTES_PANE, surface: 'terminal' })
+  for (let i = 0; i < 4; i++) await pane.press({ key: `todo:${SENTRY.toLowerCase()}` })
+  await flush()
+  expect(bridge.notified.slice(-4)).toEqual(
+    ['done -> declined', 'declined -> todo', 'todo -> in-progress', 'in-progress -> done'].map(change => `${SENTRY}: ${change} (captain) [id:${id}]\n`),
+  )
+  expect(logsOf(fs[BOUND]).slice(1).map(row => row.split(' | ')[1])).toEqual(['captain', 'captain', 'captain', 'captain'])
+  await pane.unmount()
+})
+
+test('an objective or update from a command the captain did not type is logged as an unknown writer', async ($, on) => {
+  const fs: Fs = { [BOUND]: setTodoFile('') }
+  engine(on, fs, { ...SESSION_BOUND })
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: false })
+  await flush()
+  await $.command.run({ command: 'notes-keeping', args: 'update From a script', origin: { kind: 'sdk' }, presentation: { isFullscreen: true, columns: 200 } })
+  await flush()
+  expect(logsOf(fs[BOUND])[0]).toBe(`- ${UTC} | unknown | update | - | - | From a script`)
+})
+
+test('the # Logs section stays out of Claude\'s context and Laya\'s input; every prompt says where it is', async ($, on) => {
+  const sent = submitting(on)
+  const row = `- ${UTC} | captain | status | id:ab12cd3 Ship the logs tab | todo -> done`
+  const fs: Fs = { [BOUND]: `${setTodoFile('- [ ] Ship the logs tab <!-- id:ab12cd3 -->')}\n# Logs\n\n${row}\n- Write the release notes for the logs\n`, [PYTHON]: '' }
+  engine(on, fs, { ...SESSION_BOUND }, undefined, { text: 'Earlier prompt' })
+  fakeLaya()
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: false })
+  await flush()
+  await complete($, 'Shipped the logs tab.')
+  await flush()
+  const asked = laya.asks.flatMap(ask => [...ask.lines.map(line => line.text), ...ask.statuses.map(status => status.text), ask.answer])
+  expect(asked.join('\n')).not.toContain('release notes')
+  expect(bare(fs[BOUND])).not.toContain('- [ ] Write the release notes')
+  await submit($, 'first')
+  await submit($, 'second')
+  expect(sent[0]?.context?.[0]).toContain('# Todo')
+  for (const one of sent) {
+    expect(one.context?.[0]).not.toContain(row)
+    expect(one.context?.[0]).toContain(`Action log: the # Logs section of ${BOUND} holds who (human or AI agent)`)
+  }
+})
+
+test('the first log rows a notes file gets bring its rows from todo-changes.log along, which is left as it was', async ($, on) => {
+  const name = BOUND.split('/').pop() ?? ''
+  const legacy = [
+    `2026-10-25-17-35 ${name} | Review this pr | todo -> in-progress | laya started 1.00`,
+    '2026-10-25-17-36 other.md | Something else | todo -> done | laya finished 0.97',
+    '',
+  ].join('\n')
+  const fs: Fs = { [BOUND]: setTodoFile('- [~] Review this pr'), [LOG]: legacy }
+  engine(on, fs, { ...SESSION_BOUND })
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: false })
+  await flush()
+  await run($, 'update Ship the logs')
+  await flush()
+  const then = new Date(2026, 9, 25, 17, 35).toISOString().replace(/\.\d{3}Z$/, 'Z')
+  expect(logsOf(fs[BOUND])).toEqual([
+    `- ${then} | laya | status | ${cell('Review this pr')} | todo -> in-progress | started 1.00 (posterior), from todo-changes.log`,
+    `- ${UTC} | captain | update | - | - | Ship the logs`,
+    `- ${UTC} | plugin | added | ${cell('Ship the logs')} | none -> todo`,
+  ])
+  expect(fs[LOG]).toBe(legacy)
+})
+
+test('l opens the read-only Logs view: newest first, time, who by label, item, from -> to', async ($, on) => {
+  const rows = [
+    `- 2026-10-28T08:49:00Z | laya | status | id:1uxnkut ${SENTRY} | in-progress -> declined | rejected 0.95`,
+    `- 2026-10-28T09:07:22Z | captain | status | id:1uxnkut ${SENTRY} | declined -> todo`,
+    '- 2026-10-28T09:08:00Z | captain | update | - | - | Add a logs tab',
+  ]
+  const fs: Fs = { [BOUND]: `${setTodoFile(`- [ ] ${SENTRY} <!-- id:1uxnkut -->`)}\n# Logs\n\n${rows.join('\n')}\n` }
+  engine(on, fs, { ...SESSION_BOUND })
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: false })
+  await run($, 'show')
+  const pane = await $.ui.mount({ ...NOTES_PANE, surface: 'terminal' })
+  expect((await pane.find({ key: 'view:logs' }))?.props).toMatchObject({ hotkey: 'l', label: 'Logs' })
+  await pane.press({ key: 'view:logs' })
+  expect((await pane.findAll({ type: 'Text' })).map(text => text.text).filter(text => text.startsWith('2026-'))).toEqual([
+    '2026-10-28 09:08:00  Captain (human)  -  Add a logs tab',
+    `2026-10-28 09:07:22  Captain (human)  ${SENTRY}  declined -> todo`,
+    `2026-10-28 08:49:00  Laya (AI classifier, aac6fef/laya-mlx)  ${SENTRY}  in-progress -> declined`,
+  ])
+  expect(await pane.find({ key: `todo:${SENTRY.toLowerCase()}` })).toBeUndefined()
+  await pane.unmount()
+})
+
+test('only the objectives and updates make todo items: lines in # Important, # Chat or # Logs never do, and a hand edit there is no todo change', async ($, on) => {
+  const row = `- ${UTC} | captain | update | - | - | to-do: from the logs`
+  const fs: Fs = {
+    [BOUND]: setTodoFile('- [ ] Add a ctrl+q toggle').replace('# Important\n', '# Important\n\nto-do: from important\n').replace('# Chat\n', '# Chat\n\nto-do: from the chat\n') + `\n# Logs\n\n${row}\n`,
+    [PYTHON]: '',
+    [BRIDGE]: '',
+  }
+  const { clock } = engine(on, fs, { ...SESSION_BOUND })
+  fakeLaya()
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
+  await flush()
+  await complete($, 'Nothing changed.')
+  await flush()
+  expect(laya.asks.flatMap(ask => ask.lines.map(line => line.text)).filter(text => text.includes('from'))).toEqual([])
+  expect(items(sections(fs[BOUND] ?? '').todo).filter(item => /from|typed/.test(item.text))).toEqual([])
+  const notified = bridge.notified.length
+  const rows = logsOf(fs[BOUND])
+  fs[BOUND] = (fs[BOUND] ?? '').replace('to-do: from important', 'to-do: from important\nto-do: typed in important').concat('- to-do: typed in the logs\n')
+  await clock.advance(5_000)
+  await flush()
+  expect(bridge.notified.length).toBe(notified)
+  expect(logsOf(fs[BOUND]).slice(0, rows.length)).toEqual(rows)
+  expect(items(sections(fs[BOUND] ?? '').todo).filter(item => /from|typed/.test(item.text))).toEqual([])
 })
 
 const KEYNAV = '# Objectives\n\nSessions: s\n\n## Updates\n\n# Todo\n\n- [ ] One\n- [~] Two\n- [x] Three\n- [-] Four\n\n# Important\n\n# Chat\n'

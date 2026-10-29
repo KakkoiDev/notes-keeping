@@ -9,6 +9,7 @@ import {
   cycle,
   cleanLabel,
   clip,
+  changeLine,
   cycleItem,
   diffSnapshot,
   format,
@@ -270,7 +271,7 @@ describe('Laya answers', () => {
     expect(moved(item, 'The toggle was moved.', verdict('not-mentioned', 0.99))).toBeUndefined()
     expect(moved({ ...item, status: 'in-progress' }, 'The toggle is half done.', verdict('started', 0.99))).toBeUndefined()
     expect(moved({ ...item, status: 'done' }, 'The toggle is dropped.', verdict('rejected', 0.99))).toBeUndefined()
-    expect(moved(item, 'The toggle is dropped.', verdict('rejected', 0.9))).toMatchObject({ status: 'declined' })
+    expect(moved(item, 'The toggle is dropped.', verdict('rejected', 0.99))).toBeUndefined()
   })
 
   test('a reply that says partway outweighs Laya calling it finished; a reply with no cue word moves only at Laya 0.9', () => {
@@ -288,9 +289,53 @@ describe('Laya answers', () => {
     expect(moved(hand, 'The toggle was reworked.', verdict('finished', 0.6), [], false)).toBeUndefined()
   })
 
+  // Audit 2026-10-29, section 3.5 A: Laya leaning "started" on the Sentry item, rejected at 0.05, declined it on one refusal cue.
+  test('Laya never declines an item, on a refusal cue or on its own however sure; a finish cue still closes one', () => {
+    const sentry = { status: 'in-progress' as const, text: 'Investigate the Sentry production alert' }
+    const weak = { label: 'started', p: 0.85, probs: { 'not-mentioned': 0, started: 0.85, finished: 0.1, rejected: 0.05 } }
+    for (const reply of [
+      'The Sentry alert was skipped this turn.',
+      'Sentry alert: out of scope until we get access.',
+      "I won't touch the Sentry alert now.",
+      'The Sentry alert is not something I can open without a login.',
+    ]) {
+      expect(moved(sentry, reply, weak)).toBeUndefined()
+    }
+    expect(moved(sentry, 'The Sentry alert was dropped.', verdict('rejected', 0.9))).toBeUndefined()
+    expect(moved(sentry, 'The Sentry alert was dropped.', verdict('rejected', 0.99))).toBeUndefined()
+    expect(moved(sentry, 'The Sentry alert went nowhere.', verdict('rejected', 0.99))).toBeUndefined()
+    // Done is the AI's to set: a finish cue lifts Laya's finished as a start cue lifts started.
+    expect(moved(sentry, 'The Sentry alert is done.', weak)).toMatchObject({ status: 'done', label: 'finished' })
+    expect(moved(sentry, 'The Sentry alert went out.', verdict('finished', 0.89))).toBeUndefined()
+    expect(moved(sentry, 'The Sentry alert went out.', verdict('finished', 0.95))).toMatchObject({ status: 'done', p: 0.95 })
+    // A start still moves on the cue: it says work began, nothing is closed.
+    expect(moved({ ...sentry, status: 'todo' }, 'Started on the Sentry alert.', verdict('not-mentioned', 0.6))).toMatchObject({ status: 'in-progress' })
+  })
+
+  // 2026-10-29 00:48Z: a firstmate report declined this item while its worker was running (PR 40 then shipped it). The
+  // refusal cue was "Dropping" in the sentence after the one naming the editor key; Laya itself said rejected 0.19.
+  test('a refusal cue in a sentence that carries on from the item does not decline it while work on it is running', () => {
+    const editor = { status: 'todo' as const, text: 'I would like to be able to use hx (my system editor) when updating my objectives (maybe a u: update, e: open in editor) and I want e: Queue to be relabeled to q: Queue' }
+    const reply = [
+      'Editor key (`e` opens hx, Queue becomes `q`): worker running.',
+      '- mid-task-ask on editor key, disagree: Jev said invalidates (0.33), I chose follow-up. Dropping the legend narrows the scope; it doesn\'t invalidate the work.',
+    ].join('\n')
+    const probs = { 'not-mentioned': 0.29, started: 0.245, finished: 0.274, rejected: 0.19 }
+    expect(moved(editor, reply, { label: 'not-mentioned', p: 0.29, probs })).toBeUndefined()
+  })
+
+  // held3 eval case: "not" was taken for the start of the item's own word "notes", so "will not" lost its refusal and
+  // "written" closed the item.
+  test('a short reply word that only starts an item word is not removed from the cue: a refusal there is no finish', () => {
+    const notes = { status: 'todo' as const, text: 'Release notes for the todo list feature' }
+    const probs = { 'not-mentioned': 0.38, started: 0.03, finished: 0.19, rejected: 0.39 }
+    expect(moved(notes, 'Release notes will not be written, the PR body covers them.', { label: 'rejected', p: 0.39, probs })).toBeUndefined()
+    expect(moved(notes, 'Release notes are written.', { label: 'rejected', p: 0.39, probs })).toMatchObject({ status: 'done' })
+  })
+
   test('a cue only counts in a sentence about the item, and not inside the item own words', () => {
     const counter = 'Keep a count of moves Laya declined to make'
-    expect(moved({ status: 'todo', text: counter }, 'The skipped-move counter is finished and shows in the log.', verdict('finished', 0.71), [counter])).toMatchObject({ status: 'done' })
+    expect(moved({ status: 'todo', text: counter }, 'The skipped-move counter is started and shows in the log.', verdict('finished', 0.71), [counter])).toMatchObject({ status: 'in-progress' })
     expect(moved({ status: 'todo', text: counter }, 'The counter for skipped moves is begun; I added the field but nothing increments it.', verdict('started', 0.51), [counter])).toMatchObject({ status: 'in-progress' })
     expect(moved(item, 'The toggle is reworked. Other thing was dropped.', verdict('finished', 0.95), [item.text, 'Other thing'])).toMatchObject({ status: 'done', label: 'finished' })
   })
@@ -429,12 +474,20 @@ describe('bridge', () => {
       { status: 'todo' as const, text: 'Hand added' },
       { status: 'todo' as const, text: 'From an update' },
     ]
-    expect(diffSnapshot({ a: 'todo', b: 'todo' }, before, after)).toEqual([
-      'A: todo -> in-progress (captain)',
-      '+ [ ] Hand added',
-      '+ [ ] From an update',
+    const changes = diffSnapshot({ a: 'todo', b: 'todo' }, before, after)
+    expect(changes).toEqual([
+      { item: before[0], from: 'todo', to: 'in-progress', isFound: true },
+      { item: before[2], to: 'todo', isFound: true },
+      { item: after[3], to: 'todo', isFound: false },
     ])
     expect(diffSnapshot(undefined, before, after)).toEqual([])
+  })
+
+  test('a change line names the actor that made it, never the captain for a change found in the file', () => {
+    const item = { status: 'in-progress' as const, text: 'A', id: 'ab12cd3' }
+    expect(changeLine({ item, from: 'todo', to: 'in-progress' }, 'unknown')).toBe('A: todo -> in-progress (unknown) [id:ab12cd3]')
+    expect(changeLine({ item, from: 'todo', to: 'in-progress' }, 'laya')).toBe('A: todo -> in-progress (laya) [id:ab12cd3]')
+    expect(changeLine({ item: { status: 'todo', text: 'B' }, to: 'todo' }, 'plugin')).toBe('+ [ ] B')
   })
 })
 
@@ -472,7 +525,7 @@ describe('ids', () => {
     const list = [{ status: 'done' as const, text: 'A', id: 'ab12cd3' }]
     expect(settle(memory, list)).toEqual({ seen: [], ai: { ab12cd3: 'done' }, pins: ['ab12cd3'], labeled: ['ab12cd3'], bridge: { ab12cd3: 'done' } })
     expect(diffSnapshot({ a: 'done' }, [{ status: 'done', text: 'A' }], list)).toEqual([])
-    expect(diffSnapshot({ a: 'todo' }, list, list)).toEqual(['A: todo -> done (captain) [id:ab12cd3]'])
+    expect(diffSnapshot({ a: 'todo' }, list, list)).toEqual([{ item: list[0], from: 'todo', to: 'done', isFound: true }])
   })
 
   test('an item gets its id onto the objective or update line it came from, once, and the candidate reads it back', () => {

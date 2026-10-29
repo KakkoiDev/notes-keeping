@@ -6,6 +6,7 @@ export type Sections = {
   todo: string
   important: string
   chat: string
+  logs: string
 }
 
 export type Notes = { path: string; sections: Sections }
@@ -17,7 +18,7 @@ export type Select = { mode: 'menu' | 'reply'; selection: string; isPlaced: bool
 
 export type Pair = { agent: string; user: string }
 
-export type View = 'todos' | 'objectives' | 'important' | 'chat' | 'queue' | 'history'
+export type View = 'todos' | 'objectives' | 'important' | 'chat' | 'queue' | 'history' | 'logs'
 
 // The note the History view shows whole (preview) or is about to attach (confirm).
 export type Opened = { name: string; step: 'preview' | 'confirm' }

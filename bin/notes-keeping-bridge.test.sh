@@ -64,6 +64,14 @@ b unlink id:ab12cd3
 check 'unlink by id drops only that link' '{"Ship the bridge": {"status": null, "task": "other"}}' "$(b status /n.md)"
 
 home
+b link pr-review id:ab12cd3 --by firstmate
+check 'a link made with --by names who made it' '{"id:ab12cd3": {"status": null, "task": "pr-review", "id": "ab12cd3", "by": "firstmate"}}' "$(b status /n.md)"
+b link other --by crew-7 'Ship the bridge'
+check '--by before the item text is not part of the text' '{"id:ab12cd3": {"status": null, "task": "pr-review", "id": "ab12cd3", "by": "firstmate"}, "Ship the bridge": {"status": null, "task": "other", "by": "crew-7"}}' "$(b status /n.md)"
+b link third 'Write docs' --by 2>/dev/null
+check '--by without a name is refused' '2' "$?"
+
+home
 b link ../etc 'x' 2>/dev/null
 check 'a task id with a path is refused' '2' "$?"
 b bogus 2>/dev/null
@@ -88,14 +96,18 @@ check 'the wake names the added item behind a full-length notes path' '1' "$(gre
 
 home
 printf 'Review: todo -> done (captain)\n' | b notify /notes/a.md
-check 'one status change: the first line is item, old and new status' 'Review: todo -> done' "$(first)"
+check 'one status change: the first line is item, old and new status and who made it' 'Review: todo -> done (captain)' "$(first)"
 note="$(cat "$H"/state/inbox/*.note)"
 check 'the body still names the file and carries the change line' 'yes' "$(case "$note" in *'notes-keeping todo changed in /notes/a.md:'*'Review: todo -> done (captain)'*) echo yes ;; *) echo no ;; esac)"
 
 home
 printf 'Review: todo -> done (captain) [id:ab12cd3]\n' | b notify /notes/a.md
-check 'one change with an id: the first line drops the id tag' 'Review: todo -> done' "$(first)"
+check 'one change with an id: the first line drops the id tag' 'Review: todo -> done (captain)' "$(first)"
 check 'the body keeps the id tag' '1' "$(grep -c 'Review: todo -> done (captain) \[id:ab12cd3\]' "$H"/state/inbox/*.note)"
+
+home
+printf 'Review: todo -> declined (laya) [id:ab12cd3]\n' | b notify /notes/a.md
+check 'a change Laya made says so on the first line' 'Review: todo -> declined (laya)' "$(first)"
 
 home
 printf '+ [ ] Ship the bridge [id:ab12cd3]\n' | b notify /notes/a.md
