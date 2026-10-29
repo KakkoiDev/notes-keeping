@@ -69,6 +69,7 @@ gets it on the first todo write; the heading layout of older and hand-edited fil
 - [~] in-progress
 - [x] done
 - [-] declined
+- [!] blocked
 ```
 
 One item per line. Edit the file by hand at any time; the plugin reads it back on every run. Lines in the section that
@@ -108,18 +109,23 @@ out.
   move carries Laya's answer and its own probability, and `replaced a hand-set status` when the item was one you set by
   click or by hand. Undo one by clicking the item.
 - Click an item in the pane (or Enter on it) to cycle todo, in-progress, done, declined and back, step it with `f` and
-  `p` (see [In the pane](#in-the-pane)), or edit the marker by hand. Those statuses are yours until Laya moves them
+  `p` (see [In the pane](#in-the-pane)), or edit the marker by hand. Blocked is not in the cycle: a click, `f` or `p`
+  on a blocked item sets it to todo. Those statuses are yours until Laya moves them
   under the rule above.
 - Firstmate, when the session root holds an executable `config/notes-keeping-bridge` (a firstmate home that opted in;
   the bridge is this plugin's `bin/notes-keeping-bridge`, and `FM_ROOT` / `FM_HOME` name the firstmate checkout and home
   when it is run from here rather than through a link in `config/`):
   - On every todo run the plugin runs `bridge status <notes file>`, which prints
-    `{"<item text>": {"status": "in-progress" | "done" | null, "task": "<id>"}}` for every item linked to a firstmate
+    `{"<item text>": {"status": "blocked" | "in-progress" | "done" | null, "task": "<id>"}}` for every item linked to a firstmate
     task; an item linked by id (`bridge link <task> id:<id>`) is printed as `"id:<id>"` with an `"id"` field and
     matched by id, an item linked by text (older links) by its text. A linked item follows that status forward and Laya is never asked about it; a null status leaves it where it
     is. The move is logged as `firstmate` with the task id. `bridge link <task> <item> --by <name>` records who made
     the link (firstmate, a crewmate); `status` then prints a `"by"` field and the log row names it. A status you set on
     a linked item stays until the bridge reports a different one.
+  - `bridge block <task> --reason <text> [--by <name>]` marks a task that could not be started. Its linked items report
+    `blocked` with a `"reason"` field, move to `[!]` from todo or in-progress, and the log row reads
+    `<task>[, by <name>]: <reason>`. The block holds until `state/<task>.status` gets a state line written after it; the
+    item then follows the status the bridge reports (in-progress, done) out of blocked.
   - After every todo write, every click, and every five seconds, the plugin runs `bridge notify <notes file>` with the
     changes since its last write on stdin: `+ [ ] <item>` for a new item, `<item>: <from> -> <to> (<who>)` for every
     status change, each followed by ` [id:<id>]` when the item has an id. `<who>` is `captain` for a click, `laya`
@@ -141,7 +147,8 @@ out.
 ### In Claude's context
 
 Every prompt carries the list (each item with its marker, `[~]` for in-progress, and an instruction to start every
-open item now, in parallel, not waiting on one answer before starting another independent one), each item as `label: text` with the text cut to 120 characters, or the cut text alone when it has no
+open item now, in parallel, not waiting on one answer before starting another independent one; when an item is `[!]`
+blocked, an instruction to open the reply by telling the captain which items are blocked and why), each item as `label: text` with the text cut to 120 characters, or the cut text alone when it has no
 label. A prompt that already
 carries the whole notes file, after a compaction or a resume, does not repeat it. A compaction is seen through
 `session.compact` (the main conversation's, not a skipped or precomputed one, nor a subagent's), or by a changed first
@@ -195,10 +202,10 @@ the others dim.
 | Key | Does |
 | --- | --- |
 | Up, Down | select an item |
-| Enter | cycle its status: todo, in-progress, done, declined, todo |
+| Enter | cycle its status: todo, in-progress, done, declined, todo; blocked goes to todo |
 | `f` | step it forward one status; at declined it stays declined |
 | `p` | step it back one status; at todo it stays todo |
-| `1` `2` `3` `4` | show or hide the `[ ]` todo, `[~]` in-progress, `[x]` done, `[-]` declined items |
+| `1` `2` `3` `4` `5` | show or hide the `[ ]` todo, `[~]` in-progress, `[x]` done, `[-]` declined, `[!]` blocked items |
 
 The row of toggles above the list is also the marker legend: `1: [ ] todo: shown  2: [~] in-progress: shown ...`,
 the same marks and names, in the same order, as the legend Claude reads with the list (both come from `MARKS` in

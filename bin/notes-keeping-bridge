@@ -2,11 +2,12 @@
 """notes-keeping-bridge - links the notes-keeping todo list to this firstmate home's tasks.
 
 The notes-keeping plugin runs this file when it exists under the session root (config/ is gitignored, so only this
-home opted in). Four verbs are the plugin's; four are firstmate's.
+home opted in). Four verbs are the plugin's; five are firstmate's.
 
-  status <notes-file>        print {"<item text>": {"status": "in-progress" | "done" | null, "task": "<id>"}} for every
-                             linked item; an item linked by id is printed as "id:<id>" with an "id" field, and a link
-                             made with --by carries a "by" field. done: the
+  status <notes-file>        print {"<item text>": {"status": "blocked" | "in-progress" | "done" | null, "task": "<id>"}}
+                             for every linked item; an item linked by id is printed as "id:<id>" with an "id" field, and a
+                             link made with --by carries a "by" field. blocked: the task's latest block came after its last
+                             state line, printed with a "reason" field. done: the
                              last state line of state/<task>.status is done. in-progress: else state/<task>.meta exists.
                              null: anything else; the plugin leaves the item where it is.
   notify <notes-file>        change lines on stdin become one captain inbox note (bin/fm-inbox.sh note), one wake.
@@ -17,6 +18,9 @@ home opted in). Four verbs are the plugin's; four are firstmate's.
                              change line names; it survives edits to the item's text) or the item text. --by names who
                              made the link (firstmate, a crewmate); the plugin logs the item's moves with it.
   unlink <item>              drop the item's link.
+  block <task-id> --reason <text> [--by <name>]
+                             mark the task as one that could not be started; its linked items report blocked with the
+                             reason until state/<task>.status gets another state line.
   pending <notes-file>       print the updates queued for the notes file as [{"request", "text", "by", "task"}] and take them
                              off the queue; the session that asks is the notes file's active session.
   answer <request>           the outcome of a taken update on stdin, {"id": "<item id>"} or {"error": "<why>"}, for the
@@ -30,7 +34,7 @@ home opted in). Four verbs are the plugin's; four are firstmate's.
   active                     print the notes file a session asked for pending updates within the last 15 seconds, the
                              latest when several did; exits 1 when none did.
 
-Links are appended to state/notes-todo-links.jsonl; queued updates are files in state/notes-keeping-queue/, and the
+Links are appended to state/notes-todo-links.jsonl, blocks to state/notes-todo-blocks.jsonl; queued updates are files in state/notes-keeping-queue/, and the
 active notes file is state/notes-keeping-active.json. An item's key is id:<id>, or its text lowercased with whitespace
 collapsed, the same text key the plugin falls back to for an item without an id. FM_HOME overrides the home whose state/ is used. FM_ROOT names the firstmate checkout whose
 bin/fm-inbox.sh takes the notes; without it the checkout is the parent of this file's directory, so a firstmate
@@ -49,6 +53,7 @@ ROOT = os.environ.get('FM_ROOT') or os.path.dirname(os.path.dirname(os.path.absp
 HOME = os.environ.get('FM_HOME') or ROOT
 STATE = os.path.join(HOME, 'state')
 LINKS = os.path.join(STATE, 'notes-todo-links.jsonl')
+BLOCKS = os.path.join(STATE, 'notes-todo-blocks.jsonl')
 QUEUE = os.path.join(STATE, 'notes-keeping-queue')
 ACTIVE = os.path.join(STATE, 'notes-keeping-active.json')
 INBOX = os.path.join(ROOT, 'bin', 'fm-inbox.sh')
@@ -63,7 +68,7 @@ ID_TAG = re.compile(r' \[id:[a-z0-9]+\]$')
 ITEM_ID = re.compile(r'^id:([a-z0-9]+)$')
 TASK_ID = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]*$')
 USAGE = ('usage: notes-keeping-bridge status <notes-file> | notify <notes-file> | link <task-id> <item> [--by <name>] | unlink <item>'
-         ' | pending <notes-file> | answer <request> | update <notes-file> <text> --by <name> --task <task-id> | active')
+         ' | block <task-id> --reason <text> [--by <name>] | pending <notes-file> | answer <request> | update <notes-file> <text> --by <name> --task <task-id> | active')
 
 
 def die(text, code=2):
@@ -75,9 +80,9 @@ def key_of(text):
     return ' '.join(text.lower().split())
 
 
-def append(record):
+def append(record, path=LINKS):
     os.makedirs(STATE, exist_ok=True)
-    with open(LINKS, 'a', encoding='utf-8') as f:
+    with open(path, 'a', encoding='utf-8') as f:
         f.write(json.dumps(record, ensure_ascii=False) + '\n')
 
 
@@ -104,33 +109,63 @@ def links():
     return out
 
 
-def derive(task):
-    if not TASK_ID.match(task):
-        return None
-    last = None
+def state_lines(task):
+    """The task's state names in state/<task>.status, in order."""
+    out = []
     try:
         with open(os.path.join(STATE, f'{task}.status'), encoding='utf-8', errors='replace') as f:
             for line in f:
                 m = STATE_LINE.match(line)
                 if m:
-                    last = m.group(1)
+                    out.append(m.group(1))
     except FileNotFoundError:
         pass
-    if last == 'done':
-        return 'done'
+    return out
+
+
+def blocks():
+    """Latest block record per task."""
+    out = {}
+    try:
+        f = open(BLOCKS, encoding='utf-8')
+    except FileNotFoundError:
+        return out
+    with f:
+        for line in f:
+            try:
+                record = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(record.get('task'), str) and isinstance(record.get('reason'), str) and isinstance(record.get('lines'), int):
+                out[record['task']] = record
+    return out
+
+
+def derive(task, block):
+    """The task's status and, while it is blocked, the block's reason. A block holds while the status file has no state
+    line written after it."""
+    if not TASK_ID.match(task):
+        return None, None
+    lines = state_lines(task)
+    if block is not None and len(lines) <= block['lines']:
+        return 'blocked', block['reason']
+    if lines and lines[-1] == 'done':
+        return 'done', None
     if os.path.exists(os.path.join(STATE, f'{task}.meta')):
-        return 'in-progress'
-    return None
+        return 'in-progress', None
+    return None, None
 
 
 def status():
     out = {}
+    blocked = blocks()
     for r in links().values():
-        by = {'by': r['by']} if isinstance(r.get('by'), str) else {}
+        state, reason = derive(r['task'], blocked.get(r['task']))
+        extra = {**({'by': r['by']} if isinstance(r.get('by'), str) else {}), **({'reason': reason} if reason is not None else {})}
         if 'id' in r:
-            out[f"id:{r['id']}"] = {'status': derive(r['task']), 'task': r['task'], 'id': r['id'], **by}
+            out[f"id:{r['id']}"] = {'status': state, 'task': r['task'], 'id': r['id'], **extra}
         else:
-            out[r['text']] = {'status': derive(r['task']), 'task': r['task'], **by}
+            out[r['text']] = {'status': state, 'task': r['task'], **extra}
     print(json.dumps(out, ensure_ascii=False))
 
 
@@ -278,6 +313,15 @@ def main(argv):
         if key not in links():
             die(f'no link for: {key}', 1)
         append({'unlink': True, 'key': key, 'at': int(time.time())})
+    elif verb == 'block' and len(args) >= 1:
+        task = args[0]
+        by, rest = option(args[1:], '--by')
+        if not TASK_ID.match(task):
+            die(f'not a task id: {task}')
+        if rest[:1] != ['--reason'] or len(rest) < 2 or ' '.join(rest[1:]).strip() == '':
+            die('block needs --reason <text>')
+        reason = ' '.join(' '.join(rest[1:]).split())
+        append({'task': task, 'reason': reason, 'lines': len(state_lines(task)), **({} if by is None else {'by': by}), 'at': int(time.time())}, BLOCKS)
     elif verb == 'pending' and len(args) == 1:
         pending(args[0])
     elif verb == 'answer' and len(args) == 1:

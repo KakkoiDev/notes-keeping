@@ -138,6 +138,12 @@ describe('todo lines', () => {
     expect([cycle('todo'), cycle('in-progress'), cycle('done'), cycle('declined')]).toEqual(['in-progress', 'done', 'declined', 'todo'])
     expect(withoutIds(cycleItem('- [ ] one\n- [ ] two', keyOf('Two')))).toBe('- [ ] one\n- [~] two')
   })
+
+  test('- [!] reads and writes back as blocked; a click on a blocked item sets it back to todo', () => {
+    expect(items('- [!] spawn it').map(item => item.status)).toEqual(['blocked'])
+    expect(format(parse('- [!] spawn it'))).toBe('- [!] spawn it')
+    expect(cycle('blocked')).toBe('todo')
+  })
 })
 
 describe('labels', () => {
@@ -461,7 +467,7 @@ describe('memory and reconcile', () => {
 describe('context for Claude', () => {
   test('lists every item under the legend', () => {
     const text = context('- [ ] a\n- [~] b\n- [x] c')
-    expect(text).toContain('([ ] todo, [~] in-progress, [x] done, [-] declined)')
+    expect(text).toContain('([ ] todo, [~] in-progress, [x] done, [-] declined, [!] blocked)')
     expect(text).toContain('- [ ] a\n- [~] b\n- [x] c')
     expect(context('- [x] a')).toContain('Nothing is open.')
     expect(context('')).toBeUndefined()
@@ -473,6 +479,14 @@ describe('context for Claude', () => {
     expect(text).toContain('do not wait on one answer before starting another independent item')
     expect(text).not.toContain('Work on:')
     expect(context('- [x] a')).not.toContain('in parallel')
+  })
+
+  test('a blocked item is listed with its marker and Claude is told to report it to the captain first', () => {
+    const text = context('- [!] Spawn the review\n- [x] c') ?? ''
+    expect(text).toContain('- [!] Spawn the review')
+    expect(text).toContain('Blocked ([!]): could not be started. Open your reply by telling the captain which items are blocked and why.')
+    expect(text).toContain('Nothing is open.')
+    expect(context('- [ ] a')).not.toContain('Blocked ([!])')
   })
 
   test('a labeled item is named by its label, with its text cut short after it', () => {
@@ -494,6 +508,24 @@ describe('bridge', () => {
     // C: the captain set it back to todo after the bridge reported in-progress; the same report does not move it again.
     expect(bridgeMoves(list, { a: 'in-progress', b: 'in-progress', c: 'in-progress' }, memory)).toEqual({ a: { from: 'todo', to: 'in-progress' } })
     expect(bridgeMoves(list, { c: 'done' }, memory)).toEqual({ c: { from: 'todo', to: 'done' } })
+  })
+
+  test('a blocked report moves an open item to blocked, and a later report moves it on from blocked', () => {
+    const open = [
+      { status: 'todo' as const, text: 'A' },
+      { status: 'in-progress' as const, text: 'B' },
+      { status: 'done' as const, text: 'C' },
+      { status: 'declined' as const, text: 'D' },
+    ]
+    expect(bridgeMoves(open, { a: 'blocked', b: 'blocked', c: 'blocked', d: 'blocked' }, EMPTY)).toEqual({
+      a: { from: 'todo', to: 'blocked' },
+      b: { from: 'in-progress', to: 'blocked' },
+    })
+    const blocked = [{ status: 'blocked' as const, text: 'A' }]
+    const reported = { ...EMPTY, bridge: { a: 'blocked' as const } }
+    expect(bridgeMoves(blocked, { a: 'blocked' }, reported)).toEqual({})
+    expect(bridgeMoves(blocked, { a: 'in-progress' }, reported)).toEqual({ a: { from: 'blocked', to: 'in-progress' } })
+    expect(bridgeMoves(blocked, { a: 'done' }, reported)).toEqual({ a: { from: 'blocked', to: 'done' } })
   })
 
   test('reconcile remembers what the bridge reported', () => {

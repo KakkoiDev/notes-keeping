@@ -274,17 +274,22 @@ async function runBridge($: EngineInterface, bridge: string, verb: 'status' | 'n
   return done.stdout
 }
 
-// by: who firstmate says set up the link, when it says.
-type Link = { status: Status | undefined; task: string; by?: string }
+// by: who firstmate says set up the link, when it says. reason: why the task could not be started, while it is blocked.
+type Link = { status: Status | undefined; task: string; by?: string; reason?: string }
 
 // Every linked item by id, or by text key for a link made by text; status is undefined when the linked task has no state to report.
 async function linked($: EngineInterface, bridge: string, path: string): Promise<Record<string, Link>> {
-  const raw = JSON.parse(await runBridge($, bridge, 'status', path)) as Record<string, { status?: unknown; task?: unknown; id?: unknown; by?: unknown }>
+  const raw = JSON.parse(await runBridge($, bridge, 'status', path)) as Record<string, { status?: unknown; task?: unknown; id?: unknown; by?: unknown; reason?: unknown }>
   const links: Record<string, Link> = {}
   for (const [text, link] of Object.entries(raw)) {
-    const status = link.status === 'in-progress' || link.status === 'done' ? link.status : undefined
+    const status = link.status === 'in-progress' || link.status === 'done' || link.status === 'blocked' ? link.status : undefined
     const task = typeof link.task === 'string' ? link.task : ''
-    links[typeof link.id === 'string' ? link.id : keyOf(text)] = typeof link.by === 'string' && link.by !== '' ? { status, task, by: link.by } : { status, task }
+    links[typeof link.id === 'string' ? link.id : keyOf(text)] = {
+      status,
+      task,
+      ...(typeof link.by === 'string' && link.by !== '' ? { by: link.by } : {}),
+      ...(status === 'blocked' && typeof link.reason === 'string' && link.reason !== '' ? { reason: link.reason } : {}),
+    }
   }
   return links
 }
@@ -514,7 +519,8 @@ async function runTodo($: EngineInterface, answer: string): Promise<void> {
     for (const move of out.applied) {
       const item = written.find(one => idOf(one) === move.key || keyOf(one.text) === keyOf(move.text)) ?? { status: move.to, text: move.text }
       const link = links[move.key] ?? links[keyOf(move.text)]
-      const why = link === undefined ? said(move.key) : link.by === undefined ? link.task : `${link.task}, by ${link.by}`
+      const task = link === undefined ? '' : link.by === undefined ? link.task : `${link.task}, by ${link.by}`
+      const why = link === undefined ? said(move.key) : move.to === 'blocked' && link.reason !== undefined ? `${task}: ${link.reason}` : task
       const note = [why, ...(move.isHandSet ? ['replaced a hand-set status'] : [])].join(', ')
       entries.push({ at, actor: link === undefined ? 'laya' : 'firstmate', action: 'status', item, from: move.from, to: move.to, note })
       lines.push(changeLine({ item, from: move.from, to: move.to }, link === undefined ? 'laya' : `firstmate ${link.task}`))

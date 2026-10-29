@@ -23,7 +23,7 @@ export type View = 'todos' | 'objectives' | 'important' | 'chat' | 'queue' | 'hi
 // The note the History view shows whole (preview) or is about to attach (confirm).
 export type Opened = { name: string; step: 'preview' | 'confirm' }
 
-export type Todo = { id: string; text: string; status: 'todo' | 'in-progress' | 'done' | 'declined' }
+export type Todo = { id: string; text: string; status: 'todo' | 'in-progress' | 'done' | 'declined' | 'blocked' }
 
 declare module 'claude-code' {
   interface PluginState {

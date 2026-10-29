@@ -189,5 +189,27 @@ check 'update without text is refused' '2' "$?"
 b answer nope <<< '{"id": "x"}' 2>/dev/null
 check 'answer for a request nobody took fails' '1' "$?"
 
+home
+b link spawn-x id:ab12cd3 --by firstmate
+b block spawn-x --reason 'no free worktree slot' --by firstmate
+check 'a blocked task reports blocked with its reason' '{"id:ab12cd3": {"status": "blocked", "task": "spawn-x", "id": "ab12cd3", "by": "firstmate", "reason": "no free worktree slot"}}' "$(b status /n.md)"
+: > "$H/state/spawn-x.meta"
+check 'a meta written after the block does not clear it' 'blocked' "$(b status /n.md | python3 -c 'import json,sys; print(next(iter(json.load(sys.stdin).values()))["status"])')"
+echo "working [at=5]: setup done" > "$H/state/spawn-x.status"
+check 'a state line after the block clears it' '{"id:ab12cd3": {"status": "in-progress", "task": "spawn-x", "id": "ab12cd3", "by": "firstmate"}}' "$(b status /n.md)"
+b block spawn-x --reason 'stalled again' --by firstmate
+check 'a block after a state line holds until the next one' 'blocked stalled again' "$(b status /n.md | python3 -c 'import json,sys; v=next(iter(json.load(sys.stdin).values())); print(v["status"], v["reason"])')"
+echo "done [at=6]: PR https://x/pull/3" >> "$H/state/spawn-x.status"
+check 'a done line after the block reports done' 'done' "$(b status /n.md | python3 -c 'import json,sys; print(next(iter(json.load(sys.stdin).values()))["status"])')"
+
+home
+b block spawn-x --by firstmate 2>/dev/null
+check 'block without --reason is refused' '2' "$?"
+b block spawn-x --reason '  ' 2>/dev/null
+check 'block with an empty reason is refused' '2' "$?"
+b block ../x --reason 'bad' 2>/dev/null
+check 'block with a task id holding a path is refused' '2' "$?"
+check 'a refused block writes nothing' 'absent' "$([ -e "$H/state/notes-todo-blocks.jsonl" ] && echo present || echo absent)"
+
 printf '\n' "" ; printf '%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

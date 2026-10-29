@@ -29,7 +29,7 @@ type Ask = { lines: { id: string; text: string }[]; statuses: { id: string; text
 const BRIDGE = `${ROOT}/config/notes-keeping-bridge`
 // What the fake bridge reports for status, the change lines each notify sent, the updates pending hands out once, and each answer.
 const bridge: {
-  links: Record<string, { status: string | null; task: string; id?: string; by?: string }>
+  links: Record<string, { status: string | null; task: string; id?: string; by?: string; reason?: string }>
   notified: string[]
   calls: string[]
   argv: string[][]
@@ -1500,6 +1500,7 @@ test('the panel opens on the Todos view, t brings it back, and the other views c
     'show:in-progress',
     'show:done',
     'show:declined',
+    'show:blocked',
     'todo:ship it',
     'status:next',
     'status:prev',
@@ -1889,6 +1890,25 @@ test('a linked item follows its firstmate task: the bridge moves it to in-progre
   await complete($, 'Nothing.')
   await flush()
   expect(bare(fs[BOUND])).toContain('- [x] Review this pr')
+})
+
+test('a linked item whose task could not be started is blocked with the reason logged, and moves on when the task reports', async ($, on) => {
+  const fs: Fs = { [BOUND]: setTodoFile('- [ ] Review this pr'), [PYTHON]: '', [BRIDGE]: '' }
+  engine(on, fs, { ...SESSION_BOUND })
+  fakeLaya()
+  bridge.links = { 'review this pr': { status: 'blocked', task: 'pr-review', by: 'firstmate', reason: 'no free worktree slot' } }
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: false })
+  await flush()
+  expect(bare(fs[BOUND])).toContain('- [!] Review this pr')
+  expect(logsOf(fs[BOUND])).toContain(`- ${UTC} | firstmate | status | id:${idFor('Review this pr', new Set())} Review this pr | todo -> blocked | pr-review, by firstmate: no free worktree slot`)
+  const pane = await $.ui.mount({ ...NOTES_PANE, surface: 'terminal' })
+  expect((await pane.find({ key: 'show:blocked' }))?.props).toMatchObject({ hotkey: '5', label: '[!] blocked: shown' })
+  expect((await pane.find({ key: 'todo:review this pr' }))?.props.label).toBe('[!] Review this pr')
+  await pane.unmount()
+  bridge.links = { 'review this pr': { status: 'in-progress', task: 'pr-review', by: 'firstmate' } }
+  await complete($, 'Nothing.')
+  await flush()
+  expect(bare(fs[BOUND])).toContain('- [~] Review this pr')
 })
 
 test('a status the captain sets on a linked item stays until the linked task changes state', async ($, on) => {
@@ -2486,7 +2506,7 @@ test('f steps the selected item forward and p back, stopping at declined and at 
 test('the row of toggles is the legend Claude reads with the todo list, mark and name, in its order', async ($, on) => {
   const { pane } = await keynav($, on)
   const legend = /notes-keeping \((.*?)\)\./.exec(context('- [ ] a') ?? '')?.[1]?.split(', ') ?? []
-  expect(legend).toHaveLength(4)
+  expect(legend).toHaveLength(5)
   const toggles = (await pane.findAll({ type: 'Button' })).filter(button => button.key?.startsWith('show:') === true)
   expect(toggles.map(button => button.props.label)).toEqual(legend.map(entry => `${entry}: shown`))
   const keys = (await pane.findAll({ type: 'Button' })).map(button => button.key ?? '')

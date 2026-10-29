@@ -1,7 +1,9 @@
 import type { Todo } from '../types'
 import { legend, markOf } from './todo'
 
-export const STATUSES: readonly Todo['status'][] = ['todo', 'in-progress', 'done', 'declined']
+export const STATUSES: readonly Todo['status'][] = ['todo', 'in-progress', 'done', 'declined', 'blocked']
+// Enter, f and p move through these; on a blocked item, which only the bridge sets, each lands on todo.
+const CYCLE: readonly Todo['status'][] = ['todo', 'in-progress', 'done', 'declined']
 
 // The row the selection was last handed to, and the count of hand-overs.
 export type Landing = { id: string; count: number }
@@ -17,12 +19,12 @@ export function rowId(key: string): string | undefined {
 }
 
 export function nextStatus(status: Todo['status']): Todo['status'] {
-  return STATUSES[(STATUSES.indexOf(status) + 1) % STATUSES.length] ?? 'todo'
+  return CYCLE[(CYCLE.indexOf(status) + 1) % CYCLE.length] ?? 'todo'
 }
 
 // One status forward or back, staying put at todo and at declined.
 export function stepStatus(status: Todo['status'], by: 1 | -1): Todo['status'] {
-  return STATUSES[Math.min(STATUSES.length - 1, Math.max(0, STATUSES.indexOf(status) + by))] ?? status
+  return CYCLE[Math.min(CYCLE.length - 1, Math.max(0, CYCLE.indexOf(status) + by))] ?? status
 }
 
 // The ringed item while it is shown, else the first shown one.
@@ -38,7 +40,7 @@ export function nextShown(todos: readonly Todo[], id: string, hidden: readonly T
   return (todos.slice(at + 1).find(isShown) ?? todos.slice(0, Math.max(at, 0)).reverse().find(isShown))?.id
 }
 
-const SHOW: Record<Todo['status'], string> = { todo: '1', 'in-progress': '2', done: '3', declined: '4' }
+const SHOW: Record<Todo['status'], string> = { todo: '1', 'in-progress': '2', done: '3', declined: '4', blocked: '5' }
 
 // The todo list of the notes panel's Todos view. The notes-todo work owns this file and the `todos` atom in
 // register.tsx: it fills the atom, and `onCycle(id)` is called when a row is clicked or Enter is pressed on it.
@@ -92,7 +94,7 @@ export function TodoSlot(props: {
         <Button key="status:next" plain hotkey="f" label="next status" onPress={step(1)} />
         <Button key="status:prev" plain hotkey="p" label="previous status" onPress={step(-1)} />
       </Box>
-      <Text dimColor>Up and Down select an item, Enter cycles its status, f and p step it forward and back, 1 to 4 show or hide a status</Text>
+      <Text dimColor>Up and Down select an item, Enter cycles its status, f and p step it forward and back, 1 to 5 show or hide a status</Text>
     </Box>
   )
 }

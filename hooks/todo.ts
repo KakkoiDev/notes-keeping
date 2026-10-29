@@ -1,6 +1,6 @@
 import type { Sections } from '../types'
 
-export type Status = 'todo' | 'in-progress' | 'done' | 'declined'
+export type Status = 'todo' | 'in-progress' | 'done' | 'declined' | 'blocked'
 // label: the short name the model wrote for the item, shown in its place; the text stays whole beside it.
 // id: set once, kept when the text is edited; the item's objective or update line carries the same id.
 export type Item = { status: Status; text: string; label?: string; id?: string }
@@ -16,7 +16,9 @@ export type Decision = { status: Status; label: string; p: number }
 // the captain clicked per item, which Laya leaves alone while the item keeps it.
 export type Memory = { seen: string[]; ai: Record<string, Status>; pins: string[]; labeled: string[]; bridge: Record<string, Status> }
 
-export const STATUSES: readonly Status[] = ['todo', 'in-progress', 'done', 'declined']
+export const STATUSES: readonly Status[] = ['todo', 'in-progress', 'done', 'declined', 'blocked']
+// A click cycles these; blocked is set by firstmate through the bridge, and a click on a blocked item sets it to todo.
+const CYCLE: readonly Status[] = ['todo', 'in-progress', 'done', 'declined']
 export const EMPTY: Memory = { seen: [], ai: {}, pins: [], labeled: [], bridge: {} }
 // A line is dropped as background only when Laya is this sure it is not a task.
 export const BACKGROUND_FLOOR = 0.8
@@ -29,7 +31,7 @@ export const HAND_FLOOR = 0.9
 // How many nats a start or finish cue in the reply adds to its option.
 const CUE_WEIGHT = 8
 
-const MARKS: Record<Status, string> = { todo: ' ', 'in-progress': '~', done: 'x', declined: '-' }
+const MARKS: Record<Status, string> = { todo: ' ', 'in-progress': '~', done: 'x', declined: '-', blocked: '!' }
 
 export function markOf(status: Status): string {
   return `[${MARKS[status]}]`
@@ -39,7 +41,7 @@ export function markOf(status: Status): string {
 export function legend(status: Status): string {
   return `${markOf(status)} ${status}`
 }
-const ITEM = /^\s*[-*]\s+\[([ ~xX-])\]\s+(\S.*?)\s*$/
+const ITEM = /^\s*[-*]\s+\[([ ~xX!-])\]\s+(\S.*?)\s*$/
 const UPDATE_TAG = /^\[update\]/i
 // - [ ] **Short label**: the whole text
 const LABELED = /^\*\*(.+?)\*\*:\s+(\S.*)$/
@@ -49,7 +51,7 @@ const IDS = /[ \t]*<!-- id:[a-z0-9]+ -->/g
 const MAX_TEXT = 120
 const MAX_LABEL = 48
 const MAX_LABEL_WORDS = 6
-const RANK: Record<Status, number> = { todo: 0, 'in-progress': 1, done: 2, declined: 2 }
+const RANK: Record<Status, number> = { todo: 0, 'in-progress': 1, done: 2, declined: 2, blocked: 1 }
 // Laya's option names; its question says "refused or dropped" for rejected.
 const REPLY: Record<string, Status> = { started: 'in-progress', finished: 'done', rejected: 'declined' }
 // Checked in this order, so a refusal wins over a start and a start over a finish.
@@ -145,7 +147,7 @@ export function items(body: string): Item[] {
 }
 
 export function cycle(status: Status): Status {
-  return STATUSES[(STATUSES.indexOf(status) + 1) % STATUSES.length] ?? 'todo'
+  return CYCLE[(CYCLE.indexOf(status) + 1) % CYCLE.length] ?? 'todo'
 }
 
 function oneLine(text: string): string {
@@ -514,12 +516,15 @@ export function reconcile(body: string, memory: Memory, plan: Plan): { body: str
 }
 
 // The moves the bridge's reported statuses make: forward only, and only when the report changed since the last run,
-// so a status the captain set on a linked item stays until the linked task's state changes again.
+// so a status the captain set on a linked item stays until the linked task's state changes again. Blocked lands on a todo
+// or in-progress item, and a blocked item takes any other report.
 export function bridgeMoves(list: readonly Item[], reported: Readonly<Record<string, Status>>, memory: Memory): Record<string, Move> {
   const set: Record<string, Move> = {}
   for (const item of list) {
     const to = pick(reported, item)
-    if (to === undefined || to === pick(memory.bridge, item) || RANK[to] <= RANK[item.status]) continue
+    if (to === undefined || to === pick(memory.bridge, item) || to === item.status) continue
+    const isForward = to === 'blocked' ? item.status === 'todo' || item.status === 'in-progress' : item.status === 'blocked' || RANK[to] > RANK[item.status]
+    if (!isForward) continue
     set[idOf(item)] = { from: item.status, to }
   }
   return set
@@ -575,5 +580,8 @@ export function context(body: string): string | undefined {
     : 'Nothing is open.'
   const shown = list.slice(0, SECTION_CAP).map(item => `- [${MARKS[item.status]}] ${brief(item)}`)
   const more = list.length > SECTION_CAP ? [`(${list.length - SECTION_CAP} more in the notes file)`] : []
-  return [`Todo list kept by notes-keeping (${STATUSES.map(legend).join(', ')}). The captain and the plugin set them; you never edit the notes file.`, head, ...shown, ...more].join('\n')
+  const blocked = list.some(item => item.status === 'blocked')
+    ? ['Blocked ([!]): could not be started. Open your reply by telling the captain which items are blocked and why.']
+    : []
+  return [`Todo list kept by notes-keeping (${STATUSES.map(legend).join(', ')}). The captain and the plugin set them; you never edit the notes file.`, head, ...blocked, ...shown, ...more].join('\n')
 }
