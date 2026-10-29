@@ -553,7 +553,7 @@ async function syncTodo($: EngineInterface, answer: string): Promise<void> {
 }
 
 // A click or Enter sets the next status, f and p the next or previous one: the captain's, logged and sent as theirs.
-// It counts as hand-set: Laya moves it only at its higher floor. A change that leaves the line as it was writes nothing.
+// It counts as hand-set: Laya leaves it. A change that leaves the line as it was writes nothing.
 async function clickItem($: EngineInterface, key: string, change: (status: Status) => Status = cycle): Promise<void> {
   const path = await boundPath($)
   if (path === undefined) return

@@ -23,11 +23,9 @@ export const EMPTY: Memory = { seen: [], ai: {}, pins: [], labeled: [], bridge: 
 // A line is dropped as background only when Laya is this sure it is not a task.
 export const BACKGROUND_FLOOR = 0.8
 // A status moves to the one a start or finish cue in the reply names when Laya, with the cue added, reaches CHANGE_FLOOR,
-// and to the other at CUELESS_FLOOR. A status set outside the plugin needs HAND_FLOOR. Laya alone is not calibrated: its
-// confidence did not rise with its precision.
+// and to the other at CUELESS_FLOOR. Laya alone is not calibrated: its confidence did not rise with its precision.
 export const CHANGE_FLOOR = 0.5
 export const CUELESS_FLOOR = 0.9
-export const HAND_FLOOR = 0.9
 // How many nats a start or finish cue in the reply adds to its option.
 const CUE_WEIGHT = 8
 
@@ -57,7 +55,7 @@ const REPLY: Record<string, Status> = { started: 'in-progress', finished: 'done'
 // Checked in this order, so a refusal wins over a start and a start over a finish.
 const CUES: [string, RegExp][] = [
   ['rejected', /\b(rejected|won't|will not|not (do|doing|build|building|write|writing|add|adding|worth|something)|(was|were|is|are|been|being|be|i|we|got|get) (\w+ )?skipp(ed|ing)|decided against|leav(e|ing) (it )?(out|undone|as it is)|leav(e|ing) .{0,30} out|out of scope|dropp(ed|ing)|refus\w+|declin\w+)\b|見送|やらない|行わない|手を付けません|範囲外|しません/i],
-  ['started', /\b(started|starting|begun|began|begin|beginning|working on|in progress|under ?way|partway|partly|half|in the middle|continu\w+|still|more (to do|remains|is open)|not (yet|drawn|hooked|connected|wired)|but not)\b|着手|始め|途中|進めて|半分/i],
+  ['started', /\b(started|starting|begun|began|begin|beginning|working on|in progress|under ?way|partway|partly|half|in the middle|continu\w+|still|more (to do|remains|is open)|not (yet|drawn|hooked|connected|wired)|but not|spawn\w*|launch(ed|ing)|running|kicked off|dispatched|merge word|waiting (on|for)|awaiting|ready (to|for)|(pr|pull request) (is )?(open|opened|up)|opened (a |the )?(pr|pull request)|(not|nothing|\w+n't)( [\w']+){0,3} (merged|landed))\b|着手|始め|途中|進めて|半分/i],
   ['finished', /\b(done|finish\w*|complete[d]?|implemented|landed|committed|fixed|verified|works|written|added|merged|in and)\b|完了|実装し|済み|仕上げ|通りました/i],
 ]
 const QUOTED = /"[^"\n]*"|“[^”\n]*”|`[^`\n]*`|「[^」\n]*」/g
@@ -418,16 +416,17 @@ export function isBackground(pTask: number): boolean {
 }
 
 // The status a reply moves an item to, or undefined to leave it. Statuses only move forward, and never to declined: a
-// refusal cue only keeps the other cues from counting, and only the captain or firstmate declines an item.
+// refusal cue only keeps the other cues from counting, and only the captain or firstmate declines an item. A status the
+// captain set is never moved.
 export function moved(item: Item, answer: string, verdict: Verdict | undefined, siblings: readonly string[] = [], isHandSet = false): Decision | undefined {
-  if (verdict === undefined || !mentions(item.text, answer, siblings)) return undefined
+  if (isHandSet || verdict === undefined || !mentions(item.text, answer, siblings)) return undefined
   const found = cueFor(item.text, answer, siblings)
   const cue = found === 'rejected' ? undefined : found
   const odds = posterior(verdict.probs, cue)
   const label = Object.keys(odds).reduce((best, key) => ((odds[key] ?? 0) > (odds[best] ?? 0) ? key : best))
   const next = REPLY[label]
   const p = odds[label] ?? 0
-  const floor = Math.max(label === cue ? CHANGE_FLOOR : CUELESS_FLOOR, isHandSet ? HAND_FLOOR : 0)
+  const floor = label === cue ? CHANGE_FLOOR : CUELESS_FLOOR
   if (next === undefined || next === 'declined' || RANK[next] <= RANK[item.status] || p < floor) return undefined
   return { status: next, label, p }
 }

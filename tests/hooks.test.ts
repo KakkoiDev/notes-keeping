@@ -1744,7 +1744,7 @@ test('at the end of a turn Laya reads the reply: a reply that names an item and 
 
 const LOG = `${DIR}/todo-changes.log`
 
-test('Laya also updates a status set by a hand edit of the file, above a higher floor; the edit is logged as an unknown writer, each move as Laya with its own probability', async ($, on) => {
+test('Laya leaves a status set by a hand edit of the file however sure; the edit is logged as an unknown writer, each move as Laya with its own probability', async ($, on) => {
   const fs: Fs = { [BOUND]: setTodoFile('- [ ] Add a ctrl+q toggle\n- [ ] Write the docs\n- [ ] Rename the pane\n- [x] Fix the flicker'), [PYTHON]: '' }
   const { git } = engine(on, fs, { ...SESSION_BOUND })
   fakeLaya({
@@ -1762,14 +1762,13 @@ test('Laya also updates a status set by a hand edit of the file, above a higher 
   fs[BOUND] = (fs[BOUND] ?? '').replace('- [ ] Write the docs', '- [~] Write the docs').replace('- [ ] Rename the pane', '- [~] Rename the pane')
   await complete($, 'The ctrl+q toggle, the docs, the pane rename and the flicker fix were reworked.')
   await flush()
-  expect(bare(fs[BOUND])).toContain('- [x] Add a ctrl+q toggle\n- [x] Write the docs\n- [~] Rename the pane\n- [x] Fix the flicker')
+  expect(bare(fs[BOUND])).toContain('- [x] Add a ctrl+q toggle\n- [~] Write the docs\n- [~] Rename the pane\n- [x] Fix the flicker')
   expect(laya.asks.at(-1)?.statuses.map(status => status.id)).toEqual(expect.arrayContaining(['add a ctrl+q toggle', 'write the docs', 'rename the pane']))
   expect(laya.asks.at(-1)?.statuses.map(status => status.id)).not.toContain('fix the flicker')
   expect(logsOf(fs[BOUND])).toEqual([
     `- ${UTC} | unknown | status | ${cell('Write the docs')} | todo -> in-progress`,
     `- ${UTC} | unknown | status | ${cell('Rename the pane')} | todo -> in-progress`,
     `- ${UTC} | laya | status | ${cell('Add a ctrl+q toggle')} | todo -> done | finished 0.96`,
-    `- ${UTC} | laya | status | ${cell('Write the docs')} | in-progress -> done | finished 0.97, replaced a hand-set status`,
   ])
   // todo-changes.log is no longer written.
   expect(fs[LOG]).toBeUndefined()
@@ -1822,7 +1821,7 @@ test('every prompt carries the todo list; a prompt that carries the whole file d
   }
 })
 
-test('a click on a todo item in the notes pane sets the next status, writes the file and logs it as the captain; Laya still manages it, logged as Laya', async ($, on) => {
+test('a click on a todo item in the notes pane sets the next status, writes the file and logs it as the captain; Laya leaves the status the captain set', async ($, on) => {
   const fs: Fs = { [BOUND]: setTodoFile('- [ ] Add a ctrl+q toggle'), [PYTHON]: '' }
   const { git } = engine(on, fs, { ...SESSION_BOUND })
   fakeLaya({ 'add a ctrl+q toggle': { label: 'finished', p: 0.96 } })
@@ -1846,11 +1845,11 @@ test('a click on a todo item in the notes pane sets the next status, writes the 
     ['todo -> in-progress', 'in-progress -> done', 'done -> declined', 'declined -> todo'].map(change => `- ${UTC} | captain | status | ${cell('Add a ctrl+q toggle')} | ${change}`),
   )
 
-  // Clicked back to todo, it is the captain's; a sure reply that names it still moves it, and the log says it was Laya.
-  await complete($, 'The ctrl+q toggle was reworked.')
+  // Clicked back to todo, it is the captain's; a sure reply that names it leaves it.
+  await complete($, 'The ctrl+q toggle was reworked and merged.')
   await flush()
-  expect(bare(fs[BOUND])).toContain('- [x] Add a ctrl+q toggle')
-  expect(logsOf(fs[BOUND]).at(-1)).toBe(`- ${UTC} | laya | status | ${cell('Add a ctrl+q toggle')} | todo -> done | finished 0.96, replaced a hand-set status`)
+  expect(bare(fs[BOUND])).toContain('- [ ] Add a ctrl+q toggle')
+  expect(logsOf(fs[BOUND]).at(-1)).toBe(`- ${UTC} | captain | status | ${cell('Add a ctrl+q toggle')} | declined -> todo`)
   await pane.unmount()
 })
 
@@ -2275,7 +2274,7 @@ const SENTRY = 'Investigate the Sentry production alert'
 // Audit 2026-10-29, sections 3.1 and 3.5: Laya, leaning "started" with rejected at 0.05, declined the Sentry item on one
 // refusal cue in Claude's reply, firstmate never heard of it, and the captain's four clicks reached firstmate as "(captain)".
 test('the Sentry decline: a refusal cue leaves the item, so does Laya however sure; a finish reaches firstmate as Laya, the clicks as the captain', async ($, on) => {
-  const fs: Fs = { [BOUND]: setTodoFile(`- [~] ${SENTRY}`), [PYTHON]: '', [BRIDGE]: '' }
+  const fs: Fs = { [BOUND]: setTodoFile(`- [ ] ${SENTRY}`), [PYTHON]: '', [BRIDGE]: '' }
   engine(on, fs, { ...SESSION_BOUND })
   let probs = { 'not-mentioned': 0, started: 0.85, finished: 0.1, rejected: 0.05 }
   laya.answer = ask => ({ lines: {}, statuses: Object.fromEntries(ask.statuses.map(status => [status.id, { label: 'started', p: probs.started, probs }])), predictMs: 1 })
@@ -2285,7 +2284,7 @@ test('the Sentry decline: a refusal cue leaves the item, so does Laya however su
   for (const reply of ['The Sentry alert was skipped this turn.', "I won't touch the Sentry alert now.", 'The Sentry alert is not something I can open without a login.']) {
     await complete($, reply)
     await flush()
-    expect(bare(fs[BOUND])).toContain(`- [~] ${SENTRY}`)
+    expect(bare(fs[BOUND])).toContain(`- [ ] ${SENTRY}`)
   }
   expect(bridge.notified.slice(seeded)).toEqual([])
   expect(logsOf(fs[BOUND])).toEqual([])
@@ -2295,7 +2294,7 @@ test('the Sentry decline: a refusal cue leaves the item, so does Laya however su
   laya.answer = ask => ({ lines: {}, statuses: Object.fromEntries(ask.statuses.map(status => [status.id, { label: 'rejected', p: 0.95, probs }])), predictMs: 1 })
   await complete($, 'The Sentry alert is not ours; I dropped it.')
   await flush()
-  expect(bare(fs[BOUND])).toContain(`- [~] ${SENTRY}`)
+  expect(bare(fs[BOUND])).toContain(`- [ ] ${SENTRY}`)
   expect(bridge.notified.slice(seeded)).toEqual([])
 
   // A finish cue with Laya leaning started closes it, and firstmate hears it was Laya.
@@ -2305,8 +2304,8 @@ test('the Sentry decline: a refusal cue leaves the item, so does Laya however su
   await flush()
   const id = idFor(SENTRY, new Set())
   expect(bare(fs[BOUND])).toContain(`- [x] ${SENTRY}`)
-  expect(bridge.notified.at(-1)).toBe(`${SENTRY}: in-progress -> done (laya) [id:${id}]\n`)
-  expect(logsOf(fs[BOUND])).toEqual([`- ${UTC} | laya | status | ${cell(SENTRY)} | in-progress -> done | finished 0.30, 1.00 with the finish cue, replaced a hand-set status`])
+  expect(bridge.notified.at(-1)).toBe(`${SENTRY}: todo -> done (laya) [id:${id}]\n`)
+  expect(logsOf(fs[BOUND])).toEqual([`- ${UTC} | laya | status | ${cell(SENTRY)} | todo -> done | finished 0.30, 1.00 with the finish cue`])
 
   // Four clicks go once around the cycle: each is the captain's.
   await run($, 'show')

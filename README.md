@@ -96,22 +96,24 @@ out.
   objectives is one candidate, and a paragraph of bullets is one per bullet: Laya judges each and it becomes an item
   unless Laya is at least 0.8 sure it is background. Lines ending in `:`, headings and single-word lines are skipped.
   A line already judged is never asked twice, so an item you delete stays deleted.
-- At the end of every turn: Laya reads Claude's last reply against every open item (todo or in-progress), the ones you
-  set by click or by hand included, and may move it forward (todo to in-progress, either to done). A move needs the
+- At the end of every turn: Laya reads Claude's last reply against every open item (todo or in-progress) and may move
+  it forward (todo to in-progress, either to done), except an item whose status you set by click or by hand: Laya never
+  moves that one. A move needs the
   reply to share a word only that item has (two-character runs for Japanese); a link in the reply counts only for the
-  item holding that same link. A start cue ("started", "partway", "still", "but not") or a finish cue ("done",
-  "merged", "fixed") outside quotes in the reply plus Laya at 0.5 on that option moves it; with no
-  cue Laya needs 0.9, and 0.9 for a status you set (see How accurate it is). Laya never declines an item, on a refusal
+  item holding that same link. A start cue ("started", "partway", "still", "but not", "spawned", "running", "PR is
+  open", "waiting on your merge word", "not merged") or a finish cue ("done", "merged", "fixed") outside quotes in the
+  reply plus Laya at 0.5 on that option moves it; a start cue wins over a finish cue, so a worker reported spawned or
+  running, or work ready but not merged, does not close its item. With no cue Laya needs 0.9 (see How accurate it is).
+  Laya never declines an item, on a refusal
   cue ("skipped", "won't", "dropped") or on its own however sure: only you or firstmate decline. A refusal cue also
   keeps the other cues from counting. Done and declined items are never moved by the plugin. A move is dropped if you
   changed that item while Laya was running.
 - Every change is logged in the notes file's `# Logs` section with who made it (see [Action log](#action-log)). A Laya
-  move carries Laya's answer and its own probability, and `replaced a hand-set status` when the item was one you set by
-  click or by hand. Undo one by clicking the item.
+  move carries Laya's answer and its own probability. Undo one by clicking the item.
 - Click an item in the pane (or Enter on it) to cycle todo, in-progress, done, declined and back, step it with `f` and
   `p` (see [In the pane](#in-the-pane)), or edit the marker by hand. Blocked is not in the cycle: a click, `f` or `p`
-  on a blocked item sets it to todo. Those statuses are yours until Laya moves them
-  under the rule above.
+  on a blocked item sets it to todo. Those statuses are yours: Laya leaves them, and a firstmate bridge report or
+  another click moves them.
 - Firstmate, when the session root holds an executable `config/notes-keeping-bridge` (a firstmate home that opted in;
   the bridge is this plugin's `bin/notes-keeping-bridge`, and `FM_ROOT` / `FM_HOME` name the firstmate checkout and home
   when it is run from here rather than through a link in `config/`):
@@ -268,7 +270,8 @@ What changed: reply statuses are scored by the English checkpoint, the multiling
 - A cue. Only the sentences that name the item, and the ones that carry on from them without naming another item, are read
   for the `rejected`, `started` and `finished` regexes in `hooks/todo.ts` (checked in that order), with the item's own
   words removed first so "the skipped-move counter" is not a refusal. The cued option gets +8 nats on Laya's log
-  probability. The result must reach 0.5 on the cued option, 0.9 on any other, and 0.9 when the captain set the status by hand (also on a cued option).
+  probability. The result must reach 0.5 on the cued option and 0.9 on any other. A status the captain set by hand is
+  never moved (2026-10-29: the captain set Review PR #27921 back to in-progress and Laya closed it again).
 - Since the actor log change, Laya never moves an item to declined: a refusal cue lifts nothing, and rejected at any
   probability leaves the item (the Sentry item was declined on one refusal cue with Laya at 0.05 on rejected, and the
   editor-key item on "Dropping" in a carry-on sentence with Laya at 0.19). Start and finish cues count as before. A
@@ -311,13 +314,13 @@ wrong counting a move to that status on a case that said anything else):
 The wrong done left is the decoy below; the other was the "not" in "notes" bug. These sets are tuning data (see above),
 so read the zeros as optimistic.
 
-The hand-set floor of 0.9 (the captain's choice) is not backed by a measurement that separates it from the others, and the 0.9 floor for a
-reply with no cue is the first one that was chosen on one tune set.
+The 0.9 floor for a reply with no cue is the first one that was chosen on one tune set.
 
 Limits:
 
-- A start or finish cue decides, Laya breaks ties. With one in the reply the result is near 1.0 whatever Laya said, so
-  the hand-set floor only bites on replies with no cue. Cues are read per sentence, and a sentence that follows one
+- A start or finish cue decides, Laya breaks ties. With one in the reply the result is near 1.0 whatever Laya said.
+  A start word near a real finish ("merged; the hook is running in every session") keeps the item open: click it.
+  Cues are read per sentence, and a sentence that follows one
   naming the item is assumed to carry on about it ("The counter is begun. I dropped the retry." reads as a refusal).
   The lists are short and English plus a few Japanese words; wording they miss falls back to Laya alone at 0.9.
 - A decoy that shares two or three domain words with an item and carries a cue ("The notes folder is committed after

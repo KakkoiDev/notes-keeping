@@ -287,12 +287,13 @@ describe('Laya answers', () => {
     expect(moved(item, 'The toggle was reworked.', verdict('finished', 0.9))).toMatchObject({ status: 'done' })
   })
 
-  test('a status the captain set needs Laya at 0.9, with or without a cue word', () => {
+  // 2026-10-29 06:32Z: the captain set Review PR #27921 back to in-progress and Laya closed it again on a finish cue.
+  test('Laya never moves a status the captain set, with or without a cue word', () => {
     const hand = { ...item, status: 'in-progress' as const }
-    expect(moved(hand, 'The toggle was reworked.', verdict('finished', 0.89), [], true)).toBeUndefined()
-    expect(moved(hand, 'The toggle was reworked.', verdict('finished', 0.6), [], true)).toBeUndefined()
-    expect(moved(hand, 'The toggle was reworked.', verdict('finished', 0.9), [], true)).toMatchObject({ status: 'done' })
-    expect(moved(hand, 'The toggle was reworked.', verdict('finished', 0.6), [], false)).toBeUndefined()
+    expect(moved(hand, 'The toggle was reworked.', verdict('finished', 0.99), [], true)).toBeUndefined()
+    expect(moved(hand, 'The toggle is merged.', verdict('finished', 0.99), [], true)).toBeUndefined()
+    expect(moved({ ...item, status: 'todo' }, 'Started on the toggle.', verdict('started', 0.99), [], true)).toBeUndefined()
+    expect(moved(hand, 'The toggle is merged.', verdict('finished', 0.6), [], false)).toMatchObject({ status: 'done' })
   })
 
   // Audit 2026-10-29, section 3.5 A: Laya leaning "started" on the Sentry item, rejected at 0.05, declined it on one refusal cue.
@@ -378,6 +379,64 @@ describe('Laya answers', () => {
     expect(moved(tickets, reply, { label: 'not-mentioned', p: 0.469, probs })).toBeUndefined()
     const finished = 'The Notion tickets now mark every closed PR, and the POC experiment statuses are updated. Done.'
     expect(moved(tickets, finished, { label: 'started', p: 0.543, probs: { 'not-mentioned': 0.17, started: 0.543, finished: 0.23, rejected: 0.058 } })).toMatchObject({ status: 'done' })
+  })
+
+  // 2026-10-29 09:20Z: Laya closed this item two minutes after its worker was spawned. The finish cue was "spawn finished"
+  // in the turn ledger; nothing had landed. Reply is firstmate's real one; probabilities are Laya's on it.
+  const economizer = { status: 'in-progress' as const, text: "I want to add this to firstmate's normal behavior https://github.com/microsoft/TokenEconomizer" }
+  const economizerSiblings = [economizer.text, 'I want to integrate this https://github.com/google/elephant-goldfish-model in our workflow, so that every coding tasks has to go through it.']
+  const economizerProbs = { 'not-mentioned': 0.1367, started: 0.454, finished: 0.3789, rejected: 0.0304 }
+  const economizerVerdict = { label: 'started', p: 0.454, probs: economizerProbs }
+
+  test('a worker spawned or running does not close its item', () => {
+    const reply = [
+      '[new_soul]',
+      '',
+      'Captain, the TokenEconomizer worker is now running. Its first step is reading the repo.',
+      '',
+      '```',
+      'Asked this turn',
+      '1. (no captain request; spawn finished) - TokenEconomizer worker running',
+      '',
+      'Open with you (81)',
+      '- (none new)',
+      '',
+      'Jev asks this turn (0)',
+      'none',
+      '```',
+    ].join('\n')
+    expect(moved(economizer, reply, economizerVerdict, economizerSiblings)).toBeUndefined()
+    for (const said of [
+      'TokenEconomizer worker launched; setup done, it is reading the repo.',
+      'TokenEconomizer: worker spawned, first commit added.',
+      'The TokenEconomizer worker is still running.',
+      'TokenEconomizer worker kicked off, the brief is written.',
+    ]) {
+      expect(moved(economizer, said, economizerVerdict, economizerSiblings)).toBeUndefined()
+    }
+    expect(moved({ ...economizer, status: 'todo' }, reply, economizerVerdict, economizerSiblings)).toMatchObject({ status: 'in-progress' })
+  })
+
+  test('work reported ready or with its PR open, but not merged, does not close its item', () => {
+    for (const said of [
+      'TokenEconomizer: finished, waiting on your merge word.',
+      'TokenEconomizer is implemented and the PR is open: https://github.com/KakkoiDev/firstmate/pull/9. Ready for your merge.',
+      'TokenEconomizer: tests pass, PR opened, not merged yet.',
+      "TokenEconomizer is done on its branch but hasn't landed.",
+      'Nothing on TokenEconomizer has landed yet.',
+    ]) {
+      expect(moved(economizer, said, economizerVerdict, economizerSiblings)).toBeUndefined()
+    }
+  })
+
+  test('work merged or landed closes its item', () => {
+    for (const said of [
+      'TokenEconomizer is merged into firstmate.',
+      'TokenEconomizer landed: https://github.com/KakkoiDev/firstmate/pull/9 is merged.',
+      'The TokenEconomizer worker finished and its PR is merged.',
+    ]) {
+      expect(moved(economizer, said, economizerVerdict, economizerSiblings)).toMatchObject({ status: 'done', label: 'finished' })
+    }
   })
 
   test('a cue only counts in a sentence about the item, and not inside the item own words', () => {
