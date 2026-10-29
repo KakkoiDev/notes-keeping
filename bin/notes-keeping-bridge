@@ -2,7 +2,7 @@
 """notes-keeping-bridge - links the notes-keeping todo list to this firstmate home's tasks.
 
 The notes-keeping plugin runs this file when it exists under the session root (config/ is gitignored, so only this
-home opted in). Two verbs are the plugin's; two are firstmate's.
+home opted in). Four verbs are the plugin's; four are firstmate's.
 
   status <notes-file>        print {"<item text>": {"status": "in-progress" | "done" | null, "task": "<id>"}} for every
                              linked item; an item linked by id is printed as "id:<id>" with an "id" field, and a link
@@ -17,8 +17,21 @@ home opted in). Two verbs are the plugin's; two are firstmate's.
                              change line names; it survives edits to the item's text) or the item text. --by names who
                              made the link (firstmate, a crewmate); the plugin logs the item's moves with it.
   unlink <item>              drop the item's link.
+  pending <notes-file>       print the updates queued for the notes file as [{"request", "text", "by", "task"}] and take them
+                             off the queue; the session that asks is the notes file's active session.
+  answer <request>           the outcome of a taken update on stdin, {"id": "<item id>"} or {"error": "<why>"}, for the
+                             update waiting on it.
+  update <notes-file> <text> --by <name> --task <task-id>
+                             queue <text> as an [UPDATE] for the notes file's session, which writes it under ## Updates,
+                             logs it as firstmate's (<task-id>, by <name>) and gets a todo item from it. Prints that item's
+                             id. Exits 1 with the reason when the plugin answers an error, or when no session takes the
+                             update within NOTES_KEEPING_BRIDGE_WAIT seconds (default 20); an update not taken is withdrawn, and pending
+                             drops one whose caller was killed before then.
+  active                     print the notes file a session asked for pending updates within the last 15 seconds, the
+                             latest when several did; exits 1 when none did.
 
-Links are appended to state/notes-todo-links.jsonl. An item's key is id:<id>, or its text lowercased with whitespace
+Links are appended to state/notes-todo-links.jsonl; queued updates are files in state/notes-keeping-queue/, and the
+active notes file is state/notes-keeping-active.json. An item's key is id:<id>, or its text lowercased with whitespace
 collapsed, the same text key the plugin falls back to for an item without an id. FM_HOME overrides the home whose state/ is used. FM_ROOT names the firstmate checkout whose
 bin/fm-inbox.sh takes the notes; without it the checkout is the parent of this file's directory, so a firstmate
 config/notes-keeping-bridge symlink to this file needs neither.
@@ -27,6 +40,7 @@ import hashlib
 import json
 import os
 import re
+import secrets
 import subprocess
 import sys
 import time
@@ -35,14 +49,21 @@ ROOT = os.environ.get('FM_ROOT') or os.path.dirname(os.path.dirname(os.path.absp
 HOME = os.environ.get('FM_HOME') or ROOT
 STATE = os.path.join(HOME, 'state')
 LINKS = os.path.join(STATE, 'notes-todo-links.jsonl')
+QUEUE = os.path.join(STATE, 'notes-keeping-queue')
+ACTIVE = os.path.join(STATE, 'notes-keeping-active.json')
 INBOX = os.path.join(ROOT, 'bin', 'fm-inbox.sh')
+# The plugin asks every 5 seconds while its session is open.
+ACTIVE_S = 15
+POLL_S = 0.2
+REQUEST = re.compile(r'^[0-9a-f]{16}$')
 STATES = ('working', 'needs-decision', 'blocked', 'paused', 'done', 'failed')
 STATE_LINE = re.compile(r'^(%s)(?: \[[^\]]*\])?:' % '|'.join(re.escape(s) for s in STATES))
 ADDED = re.compile(r'^\+ \[.\] ')
 ID_TAG = re.compile(r' \[id:[a-z0-9]+\]$')
 ITEM_ID = re.compile(r'^id:([a-z0-9]+)$')
 TASK_ID = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]*$')
-USAGE = 'usage: notes-keeping-bridge status <notes-file> | notify <notes-file> | link <task-id> <item> [--by <name>] | unlink <item>'
+USAGE = ('usage: notes-keeping-bridge status <notes-file> | notify <notes-file> | link <task-id> <item> [--by <name>] | unlink <item>'
+         ' | pending <notes-file> | answer <request> | update <notes-file> <text> --by <name> --task <task-id> | active')
 
 
 def die(text, code=2):
@@ -132,6 +153,109 @@ def notify(notes_file):
         die(f'fm-inbox.sh note failed ({done.returncode}): {(done.stderr or done.stdout).strip()}', 1)
 
 
+def option(rest, name):
+    """The value after name, and rest without both; a missing or malformed value is refused."""
+    if name not in rest:
+        return None, rest
+    at = rest.index(name)
+    if at + 1 >= len(rest) or not TASK_ID.match(rest[at + 1]):
+        die(f'{name} needs a name')
+    return rest[at + 1], rest[:at] + rest[at + 2:]
+
+
+def write_json(path, value):
+    tmp = f'{path}.tmp'
+    with open(tmp, 'w', encoding='utf-8') as f:
+        f.write(json.dumps(value, ensure_ascii=False) + '\n')
+    os.replace(tmp, path)
+
+
+def pending(notes_file):
+    """Takes each update queued for the notes file by renaming it, so an update is handed out once and cannot be withdrawn after."""
+    os.makedirs(STATE, exist_ok=True)
+    write_json(ACTIVE, {'file': notes_file, 'at': int(time.time())})
+    out = []
+    names = sorted(os.listdir(QUEUE)) if os.path.isdir(QUEUE) else []
+    for name in names:
+        request = name[:-len('.json')]
+        if not name.endswith('.json') or not REQUEST.match(request):
+            continue
+        path = os.path.join(QUEUE, name)
+        try:
+            with open(path, encoding='utf-8') as f:
+                record = json.load(f)
+        except (FileNotFoundError, ValueError):
+            continue
+        if os.path.realpath(record.get('file', '')) != os.path.realpath(notes_file):
+            continue
+        # Past its deadline the caller has given up or was killed: nobody would take the id.
+        if time.time() >= record.get('until', float('inf')):
+            try:
+                os.remove(path)
+            except FileNotFoundError:
+                pass
+            continue
+        try:
+            os.rename(path, os.path.join(QUEUE, f'{request}.taken'))
+        except FileNotFoundError:
+            continue
+        out.append({'request': request, 'text': record['text'], 'by': record['by'], 'task': record['task']})
+    print(json.dumps(out, ensure_ascii=False))
+
+
+def answer(request):
+    taken = os.path.join(QUEUE, f'{request}.taken')
+    if not REQUEST.match(request) or not os.path.exists(taken):
+        die(f'no taken update: {request}', 1)
+    try:
+        outcome = json.loads(sys.stdin.read())
+    except ValueError:
+        die('the answer is not JSON')
+    write_json(os.path.join(QUEUE, f'{request}.answer'), outcome)
+
+
+def update(notes_file, text, by, task):
+    os.makedirs(QUEUE, exist_ok=True)
+    request = secrets.token_hex(8)
+    queued = os.path.join(QUEUE, f'{request}.json')
+    answered = os.path.join(QUEUE, f'{request}.answer')
+    wait = float(os.environ.get('NOTES_KEEPING_BRIDGE_WAIT') or 20)
+    deadline = time.time() + wait
+    write_json(queued, {'file': notes_file, 'text': text, 'by': by, 'task': task, 'at': int(time.time()), 'until': deadline})
+    is_taken = False
+    while not os.path.exists(answered):
+        if time.time() >= deadline:
+            if is_taken:
+                die(f'the notes-keeping session took the update but did not answer within {wait:g} s; it may still write it', 1)
+            try:
+                os.remove(queued)
+                die(f'no notes-keeping session took the update within {wait:g} s; nothing was written', 1)
+            except FileNotFoundError:
+                # Taken: the plugin is writing it, and answers within its bridge call.
+                is_taken = True
+                deadline = time.time() + wait
+        time.sleep(POLL_S)
+    with open(answered, encoding='utf-8') as f:
+        outcome = json.load(f)
+    os.remove(answered)
+    os.remove(os.path.join(QUEUE, f'{request}.taken'))
+    if isinstance(outcome.get('id'), str):
+        print(outcome['id'])
+    else:
+        die(str(outcome.get('error', 'no id in the answer')), 1)
+
+
+def active():
+    try:
+        with open(ACTIVE, encoding='utf-8') as f:
+            record = json.load(f)
+    except (FileNotFoundError, ValueError):
+        die('no notes-keeping session has asked for pending updates', 1)
+    if time.time() - record.get('at', 0) > ACTIVE_S:
+        die(f'no notes-keeping session has asked for pending updates in the last {ACTIVE_S} s', 1)
+    print(record['file'])
+
+
 def main(argv):
     verb, args = (argv[0], argv[1:]) if argv else ('', [])
     if verb == 'status' and len(args) == 1:
@@ -139,13 +263,9 @@ def main(argv):
     elif verb == 'notify' and len(args) == 1:
         notify(args[0])
     elif verb == 'link' and len(args) >= 2:
-        task, rest, by = args[0], args[1:], {}
-        if '--by' in rest:
-            at = rest.index('--by')
-            if at + 1 >= len(rest) or not TASK_ID.match(rest[at + 1]):
-                die('--by needs a name')
-            by = {'by': rest[at + 1]}
-            rest = rest[:at] + rest[at + 2:]
+        task, rest = args[0], args[1:]
+        name, rest = option(rest, '--by')
+        by = {} if name is None else {'by': name}
         text = ' '.join(rest).strip()
         if not TASK_ID.match(task):
             die(f'not a task id: {task}')
@@ -158,6 +278,21 @@ def main(argv):
         if key not in links():
             die(f'no link for: {key}', 1)
         append({'unlink': True, 'key': key, 'at': int(time.time())})
+    elif verb == 'pending' and len(args) == 1:
+        pending(args[0])
+    elif verb == 'answer' and len(args) == 1:
+        answer(args[0])
+    elif verb == 'update' and len(args) >= 2:
+        by, rest = option(args[1:], '--by')
+        task, rest = option(rest, '--task')
+        text = ' '.join(rest).strip()
+        if by is None or task is None:
+            die('update needs --by <name> and --task <task-id>')
+        if text == '':
+            die('empty update text')
+        update(args[0], text, by, task)
+    elif verb == 'active' and not args:
+        active()
     else:
         die(USAGE)
 

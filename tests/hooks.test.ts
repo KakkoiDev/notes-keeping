@@ -3,7 +3,7 @@ import type { On, RenderElement } from 'claude-code'
 import type { Engine } from 'claude-code/testing'
 import { nextStatus } from '../hooks/todos'
 import { context, idFor, items, withoutIds } from '../hooks/todo'
-import { sections } from '../hooks/notes'
+import { sections, stamp } from '../hooks/notes'
 
 const HOME = '/home/me'
 const ROOT = '/work/firstmate'
@@ -27,8 +27,15 @@ const bare = (text: string | undefined) => withoutIds(text ?? '')
 
 type Ask = { lines: { id: string; text: string }[]; statuses: { id: string; text: string }[]; answer: string }
 const BRIDGE = `${ROOT}/config/notes-keeping-bridge`
-// What the fake bridge reports for status, and the change lines each notify sent.
-const bridge: { links: Record<string, { status: string | null; task: string; id?: string; by?: string }>; notified: string[]; calls: string[] } = { links: {}, notified: [], calls: [] }
+// What the fake bridge reports for status, the change lines each notify sent, the updates pending hands out once, and each answer.
+const bridge: {
+  links: Record<string, { status: string | null; task: string; id?: string; by?: string }>
+  notified: string[]
+  calls: string[]
+  argv: string[][]
+  pending: { request: string; text: string; by: string; task: string }[]
+  answers: { request: string; answer: unknown }[]
+} = { links: {}, notified: [], calls: [], argv: [], pending: [], answers: [] }
 // What the fake Laya answers; left undefined, the call fails.
 const laya: { answer: ((ask: Ask) => unknown) | undefined; asks: Ask[] } = { answer: undefined, asks: [] }
 // What the fake label model answers per prompt; left undefined, the call fails as an API error.
@@ -72,6 +79,9 @@ function engine(
   bridge.links = {}
   bridge.notified = []
   bridge.calls = []
+  bridge.argv = []
+  bridge.pending = []
+  bridge.answers = []
   model.answer = undefined
   model.asks = []
   clipboard.text = undefined
@@ -118,8 +128,10 @@ function engine(
     }
     if (e.argv[0] === BRIDGE) {
       bridge.calls.push(e.argv[1] ?? '')
+      bridge.argv.push([...e.argv])
       if (e.argv[1] === 'notify') bridge.notified.push(e.init?.stdin ?? '')
-      const stdout = e.argv[1] === 'status' ? JSON.stringify(bridge.links) : ''
+      if (e.argv[1] === 'answer') bridge.answers.push({ request: e.argv[2] ?? '', answer: JSON.parse(e.init?.stdin ?? '') })
+      const stdout = e.argv[1] === 'status' ? JSON.stringify(bridge.links) : e.argv[1] === 'pending' ? JSON.stringify(bridge.pending.splice(0)) : ''
       return { value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
     }
     git.calls.push([...e.argv])
@@ -1932,6 +1944,69 @@ test('a hand edit made between turns reaches the bridge within one refresh', asy
   await flush()
   expect(bridge.notified).toHaveLength(1)
   expect(fs[BOUND]).toBe(written)
+})
+
+test('an update firstmate queues through the bridge lands under ## Updates within one refresh, logged as firstmate, and its item id is answered', async ($, on) => {
+  const fs: Fs = { [BOUND]: setTodoFile('- [ ] Add a ctrl+q toggle'), [PYTHON]: '', [BRIDGE]: '' }
+  const { clock } = engine(on, fs, { ...SESSION_BOUND })
+  fakeLaya()
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
+  await flush()
+  bridge.pending = [{ request: 'r1', text: 'Ship the spawn todo', by: 'firstmate', task: 'spawn-x' }]
+  await clock.advance(5_000)
+  await flush()
+  const id = idFor('Ship the spawn todo', new Set())
+  expect(bridge.answers).toEqual([{ request: 'r1', answer: { id } }])
+  const when = stamp(new Date(2026, 9, 26, 10, 58, 5).getTime())
+  expect(sections(fs[BOUND] ?? '').updates).toContain(`[UPDATE] ${when}\nShip the spawn todo <!-- id:${id} -->`)
+  expect(fs[BOUND]).toContain(`- [ ] Ship the spawn todo <!-- id:${id} -->`)
+  expect(logsOf(fs[BOUND])).toContain(`- ${TICK} | firstmate | update | id:${id} Ship the spawn todo | - | spawn-x, by firstmate: Ship the spawn todo`)
+  expect(logsOf(fs[BOUND]).filter(line => / \| (captain|unknown) \| /.test(line))).toEqual([])
+  // A request is answered once: the next ticks write nothing more.
+  const written = fs[BOUND]
+  await clock.advance(5_000)
+  await flush()
+  expect(bridge.answers).toHaveLength(1)
+  expect(fs[BOUND]).toBe(written)
+})
+
+test('a queued update whose text an item already has answers that item\'s id and adds no second item', async ($, on) => {
+  const fs: Fs = { [BOUND]: setTodoFile('- [ ] Ship the spawn todo <!-- id:ab12cd3 -->'), [PYTHON]: '', [BRIDGE]: '' }
+  const { clock } = engine(on, fs, { ...SESSION_BOUND })
+  fakeLaya()
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
+  await flush()
+  bridge.pending = [{ request: 'r1', text: 'Ship the spawn todo', by: 'crew-7', task: 'spawn-x' }]
+  await clock.advance(5_000)
+  await flush()
+  expect(bridge.answers).toEqual([{ request: 'r1', answer: { id: 'ab12cd3' } }])
+  expect(bare(fs[BOUND]).match(/^- \[ \] Ship the spawn todo$/gm)).toHaveLength(1)
+  expect(logsOf(fs[BOUND]).at(-1)).toBe(`- ${TICK} | firstmate | update | id:ab12cd3 Ship the spawn todo | - | spawn-x, by crew-7: Ship the spawn todo`)
+})
+
+test('a queued update that would make no todo item is answered with why and writes nothing', async ($, on) => {
+  const fs: Fs = { [BOUND]: setTodoFile('- [ ] Add a ctrl+q toggle'), [PYTHON]: '', [BRIDGE]: '' }
+  const { clock } = engine(on, fs, { ...SESSION_BOUND })
+  fakeLaya()
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
+  await flush()
+  const before = fs[BOUND]
+  bridge.pending = [{ request: 'r1', text: 'Project: dotfiles', by: 'firstmate', task: 'spawn-x' }]
+  await clock.advance(5_000)
+  await flush()
+  expect(bridge.answers).toEqual([{ request: 'r1', answer: { error: 'the update makes no todo item' } }])
+  expect(fs[BOUND]).toBe(before)
+})
+
+test('a bound interactive session asks the bridge for pending updates for its own notes file on each refresh', async ($, on) => {
+  const fs: Fs = { [BOUND]: setTodoFile('- [ ] Add a ctrl+q toggle'), [PYTHON]: '', [BRIDGE]: '' }
+  const { clock } = engine(on, fs, { ...SESSION_BOUND })
+  fakeLaya()
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
+  await flush()
+  await clock.advance(5_000)
+  await flush()
+  expect(bridge.argv.filter(call => call[1] === 'pending')).toEqual([[BRIDGE, 'pending', BOUND]])
 })
 
 test('an item linked by id keeps its link and its bridge status when the captain edits its text', async ($, on) => {

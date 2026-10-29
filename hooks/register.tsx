@@ -35,7 +35,7 @@ import {
   updateLine,
   withoutLogs,
 } from './notes'
-import { EMPTY, bridgeMoves, candidateKeys, candidates, changeLine, cleanLabel, context, cycle, cycleItem, diffSnapshot, format, idOf, isBackground, items, keyOf, labelPrompt, moved, parse, pin, reconcile, row, settle, shown, snapshotOf, withIds, withoutIds } from './todo'
+import { EMPTY, bridgeMoves, candidateKeys, candidates, changeLine, cleanLabel, context, cycle, cycleItem, diffSnapshot, format, idFor, idOf, isBackground, items, keyOf, labelPrompt, moved, parse, pin, reconcile, row, settle, shown, snapshotOf, withIds, withoutIds } from './todo'
 import type { Applied, Candidate, Change, Item, Memory, Move, Status, Verdict } from './todo'
 import { TodoSlot, nextShown, rowId, rowKey, selectedOf, stepStatus } from './todos'
 import type { Landing } from './todos'
@@ -70,7 +70,8 @@ const LABEL_MS = 20_000
 // Where Laya and bridge moves were logged before the # Logs section; read once per notes file, never written.
 const LEGACY_LOG = 'todo-changes.log'
 const LOG_ROWS = 200
-// An executable under the session root, run only when present: `status` reports linked items' statuses, `notify` takes changes on stdin.
+// An executable under the session root, run only when present: `status` reports linked items' statuses, `notify` takes changes on stdin,
+// `pending` hands out the updates firstmate queued for a notes file and `answer` takes the outcome of one on stdin.
 const BRIDGE = 'config/notes-keeping-bridge'
 const BRIDGE_MS = 10_000
 
@@ -267,8 +268,8 @@ async function bridgeOf($: EngineInterface): Promise<string | undefined> {
   return (await $.fs.exists(bridge)) ? bridge : undefined
 }
 
-async function runBridge($: EngineInterface, bridge: string, verb: 'status' | 'notify', path: string, stdin = ''): Promise<string> {
-  const done = await $.process.run([bridge, verb, path], { stdin, timeoutMs: BRIDGE_MS })
+async function runBridge($: EngineInterface, bridge: string, verb: 'status' | 'notify' | 'pending' | 'answer', arg: string, stdin = ''): Promise<string> {
+  const done = await $.process.run([bridge, verb, arg], { stdin, timeoutMs: BRIDGE_MS })
   if (done.exitCode !== 0) throw new Error(`bridge ${verb} failed: ${done.stderr.trim().split('\n').pop() || done.exitCode}`)
   return done.stdout
 }
@@ -349,6 +350,55 @@ async function watchTodo($: EngineInterface): Promise<void> {
     return foundLines(found)
   })
   if (bridge !== undefined) await notify($, bridge, path, changes)
+}
+
+type Queued = { request: string; text: string; by: string; task: string }
+type Answer = { id: string } | { error: string }
+let isToldNoPending = false
+
+// Appends a queued update as firstmate's, with the id of the item the todo run makes from it already on its line: an item
+// that has the same text gives its own id, and an update the todo run would make no item from is not written.
+async function queuedUpdate($: EngineInterface, path: string, queued: Queued): Promise<Answer> {
+  const at = await $.clock.now()
+  return locked(async () => {
+    const md = await readText($, path)
+    const out = addUpdate(md, stamp(at), queued.text)
+    const fresh = candidates(sections(out))
+    const c = fresh.length > candidates(sections(md)).length ? fresh.at(-1) : undefined
+    if (c === undefined) return { error: 'the update makes no todo item' }
+    const list = items(sections(out).todo)
+    const keys = candidateKeys(c)
+    const had = list.find(item => keys.includes(keyOf(item.text)))
+    const { seen } = await readMemory($, path)
+    if (had === undefined && keys.some(key => seen.includes(key))) return { error: 'the todo run has seen this text before and makes no item from it' }
+    if (had !== undefined && had.id === undefined) return { error: 'the item with this text has no id yet' }
+    const taken = new Set([...list, ...fresh].flatMap(one => (one.id === undefined ? [] : [one.id])))
+    const id = had?.id ?? idFor(c.text, taken)
+    const item: Item = { status: 'todo', text: c.text, id }
+    const entry: Entry = { at, actor: 'firstmate', action: 'update', item, note: `${queued.task}, by ${queued.by}: ${queued.text}` }
+    warn($, told('', await save($, path, await logged($, path, stampIds(out, [...list, item]), [entry]), 'update')))
+    return { id }
+  })
+}
+
+// Each refresh hands this session's notes file the updates firstmate queued for it, and answers each with its item's id.
+async function drainQueue($: EngineInterface): Promise<void> {
+  const path = await keptPath($)
+  const bridge = await bridgeOf($)
+  if (path === undefined || bridge === undefined) return
+  let queued: Queued[]
+  try {
+    queued = JSON.parse(await runBridge($, bridge, 'pending', path)) as Queued[]
+  } catch (error) {
+    if (!isToldNoPending) $.ui.toast(`notes-keeping: ${message(error)}`)
+    isToldNoPending = true
+    return
+  }
+  for (const one of queued) {
+    const answer = await queuedUpdate($, path, one).catch((error: unknown): Answer => ({ error: message(error) }))
+    await runBridge($, bridge, 'answer', one.request, JSON.stringify(answer)).catch((error: unknown) => $.ui.toast(`notes-keeping: ${message(error)}`))
+  }
+  if (queued.length > 0) void syncTodo($, '')
 }
 
 // Laya only picks among given answers, so the label comes from a small model through the session's own client.
@@ -916,6 +966,7 @@ export const register: Register = on => {
         const panes = await $.ui.panes()
         if (panes.some(pane => pane.id === PANE)) await refresh($)
         await watchTodo($)
+        await drainQueue($)
       })
     }
     return next(e)

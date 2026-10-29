@@ -126,6 +126,14 @@ out.
     did not make (a hand edit, another program). The bridge files them as one inbox note whose first line, the part
     firstmate's notification shows, is the first change (`<item>` or `<item>: <from> -> <to> (<who>)`), with
     `(+N more)` when there are several.
+  - Every five seconds an interactive session with a notes file runs `bridge pending <notes file>`, which hands out
+    the updates firstmate queued for that file with `bridge update <notes file> <text> --by <name> --task <task-id>`.
+    The plugin adds each one as an `[UPDATE]` under `## Updates`, logged as `firstmate` with `<task-id>, by <name>`,
+    with the id of the item the todo run makes from it already on its line, and answers that id through
+    `bridge answer <request>`; `update` prints it. An update whose text an item already has answers that item's id and
+    makes no second one; an update the todo run would make no item from (a `Name: value` label alone, a text it has
+    seen before) is answered with why and not written. `bridge active` prints the notes file the latest session asked
+    for, within the last 15 seconds, so firstmate needs no notes file of its own.
   - Without the file nothing of this runs.
 - Claude never edits the notes file; its Edit and Write on the notes folder are denied.
 
@@ -164,7 +172,7 @@ the firstmate task, the copied file). The actors are listed once in `hooks/actor
 | id | kind | who |
 | --- | --- | --- |
 | `captain` | human | a click or key in the pane, or a command typed at the prompt or sent from the phone |
-| `firstmate` | AI agent | a bridge move (Claude Opus 5.5 via the bridge), with the task id and `--by` name |
+| `firstmate` | AI agent | a bridge move or an update queued through the bridge (Claude Opus 5.5 via the bridge), with the task id and `--by` name |
 | `laya` | AI classifier | a Laya move or a line Laya judged a task (`aac6fef/laya-mlx` on replies, the multilingual checkpoint on objective lines) |
 | `plugin` | plugin | an item made from an objective or update as written, with no Laya call |
 | `unknown` | unknown | a change found in the file that the plugin did not make, or a command from another origin |

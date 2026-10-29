@@ -116,5 +116,78 @@ check 'one add with an id: the first line is the item text' 'Ship the bridge' "$
 home
 printf '+ [ ] A\n+ [x] B\nC: todo -> declined (captain)\n' | b notify /notes/a.md
 check 'three changes count two more' 'A (+2 more)' "$(first)"
+home
+b active >/dev/null 2>&1
+check 'active with no session draining fails' '1' "$?"
+check 'pending with nothing queued prints an empty list' '[]' "$(b pending /notes/a.md)"
+check 'active names the notes file a session asked for pending updates' '/notes/a.md' "$(b active)"
+printf '{"file": "/notes/a.md", "at": %d}\n' "$(( $(date +%s) - 60 ))" > "$H/state/notes-keeping-active.json"
+b active >/dev/null 2>&1
+check 'active fails once that session has not asked for a while' '1' "$?"
+
+# play the plugin: hand out pending updates for <file> until one appears, then answer it with <json>
+serve() {  # <file> <json>
+  local got=''
+  for _ in $(seq 50); do
+    got="$(b pending "$1")"
+    [ "$got" != '[]' ] && break
+    sleep 0.1
+  done
+  printf '%s' "$got" > "$H/served"
+  b answer "$(python3 -c 'import json,sys; print(json.load(sys.stdin)[0]["request"])' < "$H/served")" <<< "$2"
+}
+
+home
+b pending /notes/b.md >/dev/null
+serve /notes/a.md '{"id": "ab12cd3"}' &
+out="$(NOTES_KEEPING_BRIDGE_WAIT=5 b update /notes/a.md 'Ship the spawn todo' --by firstmate --task spawn-x)"
+code=$?
+wait
+check 'update prints the id the plugin answered' 'ab12cd3' "$out"
+check 'update exits 0 once answered' '0' "$code"
+check 'pending hands out text, by and task' 'Ship the spawn todo|firstmate|spawn-x' "$(python3 -c 'import json,sys; r=json.load(sys.stdin)[0]; print("|".join([r["text"], r["by"], r["task"]]))' < "$H/served")"
+check 'an answered update leaves nothing queued' '[]' "$(b pending /notes/a.md)"
+check 'an answered update leaves no queue files' '' "$(cat "$H/state/notes-keeping-queue/"* 2>/dev/null)"
+
+home
+serve /notes/a.md '{"error": "the update makes no todo item"}' &
+err="$(NOTES_KEEPING_BRIDGE_WAIT=5 b update /notes/a.md 'Project: x' --by firstmate --task spawn-x 2>&1 >/dev/null)"
+code=$?
+wait
+check 'an answered error exits 1' '1' "$code"
+check 'and says why' 'notes-keeping-bridge: the update makes no todo item' "$err"
+
+home
+( sleep 0.5; b pending /notes/b.md > "$H/other" ) &
+NOTES_KEEPING_BRIDGE_WAIT=1 b update /notes/a.md 'Nobody drains this' --by firstmate --task spawn-x 2>/dev/null
+check 'update no session takes in time exits 1' '1' "$?"
+check 'and is withdrawn' '[]' "$(b pending /notes/a.md)"
+wait
+check 'pending for another notes file does not take it' '[]' "$(cat "$H/other")"
+
+home
+mkdir -p "$H/state/notes-keeping-queue"
+printf '{"file": "/notes/a.md", "text": "Caller was killed", "by": "firstmate", "task": "spawn-x", "at": 1, "until": 2}\n' > "$H/state/notes-keeping-queue/00000000000000aa.json"
+check 'pending drops an update whose caller stopped waiting, without handing it out' '[]' "$(b pending /notes/a.md)"
+check 'and removes it from the queue' '' "$(ls "$H/state/notes-keeping-queue")"
+
+home
+( sleep 0.3; b pending /notes/a.md > /dev/null ) &
+NOTES_KEEPING_BRIDGE_WAIT=1 b update /notes/a.md 'Taken, never answered' --by firstmate --task spawn-x 2>/dev/null
+check 'an update taken but never answered gives up after a second wait and exits 1' '1' "$?"
+wait
+
+home
+b update /notes/a.md 'No by' --task spawn-x 2>/dev/null
+check 'update without --by is refused' '2' "$?"
+b update /notes/a.md 'No task' --by firstmate 2>/dev/null
+check 'update without --task is refused' '2' "$?"
+b update /notes/a.md 'Bad task' --by firstmate --task ../x 2>/dev/null
+check 'update with a task id holding a path is refused' '2' "$?"
+b update /notes/a.md --by firstmate --task spawn-x 2>/dev/null
+check 'update without text is refused' '2' "$?"
+b answer nope <<< '{"id": "x"}' 2>/dev/null
+check 'answer for a request nobody took fails' '1' "$?"
+
 printf '\n' "" ; printf '%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
