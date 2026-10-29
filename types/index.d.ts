@@ -32,6 +32,7 @@ declare module 'claude-code' {
       handled: string
       queue: Pair[]
       editing: boolean
+      draft: string
       view: View
       isNotesOpen: boolean
       picked: Opened | null

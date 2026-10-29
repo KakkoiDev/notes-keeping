@@ -13,6 +13,7 @@ import {
   carryOver,
   chatPair,
   create,
+  dropEmptyUpdate,
   fileName,
   inject,
   injectPrevious,
@@ -25,6 +26,7 @@ import {
   stamp,
   stampIds,
   summary,
+  updateLine,
 } from './notes'
 import { EMPTY, bridgeMoves, candidateKeys, candidates, cleanLabel, context, cycle, cycleItem, diffSnapshot, format, idOf, isBackground, items, keyOf, labelPrompt, moved, parse, pin, reconcile, row, settle, shown, snapshotOf, withoutIds } from './todo'
 import type { Applied, Candidate, Item, Memory, Move, Status, Verdict } from './todo'
@@ -39,6 +41,9 @@ const DIR = '.notes-keeping'
 // An engine action with no handler mounted at the prompt; a Global binding of the chord in the user's keybindings.json presses it.
 const ACTION = 'app:cycleDiffBase'
 const CHORD = 'ctrl+q'
+// Only the diff panel Claude Code drew before cc-plugin-diff handles it, so a PaneField binding of it reaches the update box's editor Button.
+const EDITOR_ACTION = 'app:toggleDiffNoiseFilter'
+const EDITOR_CHORD = 'ctrl+e'
 const GIT_MS = 10_000
 const POLL_MS = 600
 const REFRESH_MS = 5_000
@@ -75,6 +80,7 @@ const USAGE = [
   `  show | hide                open or close the notes panel (also ${CHORD}) at the todo list; t todos, o objectives (u update, e editor), i important, c chat, q queue, h history, s send queue`,
   '  debug                      the selection poll: how often it ran, when last, the live selection, and why recent ones opened no pane',
   `${CHORD} works once ~/.claude/keybindings.json binds it: { "bindings": [{ "context": "Global", "bindings": { "${CHORD}": "${ACTION}" } }] }`,
+  `${EDITOR_CHORD} in the update box opens the editor on the new update once it binds { "context": "PaneField", "bindings": { "${EDITOR_CHORD}": "${EDITOR_ACTION}" } }`,
   'Every write starts the notes file when the session has none.',
 ].join('\n')
 
@@ -83,6 +89,7 @@ const select = atom({ plugin: 'notes-keeping', key: 'select' } as const, null as
 const handled = atom({ plugin: 'notes-keeping', key: 'handled' } as const, '')
 const queue = atom({ plugin: 'notes-keeping', key: 'queue' } as const, [] as Pair[])
 const editing = atom({ plugin: 'notes-keeping', key: 'editing' } as const, false)
+const draft = atom({ plugin: 'notes-keeping', key: 'draft' } as const, '')
 const view = atom({ plugin: 'notes-keeping', key: 'view' } as const, 'todos' as View)
 const isNotesOpen = atom({ plugin: 'notes-keeping', key: 'isNotesOpen' } as const, false)
 const picked = atom({ plugin: 'notes-keeping', key: 'picked' } as const, null as Opened | null)
@@ -645,8 +652,19 @@ async function refresh($: EngineInterface): Promise<void> {
   await publish($, path, await readText($, path))
 }
 
+// hx takes file:line, vi-family editors +line; another editor opens the file at its top.
+function editorTarget(editor: string, path: string, line: number | undefined): string {
+  const quoted = `'${path.replaceAll("'", "'\\''")}'`
+  if (line === undefined) return quoted
+  const name = editor.trim().split(/\s+/)[0]?.split('/').pop() ?? ''
+  if (name === 'hx' || name === 'helix') return `${quoted}:${line}`
+  if (['vi', 'vim', 'nvim', 'nano', 'emacs', 'kak'].includes(name)) return `+${line} ${quoted}`
+  return quoted
+}
+
 // The engine keeps the terminal, so the editor runs in a tmux popup; `display-popup -E` returns when the editor exits.
-async function openEditor($: EngineInterface): Promise<void> {
+// From the update box the file gets a new [UPDATE] holding the box's text first, the editor opens on it, and it is dropped if left empty.
+async function openEditor($: EngineInterface, isUpdate = false): Promise<void> {
   const editor = (await $.env.get('VISUAL')) || (await $.env.get('EDITOR'))
   if (!editor) {
     $.ui.toast(`${NAME}: set $VISUAL or $EDITOR to open the notes file in your editor.`)
@@ -657,14 +675,29 @@ async function openEditor($: EngineInterface): Promise<void> {
     return
   }
   const { path, said } = await bound($)
-  const popup = $.process.spawn({ argv: ['tmux', 'display-popup', '-E', '-w', '90%', '-h', '90%', `${editor} '${path.replaceAll("'", "'\\''")}'`] })
+  const when = stamp(await $.clock.now())
+  const line = isUpdate
+    ? await locked(async () => {
+        const md = addUpdate(await readText($, path), when, await read($, draft))
+        await $.fs.write(path, md)
+        await publish($, path, md)
+        const at = updateLine(md, when)
+        return at === undefined ? undefined : at + 1
+      })
+    : undefined
+  const popup = $.process.spawn({ argv: ['tmux', 'display-popup', '-E', '-w', '90%', '-h', '90%', `${editor} ${editorTarget(editor, path, line)}`] })
   let errors = ''
   for await (const chunk of popup) if (chunk.stream === 'stderr') errors += chunk.text
   const ended = await popup.result
   if (ended.code !== 0 && errors.trim() !== '') $.ui.toast(`${NAME}: the editor popup failed: ${errors.trim().split('\n')[0]}`)
+  if (isUpdate) await update($, editing, () => false)
   const written = await locked(async () => {
+    const md = await readText($, path)
+    const kept = isUpdate ? dropEmptyUpdate(md, when) : md
+    if (kept !== md) await $.fs.write(path, kept)
     await refresh($)
-    return commit($, await notesDir($), `editor: ${path.split('/').pop()}`)
+    const isKept = isUpdate && kept === md && updateLine(md, when) !== undefined
+    return commit($, await notesDir($), `${isKept ? 'update' : 'editor'}: ${path.split('/').pop()}`)
   })
   warn($, told('', [...said, ...written]))
 }
@@ -1264,14 +1297,18 @@ export const register: Register = on => {
       )
     } else if (at === 'objectives') {
       const goals = s === undefined ? '' : [s.continuation === undefined ? '' : `Continuation of: ${s.continuation}\n\n`, s.objectives].join('').trim()
+      const isBoxOpen = isEditing && Input !== undefined
       const control =
-        isEditing && Input !== undefined ? (
+        isBoxOpen ? (
           <Input
             key="objectives"
             label="Objectives"
             placeholder={hasObjectives ? 'an update to the objectives' : 'the objectives of this session'}
             submitLabel="keep"
             autoFocus
+            onInput={async (value: string) => {
+              await update($, draft, () => value)
+            }}
             onSubmit={async (value: string) => {
               if (value.trim() !== '') warn($, await objectives($, value.trim()))
               await update($, editing, () => false)
@@ -1283,16 +1320,30 @@ export const register: Register = on => {
             plain
             hotkey="u"
             label={hasObjectives ? 'Update objectives' : 'Set objectives'}
-            onPress={() => update($, editing, () => true)}
+            onPress={async () => {
+              await update($, draft, () => '')
+              await update($, editing, () => true)
+            }}
           />
         )
       content = (
         <Box key="content" flexDirection="column">
           {control}
-          <Button key="editor" plain hotkey="e" label="Open in editor" onPress={() => openEditor($)} />
+          <Button
+            key="editor"
+            plain
+            hotkey="e"
+            {...(isBoxOpen && hasObjectives ? { action: EDITOR_ACTION } : {})}
+            label="Open in editor"
+            onPress={() => openEditor($, isBoxOpen && hasObjectives)}
+          />
           {body('Objectives', goals)}
           {body('Updates', s?.updates ?? '')}
-          {hint(`${hasObjectives ? 'u adds an update under Updates' : 'u sets the objectives'}, Enter keeps it, e opens the notes file in your editor, b goes back`)}
+          {hint(
+            isBoxOpen && hasObjectives
+              ? `Enter keeps it, ${EDITOR_CHORD} writes it in your editor`
+              : `${hasObjectives ? 'u adds an update under Updates' : 'u sets the objectives'}, Enter keeps it, e opens the notes file in your editor, b goes back`,
+          )}
         </Box>
       )
     } else if (at === 'important') {

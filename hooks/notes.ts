@@ -146,6 +146,33 @@ export function addUpdate(md: string, when: string, text: string): string {
   return appendTo(md, UPDATES, [TODO, IMPORTANT, CHAT], `[UPDATE] ${when}\n${text.trim()}`)
 }
 
+// The 1-based line of the last `[UPDATE] <when>` header under ## Updates; undefined when there is none.
+export function updateLine(md: string, when: string): number | undefined {
+  const start = lineStart(md, UPDATES)
+  if (start < 0) return undefined
+  const end = sectionEnd(md, start, [TODO, IMPORTANT, CHAT])
+  const lines = md.split('\n')
+  let at = 0
+  let found: number | undefined
+  lines.forEach((line, i) => {
+    if (at > start && at < end && line.trimEnd() === `[UPDATE] ${when}`) found = i + 1
+    at += line.length + 1
+  })
+  return found
+}
+
+// Removes that header when only blank lines follow it up to the next [UPDATE] or section.
+export function dropEmptyUpdate(md: string, when: string): string {
+  const line = updateLine(md, when)
+  if (line === undefined) return md
+  const lines = md.split('\n')
+  let next = line
+  while (next < lines.length && lines[next]?.trim() === '') next++
+  const following = lines[next]?.trim() ?? ''
+  if (next < lines.length && !/^\[update\]/i.test(following) && !HEADINGS.includes(following)) return md
+  return [...lines.slice(0, line - 1), ...lines.slice(next)].join('\n')
+}
+
 export function addImportant(md: string, tag: string, text: string): string {
   return appendTo(md, IMPORTANT, [CHAT], `${tag} ${text.trim()}`)
 }

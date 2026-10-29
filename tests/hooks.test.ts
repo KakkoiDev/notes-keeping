@@ -122,7 +122,7 @@ function engine(
   })
   on('process.spawn', async function* (_$, e) {
     shell.spawned.push([...e.argv])
-    const path = /'(.*)'$/.exec(e.argv.at(-1) ?? '')?.[1]
+    const path = /'(.*)'(?::\d+)?$/.exec(e.argv.at(-1) ?? '')?.[1]
     if (shell.error !== undefined) {
       yield { stream: 'stderr' as const, text: shell.error }
       return { value: { code: 1, signal: null } }
@@ -1307,6 +1307,106 @@ test('e with neither $VISUAL nor $EDITOR set says so and opens nothing', async (
   await flush()
   expect(ui.toasts.at(-1)).toBe('notes-keeping: set $VISUAL or $EDITOR to open the notes file in your editor.')
   expect(shell.spawned).toEqual([])
+  await pane.unmount()
+})
+
+test('e from the update box opens the editor on a new [UPDATE] section holding what the box had, and keeps it', async ($, on) => {
+  const fs: Fs = { [BOUND]: NOTES }
+  shell.vars = { EDITOR: 'hx', TMUX: '/tmp/tmux-1/default,1,0' }
+  const { git } = engine(on, fs, { [`session:${SESSION}`]: BOUND })
+  const seen: string[] = []
+  shell.edit = text => {
+    seen.push(text)
+    return text.replace('half a thought', 'half a thought, finished')
+  }
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: false })
+  await run($, 'show')
+  const pane = await $.ui.mount({ ...NOTES_PANE, surface: 'terminal' })
+  await pane.press({ key: 'view:objectives' })
+  expect((await pane.find({ key: 'editor' }))?.props.action).toBeUndefined()
+  await pane.press({ key: 'objectives' })
+  await pane.input({ key: 'objectives', text: 'half a thought', kind: 'change' })
+  expect((await pane.find({ key: 'editor' }))?.props).toMatchObject({ hotkey: 'e', action: 'app:toggleDiffNoiseFilter' })
+  expect(await pane.find({ type: 'Text', text: 'Enter keeps it, ctrl+e writes it in your editor' })).toBeDefined()
+  await pane.press({ key: 'editor' })
+  await flush()
+  expect(shell.spawned).toEqual([['tmux', 'display-popup', '-E', '-w', '90%', '-h', '90%', `hx '${BOUND}':11`]])
+  expect(seen.map(bare)).toEqual([expect.stringContaining('## Updates\n\n[UPDATE] t\nnew goal\n\n[UPDATE] 2026-10-26-10-58\nhalf a thought\n\n#')])
+  expect(bare(fs[BOUND])).toContain('new goal\n\n[UPDATE] 2026-10-26-10-58\nhalf a thought, finished\n\n#')
+  expect((await pane.find({ key: 'objectives' }))?.type).toBe('Button')
+  expect(commits(git).at(-1)).toBe('update: 2026-10-26-10-50-firstmate-abcdef12.md')
+  await pane.unmount()
+})
+
+test('e from an empty update box keeps the section the editor wrote into', async ($, on) => {
+  const fs: Fs = { [BOUND]: NOTES }
+  shell.vars = { EDITOR: 'hx', TMUX: '/tmp/tmux-1/default,1,0' }
+  engine(on, fs, { [`session:${SESSION}`]: BOUND })
+  shell.edit = text => text.replace('[UPDATE] 2026-10-26-10-58\n', '[UPDATE] 2026-10-26-10-58\nwritten in hx\n')
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: false })
+  await run($, 'show')
+  const pane = await $.ui.mount({ ...NOTES_PANE, surface: 'terminal' })
+  await pane.press({ key: 'view:objectives' })
+  await pane.press({ key: 'objectives' })
+  await pane.press({ key: 'editor' })
+  await flush()
+  expect(shell.spawned.map(argv => argv.at(-1))).toEqual([`hx '${BOUND}':11`])
+  expect(bare(fs[BOUND])).toContain('new goal\n\n[UPDATE] 2026-10-26-10-58\nwritten in hx\n\n#')
+  await pane.unmount()
+})
+
+test('e from an empty update box drops the section when the editor leaves it empty, and keeps other edits', async ($, on) => {
+  const fs: Fs = { [BOUND]: NOTES }
+  shell.vars = { EDITOR: 'hx', TMUX: '/tmp/tmux-1/default,1,0' }
+  const { git } = engine(on, fs, { [`session:${SESSION}`]: BOUND })
+  shell.edit = text => text.replace('The plan', 'The new plan')
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: false })
+  await run($, 'show')
+  const pane = await $.ui.mount({ ...NOTES_PANE, surface: 'terminal' })
+  await pane.press({ key: 'view:objectives' })
+  await pane.press({ key: 'objectives' })
+  await pane.press({ key: 'editor' })
+  await flush()
+  expect(fs[BOUND]).toContain('The new plan')
+  expect(fs[BOUND]).not.toContain('[UPDATE] 2026-10-26-10-58')
+  expect(bare(fs[BOUND])).toContain('## Updates\n\n[UPDATE] t\nnew goal\n\n#')
+  expect(commits(git).at(-1)).toBe('editor: 2026-10-26-10-50-firstmate-abcdef12.md')
+  await pane.unmount()
+})
+
+for (const [editor, argv, said] of [
+  ['nvim', `nvim +11 '${BOUND}'`, 'puts the line as +N for vim'],
+  ['code -w', `code -w '${BOUND}'`, 'leaves the line off for an editor it does not know'],
+] as const) {
+  test(`e from the update box ${said}`, async ($, on) => {
+    const fs: Fs = { [BOUND]: NOTES }
+    shell.vars = { EDITOR: editor, TMUX: '/tmp/tmux-1/default,1,0' }
+    engine(on, fs, { [`session:${SESSION}`]: BOUND })
+    await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: false })
+    await run($, 'show')
+    const pane = await $.ui.mount({ ...NOTES_PANE, surface: 'terminal' })
+    await pane.press({ key: 'view:objectives' })
+    await pane.press({ key: 'objectives' })
+    await pane.press({ key: 'editor' })
+    await flush()
+    expect(shell.spawned.map(argv => argv.at(-1))).toEqual([argv])
+    await pane.unmount()
+  })
+}
+
+test('e from the box that sets the objectives opens the file as it is', async ($, on) => {
+  const fs: Fs = {}
+  shell.vars = { EDITOR: 'hx', TMUX: '/tmp/tmux-1/default,1,0' }
+  engine(on, fs)
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: false })
+  await run($, 'show')
+  const pane = await $.ui.mount({ ...NOTES_PANE, surface: 'terminal' })
+  await pane.press({ key: 'view:objectives' })
+  await pane.press({ key: 'objectives' })
+  await pane.press({ key: 'editor' })
+  await flush()
+  expect(shell.spawned.map(argv => argv.at(-1))).toEqual([`hx '${NOW}'`])
+  expect(fs[NOW]).not.toContain('[UPDATE]')
   await pane.unmount()
 })
 
