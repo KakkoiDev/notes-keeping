@@ -248,6 +248,19 @@ function updateBlocks(updates: string): { text: string; id?: string; at: number 
   })
 }
 
+// The [UPDATE] header lines followed by no text up to the next header: they make no candidate.
+export function emptyUpdates(updates: string): string[] {
+  const empty: string[] = []
+  let header: string | undefined
+  for (const line of [...updates.split('\n'), '[UPDATE]']) {
+    if (UPDATE_TAG.test(line.trim())) {
+      if (header !== undefined) empty.push(header)
+      header = line.trim()
+    } else if (line.trim() !== '') header = undefined
+  }
+  return empty
+}
+
 // Items added before the text was kept whole carry it cut at MAX_TEXT: a line matches under either key.
 export function keysOf(text: string): string[] {
   return [...new Set([keyOf(text), keyOf(clip(text))])]

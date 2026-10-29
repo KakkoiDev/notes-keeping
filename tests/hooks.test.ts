@@ -1284,6 +1284,39 @@ test('e in the objectives view opens the notes file in $EDITOR in a tmux popup, 
   await pane.unmount()
 })
 
+test('an [UPDATE] written in the editor becomes a todo item when the editor closes', async ($, on) => {
+  const fs: Fs = { [BOUND]: NOTES }
+  shell.vars = { EDITOR: 'hx', TMUX: '/tmp/tmux-1/default,1,0' }
+  engine(on, fs, { [`session:${SESSION}`]: BOUND })
+  shell.edit = text => text.replace('# Todo', '[UPDATE] 2026-10-29\nVoice audio input investigation\n\n# Todo')
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: false })
+  await run($, 'show')
+  const pane = await $.ui.mount({ ...NOTES_PANE, surface: 'terminal' })
+  await pane.press({ key: 'view:objectives' })
+  await pane.press({ key: 'editor' })
+  await flush()
+  expect(bare(fs[BOUND])).toContain('[UPDATE] 2026-10-29\nVoice audio input investigation')
+  expect(items(sections(fs[BOUND] ?? '').todo).map(item => item.text)).toContain('Voice audio input investigation')
+  await pane.unmount()
+})
+
+test('an [UPDATE] left empty in the editor is reported and makes no todo item', async ($, on) => {
+  const fs: Fs = { [BOUND]: NOTES }
+  shell.vars = { EDITOR: 'hx', TMUX: '/tmp/tmux-1/default,1,0' }
+  const { ui } = engine(on, fs, { [`session:${SESSION}`]: BOUND })
+  shell.edit = text => text.replace('# Todo', '[UPDATE] 2026-10-29\n\n# Todo')
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: false })
+  await run($, 'show')
+  const pane = await $.ui.mount({ ...NOTES_PANE, surface: 'terminal' })
+  await pane.press({ key: 'view:objectives' })
+  await pane.press({ key: 'editor' })
+  await flush()
+  expect(bare(fs[BOUND])).toContain('[UPDATE] 2026-10-29\n\n# Todo')
+  expect(ui.toasts).toContain('notes-keeping: [UPDATE] 2026-10-29 has no text; no todo item is made from it.')
+  expect(items(sections(fs[BOUND] ?? '').todo).map(item => item.text)).toEqual(['new goal'])
+  await pane.unmount()
+})
+
 test('e prefers $VISUAL over $EDITOR, and quotes a path holding a quote', async ($, on) => {
   const path = `${DIR}/it's.md`
   const fs: Fs = { [path]: NOTES }
@@ -1368,7 +1401,7 @@ test('e from the update box opens the editor on a new [UPDATE] section holding w
   expect(seen.map(bare)).toEqual([expect.stringContaining('## Updates\n\n[UPDATE] t\nnew goal\n\n[UPDATE] 2026-10-26-10-58\nhalf a thought\n\n#')])
   expect(bare(fs[BOUND])).toContain('new goal\n\n[UPDATE] 2026-10-26-10-58\nhalf a thought, finished\n\n#')
   expect((await pane.find({ key: 'objectives' }))?.type).toBe('Button')
-  expect(commits(git).at(-1)).toBe('update: 2026-10-26-10-50-firstmate-abcdef12.md')
+  expect(commits(git)).toContain('update: 2026-10-26-10-50-firstmate-abcdef12.md')
   await pane.unmount()
 })
 
@@ -1386,6 +1419,7 @@ test('e from an empty update box keeps the section the editor wrote into', async
   await flush()
   expect(shell.spawned.map(argv => argv.at(-1))).toEqual([`hx '${BOUND}':11`])
   expect(bare(fs[BOUND])).toContain('new goal\n\n[UPDATE] 2026-10-26-10-58\nwritten in hx\n\n#')
+  expect(items(sections(fs[BOUND] ?? '').todo).map(item => item.text)).toContain('written in hx')
   await pane.unmount()
 })
 

@@ -35,7 +35,7 @@ import {
   updateLine,
   withoutLogs,
 } from './notes'
-import { EMPTY, bridgeMoves, candidateKeys, candidates, changeLine, cleanLabel, context, cycle, cycleItem, diffSnapshot, format, idFor, idOf, isBackground, items, keyOf, labelPrompt, moved, parse, pin, reconcile, row, settle, shown, snapshotOf, withIds, withoutIds } from './todo'
+import { EMPTY, bridgeMoves, candidateKeys, candidates, changeLine, cleanLabel, context, cycle, cycleItem, diffSnapshot, emptyUpdates, format, idFor, idOf, isBackground, items, keyOf, labelPrompt, moved, parse, pin, reconcile, row, settle, shown, snapshotOf, withIds, withoutIds } from './todo'
 import type { Applied, Candidate, Change, Item, Memory, Move, Status, Verdict } from './todo'
 import { TodoSlot, nextShown, rowId, rowKey, selectedOf, stepStatus } from './todos'
 import type { Landing } from './todos'
@@ -820,6 +820,7 @@ async function openEditor($: EngineInterface, isUpdate = false): Promise<void> {
         return at === undefined ? undefined : at + 1
       })
     : undefined
+  const wasEmpty = emptyUpdates(sections(await readText($, path)).updates)
   const popup = $.process.spawn({ argv: ['tmux', 'display-popup', '-E', '-w', '90%', '-h', '90%', `${editor} ${editorTarget(editor, path, line)}`] })
   let errors = ''
   for await (const chunk of popup) if (chunk.stream === 'stderr') errors += chunk.text
@@ -832,9 +833,13 @@ async function openEditor($: EngineInterface, isUpdate = false): Promise<void> {
     if (kept !== md) await $.fs.write(path, kept)
     await refresh($)
     const isKept = isUpdate && kept === md && updateLine(md, when) !== undefined
+    for (const header of emptyUpdates(sections(kept).updates).filter(one => !wasEmpty.includes(one))) {
+      $.ui.toast(`${NAME}: ${header} has no text; no todo item is made from it.`)
+    }
     return commit($, await notesDir($), `${isKept ? 'update' : 'editor'}: ${path.split('/').pop()}`)
   })
   warn($, told('', [...said, ...written]))
+  void syncTodo($, '')
 }
 
 async function showNotes($: EngineInterface, at: View = 'todos'): Promise<void> {
