@@ -8,7 +8,8 @@ home opted in). Four verbs are the plugin's; five are firstmate's.
                              for every linked item; an item linked by id is printed as "id:<id>" with an "id" field, and a
                              link made with --by carries a "by" field. blocked: the task's latest block came after its last
                              state line, printed with a "reason" field. done: the
-                             last state line of state/<task>.status is done. in-progress: else state/<task>.meta exists.
+                             last state line of state/<task>.status is done and state/<task>.meta does not record
+                             kind=scout. in-progress: else state/<task>.meta exists.
                              done: else the task's latest outcome record, appended by firstmate's cleanup as
                              {"task", "outcome", "at"} with no key, is done and not older than the link.
                              null: anything else; the plugin leaves the item where it is.
@@ -161,6 +162,15 @@ def outcomes():
     return out
 
 
+def is_scout(meta):
+    """Whether the task's meta records kind=scout, the kind fm-spawn.sh --scout gives a task whose deliverable is a report."""
+    try:
+        with open(meta, encoding='utf-8', errors='replace') as f:
+            return any(line.rstrip('\n') == 'kind=scout' for line in f)
+    except FileNotFoundError:
+        return False
+
+
 def derive(task, block, outcome=None):
     """The task's status and, while it is blocked, the block's reason. A block holds while the status file has no state
     line written after it. With no meta, a done outcome reports done."""
@@ -169,9 +179,10 @@ def derive(task, block, outcome=None):
     lines = state_lines(task)
     if block is not None and len(lines) <= block['lines']:
         return 'blocked', block['reason']
-    if lines and lines[-1] == 'done':
+    meta = os.path.join(STATE, f'{task}.meta')
+    if lines and lines[-1] == 'done' and not is_scout(meta):
         return 'done', None
-    if os.path.exists(os.path.join(STATE, f'{task}.meta')):
+    if os.path.exists(meta):
         return 'in-progress', None
     if outcome is not None and outcome['outcome'] == 'done':
         return 'done', None

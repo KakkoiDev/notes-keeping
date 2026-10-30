@@ -45,6 +45,14 @@ check 'a failed task with no meta reports null' '{"Review this PR: https://x/pul
 check 'an old-style line without a stamp counts' 'done' "$(printf 'done: PR x\n' > "$H/state/pr-review.status"; b status /n.md | python3 -c 'import json,sys; print(next(iter(json.load(sys.stdin).values()))["status"])')"
 
 home
+b link scout-x id:ab12cd3 --by firstmate
+printf 'window=w\nkind=scout\nmodel=opus\n' > "$H/state/scout-x.meta"
+printf 'working [at=1]: started\ndone [at=2]: report at /r.md\n' > "$H/state/scout-x.status"
+check 'a scout whose last state line is done stays in-progress: its report does not finish the todo' 'in-progress' "$(b status /n.md | python3 -c 'import json,sys; print(next(iter(json.load(sys.stdin).values()))["status"])')"
+printf 'window=w\nkind=ship\n' > "$H/state/scout-x.meta"
+check 'a ship task whose last state line is done is done' 'done' "$(b status /n.md | python3 -c 'import json,sys; print(next(iter(json.load(sys.stdin).values()))["status"])')"
+
+home
 b link first 'Ship  the BRIDGE'
 b link second 'ship the bridge'
 : > "$H/state/second.meta"
