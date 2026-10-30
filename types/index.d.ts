@@ -23,11 +23,37 @@ export type Pair = { agent: string; user: string; note?: Note }
 
 export type ChatNote = Note & { agent: string; user: string }
 
-// item: one todo item whole, opened from the Todos view; note: one reply, opened from its mark in the transcript.
-export type View = 'todos' | 'objectives' | 'important' | 'chat' | 'queue' | 'history' | 'logs' | 'item' | 'note'
+// item: one todo item whole, opened from the Todos view; note: one reply, opened from its mark in the transcript; work:
+// the firstmate fleet, and work-item one row of it whole.
+export type View = 'todos' | 'objectives' | 'important' | 'chat' | 'queue' | 'history' | 'logs' | 'item' | 'note' | 'work' | 'work-item'
 
 // The note the History view shows whole (preview) or is about to attach (confirm).
 export type Opened = { name: string; step: 'preview' | 'confirm' }
+
+// One row of `bridge fleet`: a task with a meta, or a live captain hold (word "call"). at: the epoch second of its last
+// state line, or of the hold. flag: "!" waits on the captain, "?" on firstmate. answer: what a reply to it starts with.
+export type FleetRow = {
+  task: string
+  kind: string | null
+  title: string | null
+  word: string
+  at: number | null
+  flag: '!' | '?' | ''
+  waiting: string
+  window: string | null
+  live: boolean
+  gone: boolean
+  pr: string | null
+  report: string | null
+  todo: string | null
+  answer: string | null
+}
+
+// at: when the plugin read it, in clock milliseconds. calls: live captain holds tied to no row, counted only.
+export type Fleet = { rows: FleetRow[]; calls: number; at: number }
+
+// The Work view's filters, keys 1 to 6.
+export type WorkGroup = 'you' | 'firstmate' | 'running' | 'idle' | 'done' | 'gone'
 
 export type Todo = { id: string; text: string; status: 'todo' | 'in-progress' | 'done' | 'declined' | 'blocked' }
 
@@ -48,6 +74,12 @@ declare module 'claude-code' {
       todoOpen: string | null
       noteOpen: string | null
       hidden: Todo['status'][]
+      fleet: Fleet | null
+      workHidden: WorkGroup[]
+      workCursor: string | null
+      workOpen: string | null
+      workAnswering: boolean
+      crew: { task: string; text: string } | null
     }
   }
 }

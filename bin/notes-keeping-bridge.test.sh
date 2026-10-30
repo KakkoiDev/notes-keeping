@@ -233,5 +233,136 @@ b block ../x --reason 'bad' 2>/dev/null
 check 'block with a task id holding a path is refused' '2' "$?"
 check 'a refused block writes nothing' 'absent' "$([ -e "$H/state/notes-todo-blocks.jsonl" ] && echo present || echo absent)"
 
+# fleet: a fake firstmate checkout whose fm-tasks-axi.sh prints $H/tasks.txt and counts its runs, and a fake tmux on PATH
+# that lists $H/windows.txt.
+fleet_home() {
+  home
+  mkdir -p "$H/root/bin" "$H/path"
+  printf '#!/usr/bin/env bash\necho x >> "%s/tasks.runs"\ncat "%s/tasks.txt" 2>/dev/null\n' "$H" "$H" > "$H/root/bin/fm-tasks-axi.sh"
+  printf '#!/usr/bin/env bash\necho "$@" > "%s/crew.args"\necho "FM_HOME=$FM_HOME"\necho "state: done · source: run-step · checks green"\n' "$H" > "$H/root/bin/fm-crew-state.sh"
+  printf '#!/usr/bin/env bash\ncat "%s/windows.txt" 2>/dev/null\n' "$H" > "$H/path/tmux"
+  chmod +x "$H/root/bin/fm-tasks-axi.sh" "$H/root/bin/fm-crew-state.sh" "$H/path/tmux"
+  : > "$H/windows.txt"
+  printf 'count: 0\ntasks[0]{id,state,kind,repo,title,created,hold_kind,hold_until,hold_reason,blocked_by,body}:\n' > "$H/tasks.txt"
+  printf '# Objectives\n\n# Todo\n\n- [ ] Ship it <!-- id:ab12cd3 -->\n' > "$H/notes.md"
+}
+f() { NOTES_KEEPING_FLEET_CACHE="$H/cache" FM_ROOT="$H/root" PATH="$H/path:$PATH" FM_HOME="$H" "$BRIDGE" "$@"; }
+# meta <task> <window> [key=value ...]
+meta() { local task="$1" window="$2"; shift 2; printf 'window=%s\nkind=ship\n' "$window" > "$H/state/$task.meta"; for kv in "$@"; do echo "$kv" >> "$H/state/$task.meta"; done; }
+live() { echo "$1" >> "$H/windows.txt"; }
+# field <task> <python expression over the row r>: the value for that task's row; rows is the whole output
+field() { f fleet "$H/notes.md" | python3 -c "import json,sys; d=json.load(sys.stdin); r=next((x for x in d['rows'] if x['task']=='$1'), None); print($2)"; }
+ids() { f fleet "$H/notes.md" | python3 -c "import json,sys; print(' '.join(r['task'] for r in json.load(sys.stdin)['rows'] if not r['gone']))"; }
+NOW=$(date +%s)
+
+fleet_home
+check 'fleet with no tasks prints no rows and no other calls' '[] 0' "$(f fleet "$H/notes.md" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["rows"], d["calls"])')"
+
+fleet_home
+meta run-a 's:fm-run-a' todo=id:ab12cd3 pr=https://x/pull/7
+live 's:fm-run-a'
+echo "working [at=$((NOW - 60))]: implementing the view" > "$H/state/run-a.status"
+check 'a live worker is a row: word, waiting from the worker, its stamp, window, PR and todo' "working|worker: implementing the view|$((NOW - 60))|s:fm-run-a|https://x/pull/7|ab12cd3|True|False|" "$(field run-a '"|".join(str(r[k]) for k in ["word", "waiting", "at", "window", "pr", "todo", "live", "gone", "flag"])')"
+
+fleet_home
+meta ask 's:fm-ask'
+live 's:fm-ask'
+echo "needs-decision [at=$NOW] [key=pr-body]: new PR body at /d/pr-body.md" > "$H/state/ask.status"
+check 'a worker asking for a decision is ? with firstmate as the one it waits on, keeping a line with two brackets' '?|decision|firstmate: new PR body at /d/pr-body.md|ask pr-body|/d/pr-body.md' "$(field ask '"|".join([r["flag"], r["word"], r["waiting"], r["answer"], r["report"]])')"
+echo "blocked [at=$NOW]: no slot" > "$H/state/ask.status"
+check 'blocked is ? too' '?' "$(field ask 'r["flag"]')"
+echo "failed [at=$NOW]: broke" > "$H/state/ask.status"
+check 'failed is ? too' '?' "$(field ask 'r["flag"]')"
+echo "needs-decision [at=$NOW]: the captain must merge now, URGENT, needs you" > "$H/state/ask.status"
+check 'worker prose never makes a row !' '?' "$(field ask 'r["flag"]')"
+echo "paused [at=$NOW]: waiting on CI" > "$H/state/ask.status"
+check 'a paused ship worker is not flagged and waits on its own text' '|paused|waiting on CI' "$(field ask '"|".join([r["flag"], r["word"], r["waiting"]])')"
+printf 'window=s:fm-ask\nkind=scout\n' > "$H/state/ask.meta"
+check 'a paused scout is idle' 'idle' "$(field ask 'r["word"]')"
+
+fleet_home
+meta died 's:fm-died'
+printf "paused [at=$((NOW - 400000))]: waiting on captain: env file\n" > "$H/state/died.status"
+meta finished 's:fm-finished'
+printf "done [at=$NOW]: PR https://x/pull/1\n" > "$H/state/finished.status"
+meta silent 's:fm-silent'
+check 'a gone worker with an open wait is ?, and says the worker is gone' '?|False|False|firstmate: worker gone; last: waiting on captain: env file' "$(field died '"|".join([r["flag"], str(r["live"]), str(r["gone"]), r["waiting"]])')"
+check 'a gone worker whose last line is done is a gone record' 'True' "$(field finished 'r["gone"]')"
+check 'a gone worker that never wrote a state line is ?' '?|firstmate: worker gone; no state line' "$(field silent '"|".join([r["flag"], r["waiting"]])')"
+check 'gone records are left out of the shown rows' 'died silent' "$(ids | tr ' ' '\n' | sort | tr '\n' ' ' | sed 's/ $//')"
+live 's:fm-finished'
+check 'a live worker whose last line is done is a row, not a gone record' 'False|done' "$(field finished 'str(r["gone"]) + "|" + r["word"]')"
+
+fleet_home
+meta w 's:fm-w'
+live 's:fm-w'
+echo "working [at=$NOW]: a long worker line nobody can read in forty columns" > "$H/state/w.status"
+f waiting w 'review the PR body' >/dev/null
+check 'a waiting cell firstmate wrote replaces the worker text' 'review the PR body' "$(field w 'r["waiting"]')"
+echo "paused [at=$NOW]: waiting on CI" >> "$H/state/w.status"
+check 'and holds only until the task writes its next state line' 'waiting on CI' "$(field w 'r["waiting"]')"
+echo "resolved [at=$NOW]: x" >> "$H/state/w.status"
+f waiting w 'merge word' >/dev/null
+echo "resolved [at=$NOW]: y" >> "$H/state/w.status"
+check 'a line that is not a state line does not clear it' 'merge word' "$(field w 'r["waiting"]')"
+f waiting ../x 'bad' 2>/dev/null
+check 'waiting with a task id holding a path is refused' '2' "$?"
+f waiting w '   ' 2>/dev/null
+check 'waiting with no text is refused' '2' "$?"
+
+# tasks.txt rows: id,state,kind,repo,title,created,hold_kind,hold_until,hold_reason,blocked_by,body
+tasks() { { printf 'count: %d\ntasks[%d]{id,state,kind,repo,title,created,hold_kind,hold_until,hold_reason,blocked_by,body}:\n' "$#" "$#"; for row in "$@"; do printf '  %s\n' "$row"; done; printf 'help[1]:\n  - Run `tasks-axi show <id>`\n'; } > "$H/tasks.txt"; }
+TODAY=$(date -u +%Y-%m-%d)
+SET=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+fleet_home
+meta origin-x 's:fm-origin-x'
+live 's:fm-origin-x'
+echo "working [at=$NOW]: studying" > "$H/state/origin-x.status"
+tasks "origin-x,in_flight,task,-,\"Study the harness\",$TODAY,-,-,-,none,-" \
+  "decide-x,queued,captain,dotfiles,\"Harness decisions\",$TODAY,captain,\"-\",\"D1 learned facts, D2 promotion scope\",none,\"Captain hold set: $SET\\nCaptain hold origin: origin-x\"" \
+  "lone-y,queued,captain,dotfiles,\"Unrelated call\",$TODAY,captain,\"-\",\"pick a colour\",none,\"Captain hold set: $SET\""
+check 'a live captain hold tied to a live task is a ! row waiting on you, answered as <task> <key>' '!|call|you: D1 learned facts, D2 promotion scope|origin-x decide-x|Harness decisions' "$(field decide-x '"|".join([r["flag"], r["word"], r["waiting"], r["answer"], r["title"]])')"
+check 'a live hold tied to nothing shown is counted, not a row' '1 None' "$(f fleet "$H/notes.md" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["calls"], next((r for r in d["rows"] if r["task"]=="lone-y"), None))')"
+check 'a task row takes its backlog title' 'Study the harness' "$(field origin-x 'r["title"]')"
+b link lone-y id:ab12cd3
+check 'a live hold linked to an item in the notes file is a ! row' '! 0' "$(f fleet "$H/notes.md" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(next(r for r in d["rows"] if r["task"]=="lone-y")["flag"], d["calls"])')"
+printf '# Todo\n\n- [ ] Other <!-- id:zz99zz9 -->\n' > "$H/other.md"
+check 'the same hold is not tied to a notes file without that item' '1' "$(f fleet "$H/other.md" | python3 -c 'import json,sys; print(json.load(sys.stdin)["calls"])')"
+
+fleet_home
+meta origin-x 's:fm-origin-x'
+live 's:fm-origin-x'
+FUTURE=$(python3 -c 'import datetime; print((datetime.date.today() + datetime.timedelta(days=3)).isoformat())')
+OLD=$(python3 -c 'import datetime; print((datetime.datetime.utcnow() - datetime.timedelta(days=20)).strftime("%Y-%m-%dT%H:%M:%SZ"))')
+tasks "dated,queued,captain,-,\"Later\",$TODAY,captain,$FUTURE,\"after the release\",none,\"Captain hold origin: origin-x\"" \
+  "aged,queued,captain,-,\"Old\",$TODAY,captain,\"-\",\"stale call\",none,\"Captain hold set: $OLD\\nCaptain hold origin: origin-x\"" \
+  "gated,queued,captain,-,\"Gated\",$TODAY,captain,\"-\",\"after dep\",dep-1,\"Captain hold origin: origin-x\"" \
+  "freed,queued,captain,-,\"Freed\",$TODAY,captain,\"-\",\"dep done\",dep-2,\"Captain hold set: $SET\\nCaptain hold origin: origin-x\"" \
+  "dep-1,queued,task,-,\"Dep one\",$TODAY,-,-,-,none,-" \
+  "dep-2,done,task,-,\"Dep two\",$TODAY,-,-,-,none,-" \
+  "agent-hold,queued,task,-,\"Agent hold\",$TODAY,firstmate,\"-\",\"waiting\",none,\"Captain hold origin: origin-x\"" \
+  "closed,done,captain,-,\"Closed\",$TODAY,captain,\"-\",\"answered\",none,\"Captain hold origin: origin-x\""
+check 'only live captain holds are rows: not dated, aged, blocked, non-captain or done ones' 'freed origin-x' "$(ids | tr ' ' '\n' | sort | tr '\n' ' ' | sed 's/ $//')"
+
+fleet_home
+tasks "x,queued,task,-,\"X\",$TODAY,-,-,-,none,-"
+f fleet "$H/notes.md" >/dev/null
+f fleet "$H/notes.md" >/dev/null
+check 'the backlog is read once for calls within 30 seconds' '1' "$(wc -l < "$H/tasks.runs" | tr -d ' ')"
+
+fleet_home
+meta a 's:fm-a'; live 's:fm-a'; echo "working [at=$((NOW - 10))]: a" > "$H/state/a.status"
+meta b 's:fm-b'; live 's:fm-b'; echo "working [at=$NOW]: b" > "$H/state/b.status"
+meta c 's:fm-c'; live 's:fm-c'; echo "blocked [at=$((NOW - 99))]: c" > "$H/state/c.status"
+tasks "h,queued,captain,-,\"H\",$TODAY,captain,\"-\",\"call\",none,\"Captain hold set: $SET\\nCaptain hold origin: a\""
+check 'rows order ! first, then ?, then newest first' 'h c b a' "$(ids)"
+
+fleet_home
+f crew run-a > "$H/crew.out"
+check 'crew prints fm-crew-state.sh for the task, run against this home' "run-a|FM_HOME=$H|state: done · source: run-step · checks green" "$(printf '%s|%s' "$(cat "$H/crew.args")" "$(tr '\n' '|' < "$H/crew.out" | sed 's/|$//')")"
+f crew ../x 2>/dev/null
+check 'crew with a task id holding a path is refused' '2' "$?"
+
 printf '\n' "" ; printf '%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

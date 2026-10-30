@@ -37,7 +37,9 @@ const bridge: {
   argv: string[][]
   pending: { request: string; text: string; by: string; task: string }[]
   answers: { request: string; answer: unknown }[]
-} = { links: {}, notified: [], calls: [], argv: [], pending: [], answers: [] }
+  fleet: { rows: Record<string, unknown>[]; calls: number }
+  crew: string
+} = { links: {}, notified: [], calls: [], argv: [], pending: [], answers: [], fleet: { rows: [], calls: 0 }, crew: '' }
 // What the fake Laya answers; left undefined, the call fails.
 const laya: { answer: ((ask: Ask) => unknown) | undefined; asks: Ask[] } = { answer: undefined, asks: [] }
 // What the fake label model answers per prompt; left undefined, the call fails as an API error.
@@ -66,6 +68,8 @@ type Ui = {
   isFocusable: boolean
   fills: { text: string; mode: string }[]
   isFillable: boolean
+  notices: { text: string; title: string | undefined }[]
+  copied: string[]
 }
 
 function engine(
@@ -84,6 +88,8 @@ function engine(
   bridge.argv = []
   bridge.pending = []
   bridge.answers = []
+  bridge.fleet = { rows: [], calls: 0 }
+  bridge.crew = ''
   model.answer = undefined
   model.asks = []
   clipboard.text = undefined
@@ -95,7 +101,7 @@ function engine(
   mock.env(on, { HOME, ...shell.vars })
   shell.vars = {}
   const git: Git = { calls: [], remotes: '' }
-  const ui: Ui = { panes: new Map(), shown: undefined, opened: [], closed: [], status: [], toasts: [], isPlaced: true, isFocusable: true, fills: [], isFillable: true }
+  const ui: Ui = { panes: new Map(), shown: undefined, opened: [], closed: [], status: [], toasts: [], isPlaced: true, isFocusable: true, fills: [], isFillable: true, notices: [], copied: [] }
   on('session.start', (_$, e) => ({ cwd: e.cwd }))
   on('session.end', (_$, e) => ({ sessionId: e.sessionId }))
   on('command.register', (_$, e) => ({ value: { command: e.name } }))
@@ -133,7 +139,16 @@ function engine(
       bridge.argv.push([...e.argv])
       if (e.argv[1] === 'notify') bridge.notified.push(e.init?.stdin ?? '')
       if (e.argv[1] === 'answer') bridge.answers.push({ request: e.argv[2] ?? '', answer: JSON.parse(e.init?.stdin ?? '') })
-      const stdout = e.argv[1] === 'status' ? JSON.stringify(bridge.links) : e.argv[1] === 'pending' ? JSON.stringify(bridge.pending.splice(0)) : ''
+      const stdout =
+        e.argv[1] === 'status'
+          ? JSON.stringify(bridge.links)
+          : e.argv[1] === 'pending'
+            ? JSON.stringify(bridge.pending.splice(0))
+            : e.argv[1] === 'fleet'
+              ? JSON.stringify(bridge.fleet)
+              : e.argv[1] === 'crew'
+                ? bridge.crew
+                : ''
       return { value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
     }
     git.calls.push([...e.argv])
@@ -192,6 +207,14 @@ function engine(
   on('prompt.fill', (_$, e) => {
     ui.fills.push({ text: e.text, mode: e.mode })
     return { isFilled: ui.isFillable }
+  })
+  on('ui.notify', (_$, e) => {
+    ui.notices.push({ text: e.text, title: e.title })
+    return { value: { isSent: true as const, channel: 'terminal_bell' as const } }
+  })
+  on('ui.copy', (_$, e) => {
+    ui.copied.push(e.text)
+    return { value: { isCopied: true as const } }
   })
   on('ui.toast', (_$, e) => {
     ui.toasts.push(e.text)
@@ -2824,4 +2847,153 @@ test('a reply moved into the prompt with s keeps its anchor in # Chat', async ($
   await pane.press({ key: 'send' })
   await pane.unmount()
   expect(sections(fs[BOUND] ?? '').chat).toBe(`[AI_AGENT] brown fox${anchor('row-1', 'brown fox', 'Too slow')}\n[USER] Too slow`)
+})
+
+// A fleet row as `bridge fleet` prints it.
+function fleetRow(task: string, extra: Record<string, unknown> = {}): Record<string, unknown> {
+  return { task, kind: 'ship', title: null, word: 'working', at: null, flag: '', waiting: '', window: `s:fm-${task}`, live: true, gone: false, pr: null, report: null, todo: null, answer: null, ...extra }
+}
+// The fake clock's time in seconds, as the bridge stamps rows.
+const SECONDS = Math.floor(new Date(2026, 9, 26, 10, 58).getTime() / 1000)
+const FLEET = {
+  rows: [
+    fleetRow('decide-x', { kind: 'captain', title: 'Harness decisions', word: 'call', at: SECONDS - 7200, flag: '!', waiting: 'you: D1 learned facts', window: null, live: false, answer: 'origin-x decide-x', origin: 'origin-x' }),
+    fleetRow('ask', { title: 'Sentry injected filter', word: 'decision', at: SECONDS - 120, flag: '?', waiting: 'firstmate: new PR body', pr: 'https://x/pull/27970', answer: 'ask pr-body' }),
+    fleetRow('run-a', { title: 'OpenUI POC', at: SECONDS - 60, waiting: 'worker: implementing', todo: 'ab12cd3' }),
+    fleetRow('old', { word: 'done', at: SECONDS - 900000, waiting: 'PR https://x/pull/1', live: false, gone: true }),
+  ],
+  calls: 2,
+}
+
+async function work($: Engine, on: On, selection: () => string | undefined = () => undefined) {
+  const fs: Fs = { [BOUND]: setTodoFile('- [ ] **Build the table**: build the fleet table <!-- id:ab12cd3 -->'), [PYTHON]: '', [BRIDGE]: '' }
+  const { clock, git, ui } = engine(on, fs, { ...SESSION_BOUND }, selection)
+  on('ui.focus', () => ({ value: {} }) as never)
+  fakeLaya()
+  bridge.fleet = FLEET
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
+  await flush()
+  await clock.advance(5_000)
+  await flush()
+  return { clock, git, ui }
+}
+
+test('the refresh tick reads bridge fleet with the notes file; a live call that needs the captain pins the status line and notifies once', async ($, on) => {
+  const { clock, ui } = await work($, on)
+  expect(bridge.argv.filter(call => call[1] === 'fleet')).toEqual([[BRIDGE, 'fleet', BOUND]])
+  expect(ui.status.at(-1)).toBe('work: 1 needs you · w')
+  expect(ui.notices).toEqual([{ text: 'Harness decisions: D1 learned facts', title: 'Firstmate' }])
+  await clock.advance(5_000)
+  await flush()
+  expect(ui.notices).toHaveLength(1)
+  bridge.fleet = { rows: [], calls: 0 }
+  await clock.advance(5_000)
+  await flush()
+  expect(ui.status.at(-1)).toBeUndefined()
+})
+
+test("a ? row raises no notification and no status line: it is firstmate's move", async ($, on) => {
+  const { clock, ui } = await work($, on)
+  bridge.fleet = { rows: [FLEET.rows[1] as Record<string, unknown>], calls: 0 }
+  ui.notices.length = 0
+  await clock.advance(5_000)
+  await flush()
+  expect(ui.notices).toEqual([])
+  expect(ui.status.at(-1)).toBeUndefined()
+})
+
+test('a queued reply and a call that needs the captain share the one status line', async ($, on) => {
+  const { ui } = await work($, on, () => 'brown fox')
+  await run($, 'reply Too slow')
+  expect(ui.status.at(-1)).toBe('notes: 1 reply queued, sent with your next message. Ctrl+q: edit, remove, send · work: 1 needs you · w')
+})
+
+test('the Work tab carries the count of rows that need the captain; Todos stays the view the panel opens on', async ($, on) => {
+  await work($, on)
+  await run($, 'show')
+  const pane = await $.ui.mount({ ...NOTES_PANE, surface: 'terminal' })
+  expect((await pane.find({ key: 'view:work' }))?.props).toMatchObject({ hotkey: 'w', label: 'Work (1!)' })
+  expect(await pane.find({ key: 'show:todo' })).toBeDefined()
+  await pane.unmount()
+})
+
+test('without a bridge the panel has no Work tab and runs no fleet read', async ($, on) => {
+  const fs: Fs = { [BOUND]: setTodoFile('- [ ] One'), [PYTHON]: '' }
+  const { clock } = engine(on, fs, { ...SESSION_BOUND })
+  fakeLaya()
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
+  await clock.advance(5_000)
+  await flush()
+  await run($, 'show')
+  const pane = await $.ui.mount({ ...NOTES_PANE, surface: 'terminal' })
+  expect(await pane.find({ key: 'view:work' })).toBeUndefined()
+  expect(bridge.calls).toEqual([])
+  await pane.unmount()
+})
+
+test('the Work view lists ! rows, then ? rows, then the rest; a row is named by its linked todo label, else its title; gone records are hidden and counted, 6 shows them', async ($, on) => {
+  await work($, on)
+  await run($, 'show')
+  const pane = await $.ui.mount({ ...NOTES_PANE, surface: 'terminal' })
+  await pane.press({ key: 'view:work' })
+  const rows = async () => (await pane.findAll({ type: 'Button' })).filter(button => FLEET.rows.some(row => `work:${row.task}` === button.key))
+  expect((await rows()).map(button => button.key)).toEqual(['work:decide-x', 'work:ask', 'work:run-a'])
+  const labels = (await rows()).map(button => String(button.props.label))
+  expect(labels[0]).toMatch(/^! Harness decisions +call +2h  you: D1 learned facts$/)
+  expect(labels[1]).toMatch(/^\? Sentry injected filter +decision +2m  firstmate: new PR body$/)
+  expect(labels[2]).toMatch(/^ {2}Build the table +working +1m  worker: implementing$/)
+  expect(await pane.find({ type: 'Text', text: /^Work {2}3 rows · 1 needs you · 1 firstmate · read \d\d:\d\d:\d\d UTC \(\d+[smhd] ago\)$/ })).toBeDefined()
+  expect(await pane.find({ type: 'Text', text: '+1 gone task records hidden (worktree or window gone)  6: show' })).toBeDefined()
+  expect(await pane.find({ type: 'Text', text: '+2 other calls · /bearings' })).toBeDefined()
+  await pane.press({ key: 'work-show:gone' })
+  expect((await rows()).map(button => button.key)).toEqual(['work:decide-x', 'work:ask', 'work:run-a', 'work:old'])
+  expect(await pane.find({ type: 'Text', text: /gone task records hidden/ })).toBeUndefined()
+  await pane.press({ key: 'work-show:firstmate' })
+  expect((await rows()).map(button => button.key)).toEqual(['work:decide-x', 'work:run-a', 'work:old'])
+  await pane.unmount()
+})
+
+test('a on a ? row fills the prompt with "<task> <key>: <text>" for the captain to send; nothing is closed from the plugin', async ($, on) => {
+  const { ui } = await work($, on)
+  await run($, 'show')
+  const pane = await $.ui.mount({ ...NOTES_PANE, surface: 'terminal' })
+  await pane.press({ key: 'view:work' })
+  await ring($, 'work:ask')
+  expect((await pane.find({ key: 'work:answer' }))?.props).toMatchObject({ hotkey: 'a' })
+  await pane.press({ key: 'work:answer' })
+  // A key not drawn before, which the plugin's $.ui.focus waits for; the fake engine has no ring to check that on.
+  expect((await pane.find({ key: 'work:reply' }))?.type).toBe('Input')
+  await pane.input({ key: 'work:reply', text: 'ship the new body' })
+  expect(ui.fills).toEqual([{ text: 'ask pr-body: ship the new body', mode: 'insert' }])
+  expect(bridge.calls.filter(verb => !['fleet', 'status', 'pending', 'notify'].includes(verb))).toEqual([])
+  await pane.unmount()
+})
+
+test('a is not offered on a row that waits on nobody but its worker', async ($, on) => {
+  await work($, on)
+  await run($, 'show')
+  const pane = await $.ui.mount({ ...NOTES_PANE, surface: 'terminal' })
+  await pane.press({ key: 'view:work' })
+  await ring($, 'work:run-a')
+  expect(await pane.find({ key: 'work:answer' })).toBeUndefined()
+  await pane.unmount()
+})
+
+test('Enter on a row opens its details; y copies the PR link, r reads the crew state for that one task, g goes to its window', async ($, on) => {
+  const { git, ui } = await work($, on)
+  bridge.crew = 'state: done · source: run-step · checks green\n'
+  await run($, 'show')
+  const pane = await $.ui.mount({ ...NOTES_PANE, surface: 'terminal' })
+  await pane.press({ key: 'view:work' })
+  await pane.press({ key: 'work:ask' })
+  expect(await pane.find({ type: 'Text', text: /^Sentry injected filter {2}· {2}ask {2}· {2}ship/ })).toBeDefined()
+  expect(await pane.find({ type: 'Text', text: 'last   decision 2m ago: firstmate: new PR body' })).toBeDefined()
+  await pane.press({ key: 'work:copy' })
+  expect(ui.copied).toEqual(['https://x/pull/27970'])
+  await pane.press({ key: 'work:crew' })
+  expect(bridge.argv.filter(call => call[1] === 'crew')).toEqual([[BRIDGE, 'crew', 'ask']])
+  expect(await pane.find({ type: 'Text', text: 'crew   state: done · source: run-step · checks green' })).toBeDefined()
+  await pane.press({ key: 'work:go' })
+  expect(git.calls).toContainEqual(['tmux', 'switch-client', '-t', 's:fm-ask'])
+  await pane.unmount()
 })

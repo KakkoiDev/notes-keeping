@@ -33,7 +33,8 @@ Toggle with ctrl+q (see below), `/notes-keeping show` / `hide`, or the `Notes` b
 | `h` | History view: earlier notes, newest first; Up and Down pick one, Enter opens a read-only preview of what it holds, `a` attaches the picked note after a `y` / `n` confirmation (same copy as `/notes-keeping history <n\|file>`, so done and declined items stay behind); the original is never written. `b` in a preview or the confirmation steps back |
 | `l` | Logs view: the `# Logs` section of the notes file, newest first, read-only: time (UTC), who, item, `from -> to` (or the text of an objective or update) |
 | `s` | Send queue: put every queued reply into the prompt box, clear the queue, record them in `# Chat`; you press Enter |
-| `b` | Back to the Todos view (shown in every view but Todos) |
+| `w` | Work view: firstmate's fleet, one row per task and per live captain call (see [Work view](#work-view)); shown only with a bridge, labelled `Work (N!)` while N rows need you |
+| `b` | Back to the Todos view (shown in every view but Todos); from a Work row's details, back to the Work view |
 | `u` | in the Objectives view: opens an input; Enter appends the text as a new `[UPDATE]` under `## Updates` (while the objectives are still empty it sets them instead) |
 | `e` | in the Objectives view: opens the notes file in `$VISUAL`, else `$EDITOR`, in a tmux popup (`tmux display-popup -E`; the session must run inside tmux), then shows and commits what the editor saved and runs the todo list over it, so an `[UPDATE]` written there becomes an item as one from `u` does; an `[UPDATE]` header the editor left with no text under it makes no item, and a toast names it. Todo runs keep writing the file while the editor is open. From the update box (after `u`, once the objectives are set), where `e` is typed into the field, ctrl+e does it instead (bind `{ "context": "PaneField", "bindings": { "ctrl+e": "app:toggleDiffNoiseFilter" } }` in `~/.claude/keybindings.json`), or a click on Open in editor: it first appends `[UPDATE] <time>` under `## Updates` holding the box's text, opens the editor on the line after it (`file:line` for hx, `+line` for vi, vim, nvim, nano, emacs and kak, the top of the file otherwise), and drops that header again if the editor leaves it empty |
 
@@ -157,6 +158,43 @@ out.
     makes no second one; an update the todo run would make no item from (a `Name: value` label alone, a text it has
     seen before) is answered with why and not written. `bridge active` prints the notes file the latest session asked
     for, within the last 15 seconds, so firstmate needs no notes file of its own.
+  - Every five seconds an interactive session runs `bridge fleet <notes file>` for the [Work view](#work-view).
+    `bridge waiting <task> <text>` sets the Waiting-on cell of a task's row, held until the task writes its next state
+    line; `bridge crew <task>` prints `fm-crew-state.sh` for one task.
+
+### Work view
+
+`w` in the panel. Read-only rows from `bridge fleet`, refreshed every five seconds:
+
+- one row per task with a meta whose tmux window is live, or whose worker is gone without a `done` state line;
+- one row per live captain hold (captain kind, not done, no open blocker, no future `hold_until`, set under 14 days
+  ago) whose origin task is a shown row, or that is linked to an item in this notes file. Other live holds are only
+  counted: `+N other calls · /bearings`;
+- a gone task record (window gone, last state line `done`) is hidden and counted, `6` shows them.
+
+Columns: the linked todo item's label, else the backlog title, else the task id; the state (`call` for a hold,
+`decision`, `idle` for a paused scout); the age of that state line; Waiting on. Waiting on is firstmate's text from
+`bridge waiting` while it holds, else `you: <hold reason>`, `firstmate: <text>` for a decision, block or failure,
+`firstmate: worker gone; last: <text>`, `worker: <text>` while working, or the paused worker's own text.
+
+Flags, from structured records only, never from a worker's words:
+
+- `!` needs you: a live captain hold. A new one raises one native notification (`Firstmate`), and the status line
+  under the prompt reads `work: N needs you · w`, after the queued-replies line when there is one.
+- `?` firstmate's move: a last state line of `needs-decision`, `blocked` or `failed`, or a worker gone without `done`.
+
+Rows sort `!`, then `?`, then newest first. The status-log line is the task's last event, not its current state: `r`
+reads the current state.
+
+| Key | Does |
+| --- | --- |
+| Up, Down, Enter | select a row; Enter opens its details: the last line and its age, PR, report, linked todo item (`d` opens it) |
+| `a` | on a `!` or `?` row: an input; Enter fills the prompt with `<task> <key>: <text>`, and you press Enter to send it to firstmate. The plugin closes nothing itself |
+| `y` | copy the PR link, else the report path, else the task id |
+| `v` | open the PR, else the report in `$VISUAL` / `$EDITOR` in a tmux popup |
+| `g` | `tmux switch-client` to the worker's window, while it is live |
+| `r` | read `fm-crew-state.sh` for that one task (up to a few seconds) into its details |
+| `1` to `6` | show or hide: `[!] you`, `[?] firstmate`, running, idle, done, gone |
   - Without the file nothing of this runs.
 - Claude never edits the notes file; its Edit and Write on the notes folder are denied.
 

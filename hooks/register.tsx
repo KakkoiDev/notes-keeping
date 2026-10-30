@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { ChatNote, Notes, Opened, Pair, Select, Todo, View } from '../types'
+import type { ChatNote, Fleet, FleetRow, Notes, Opened, Pair, Select, Todo, View, WorkGroup } from '../types'
 import { hrefOf, marked, noteOf } from './anchor'
 import type { ActorId } from './actors'
 import { actorLabel } from './actors'
@@ -41,6 +41,7 @@ import { EMPTY, bridgeMoves, candidateKeys, candidates, changeLine, cleanLabel, 
 import type { Applied, Candidate, Change, Item, Memory, Move, Status, Verdict } from './todo'
 import { TodoSlot, nextShown, rowId, rowKey, selectedOf, stepStatus } from './todos'
 import type { Landing } from './todos'
+import { WorkSlot, answerText, copyText, details, groupOf, nameOf, needsYou, selectedRow, workStatus } from './work'
 
 const NAME = 'notes-keeping'
 const PANE = 'notes-keeping'
@@ -78,6 +79,10 @@ const LOG_ROWS = 200
 // `pending` hands out the updates firstmate queued for a notes file and `answer` takes the outcome of one on stdin.
 const BRIDGE = 'config/notes-keeping-bridge'
 const BRIDGE_MS = 10_000
+// fm-crew-state.sh took up to 7 seconds on a loaded home.
+const CREW_MS = 30_000
+// The ! rows already notified, as <task>@<hold stamp>.
+const NOTIFIED = 'fleet:notified'
 
 const SUBCOMMANDS = ['init', 'objectives', 'update', 'important', 'reply', 'replies', 'todo', 'history', 'show', 'hide', 'debug']
 
@@ -114,6 +119,15 @@ const hidden = atom({ plugin: 'notes-keeping', key: 'hidden' } as const, [] as S
 const todoOpen = atom({ plugin: 'notes-keeping', key: 'todoOpen' } as const, null as string | null)
 // The note the Note view shows, by its id.
 const noteOpen = atom({ plugin: 'notes-keeping', key: 'noteOpen' } as const, null as string | null)
+// The last `bridge fleet` read; null while the session root has no bridge.
+const fleet = atom({ plugin: 'notes-keeping', key: 'fleet' } as const, null as Fleet | null)
+const workHidden = atom({ plugin: 'notes-keeping', key: 'workHidden' } as const, ['gone'] as WorkGroup[])
+const workCursor = atom({ plugin: 'notes-keeping', key: 'workCursor' } as const, null as string | null)
+// The fleet row the Work item view shows, by its task id.
+const workOpen = atom({ plugin: 'notes-keeping', key: 'workOpen' } as const, null as string | null)
+const workAnswering = atom({ plugin: 'notes-keeping', key: 'workAnswering' } as const, false)
+// The last fm-crew-state.sh line read for a row.
+const crew = atom({ plugin: 'notes-keeping', key: 'crew' } as const, null as { task: string; text: string } | null)
 
 function message(error: unknown): string {
   return (error instanceof Error ? error.message : String(error)).split('\n')[0] ?? 'unknown error'
@@ -276,8 +290,8 @@ async function bridgeOf($: EngineInterface): Promise<string | undefined> {
   return (await $.fs.exists(bridge)) ? bridge : undefined
 }
 
-async function runBridge($: EngineInterface, bridge: string, verb: 'status' | 'notify' | 'pending' | 'answer', arg: string, stdin = ''): Promise<string> {
-  const done = await $.process.run([bridge, verb, arg], { stdin, timeoutMs: BRIDGE_MS })
+async function runBridge($: EngineInterface, bridge: string, verb: 'status' | 'notify' | 'pending' | 'answer' | 'fleet' | 'crew', arg: string, stdin = ''): Promise<string> {
+  const done = await $.process.run([bridge, verb, arg], { stdin, timeoutMs: verb === 'crew' ? CREW_MS : BRIDGE_MS })
   if (done.exitCode !== 0) throw new Error(`bridge ${verb} failed: ${done.stderr.trim().split('\n').pop() || done.exitCode}`)
   return done.stdout
 }
@@ -734,6 +748,25 @@ async function isReleased($: EngineInterface, text: string): Promise<boolean> {
   }
 }
 
+// v on a fleet row: its PR in the browser, else its report in the editor popup the notes file opens in (a path relative
+// to the session root, the firstmate home, read from there).
+async function viewRow($: EngineInterface, row: FleetRow): Promise<void> {
+  if (row.pr !== null) {
+    await $.process.run(['open', row.pr], { timeoutMs: GIT_MS })
+    return
+  }
+  if (row.report === null) return
+  const path = row.report.startsWith('/') ? row.report : `${await $.session.root()}/${row.report}`
+  const editor = (await $.env.get('VISUAL')) || (await $.env.get('EDITOR'))
+  if (!editor || !(await $.env.get('TMUX'))) {
+    await $.process.run(['open', path], { timeoutMs: GIT_MS })
+    return
+  }
+  const popup = $.process.spawn({ argv: ['tmux', 'display-popup', '-E', '-w', '90%', '-h', '90%', `${editor} ${editorTarget(editor, path, undefined)}`] })
+  for await (const _ of popup) continue
+  await popup.result
+}
+
 async function selected($: EngineInterface): Promise<string> {
   return ((await $.ui.selection())?.text ?? '').trim()
 }
@@ -742,8 +775,59 @@ async function important($: EngineInterface, text: string, tag: string): Promise
   return told('Added to # Important.', await edit($, 'important', md => addImportant(md, tag, text)))
 }
 
+// The one status line the plugin has: queued replies, then the fleet rows that need the captain.
+let queuedCount = 0
+let callCount = 0
+
+function pinStatus($: EngineInterface): void {
+  const parts = [queuedCount === 0 ? undefined : `notes: ${queuedCount} repl${queuedCount === 1 ? 'y' : 'ies'} queued, sent with your next message. Ctrl+q: edit, remove, send`, workStatus(callCount)]
+  const text = parts.filter(part => part !== undefined).join(' · ')
+  $.ui.status(text === '' ? undefined : text)
+}
+
 function showQueue($: EngineInterface, n: number): void {
-  $.ui.status(n === 0 ? undefined : `notes: ${n} repl${n === 1 ? 'y' : 'ies'} queued, sent with your next message. Ctrl+q: edit, remove, send`)
+  queuedCount = n
+  pinStatus($)
+}
+
+// Todo item labels by item id, the names fleet rows linked to an item take.
+function labelsOf(current: Notes | null): Record<string, string> {
+  const labels: Record<string, string> = {}
+  for (const item of current === null ? [] : items(current.sections.todo)) if (item.id !== undefined) labels[item.id] = shown(item)
+  return labels
+}
+
+let isToldNoFleet = false
+
+// Each refresh reads the fleet; a new row that needs the captain is notified once, and the status line counts them.
+async function watchFleet($: EngineInterface): Promise<void> {
+  const bridge = await bridgeOf($)
+  if (bridge === undefined) return
+  let raw: { rows: FleetRow[]; calls: number }
+  try {
+    raw = JSON.parse(await runBridge($, bridge, 'fleet', (await keptPath($)) ?? '')) as { rows: FleetRow[]; calls: number }
+  } catch (error) {
+    if (!isToldNoFleet) $.ui.toast(`notes-keeping: ${message(error)}`)
+    isToldNoFleet = true
+    return
+  }
+  const now = await $.clock.now()
+  const next = await update($, fleet, () => ({ rows: raw.rows, calls: raw.calls, at: now }))
+  const due = needsYou(next)
+  const saved = await $.store.get(NOTIFIED)
+  const sent = new Set(Array.isArray(saved) ? (saved as string[]) : [])
+  const labels = labelsOf(await read($, notes))
+  for (const row of due) {
+    const key = `${row.task}@${row.at ?? '-'}`
+    if (sent.has(key)) continue
+    sent.add(key)
+    await $.ui.notify(`${nameOf(row, labels)}: ${row.waiting.replace(/^you: /, '')}`, { title: 'Firstmate' }).catch(() => undefined)
+  }
+  await $.store.set(NOTIFIED, [...sent])
+  if (due.length !== callCount) {
+    callCount = due.length
+    pinStatus($)
+  }
 }
 
 // The selection is answered: the same text does not raise the pane again until it changes.
@@ -1010,6 +1094,7 @@ export const register: Register = on => {
         if (panes.some(pane => pane.id === PANE)) await refresh($)
         await watchTodo($)
         await drainQueue($)
+        await watchFleet($)
       })
     }
     return next(e)
@@ -1042,6 +1127,8 @@ export const register: Register = on => {
     if (e.element?.startsWith(NOTE) === true) await update($, cursor, () => e.element?.slice(NOTE.length) ?? null)
     const id = rowId(e.element ?? '')
     if (id !== undefined) await update($, todoCursor, () => id)
+    const task = e.element?.startsWith('work:') === true ? e.element.slice('work:'.length) : undefined
+    if (task !== undefined && (await read($, fleet))?.rows.some(row => row.task === task) === true) await update($, workCursor, () => task)
     return next(e)
   })
 
@@ -1321,13 +1408,16 @@ export const register: Register = on => {
       <Button key={`view:${key}`} plain hotkey={hotkey} dimColor={at !== to} label={label} onPress={go(to)} />
     )
     const step = await read($, picked)
+    const work = await read($, fleet)
+    const calls = needsYou(work).length
     const back = at === 'history' && step !== null ? async () => {
           await update($, picked, () => (step.step === 'confirm' ? { ...step, step: 'preview' } : null))
-        } : go('todos')
+        } : at === 'work-item' ? go('work') : go('todos')
     const nav = (
-      <Box key="nav" flexDirection="row" gap={2} marginBottom={1}>
+      <Box key="nav" flexDirection="row" flexWrap="wrap" columnGap={2} marginBottom={1}>
         {tab('todos', 't', 'Todos', 'todos')}
         {tab('objectives', 'o', 'Objectives', 'objectives')}
+        {work === null ? null : tab('work', 'w', calls === 0 ? 'Work' : `Work (${calls}!)`, 'work')}
         {tab('important', 'i', 'Important', 'important')}
         {tab('chat', 'c', 'Chat', 'chat')}
         {tab('queue', 'q', `Queue (${list.length})`, 'queue')}
@@ -1391,7 +1481,123 @@ export const register: Register = on => {
       </Box>
     )
     let content
-    if (at === 'history') {
+    if ((at === 'work' || at === 'work-item') && work !== null) {
+      const now = await $.clock.now()
+      const labels = labelsOf(current)
+      const hideWork = await read($, workHidden)
+      const shownRows = work.rows.filter(one => !hideWork.includes(groupOf(one)))
+      const task = at === 'work-item' ? await read($, workOpen) : selectedRow(shownRows, await read($, workCursor))
+      const row = work.rows.find(one => one.task === task)
+      const isAnswering = (await read($, workAnswering)) && row !== undefined && row.flag !== '' && Input !== undefined
+      const item = row === undefined || row.todo === null || s === undefined ? undefined : items(s.todo).find(one => one.id === row.todo)
+      const crewRead = await read($, crew)
+      const actions =
+        row === undefined ? null : isAnswering && Input !== undefined ? (
+          <Input
+            key="work:reply"
+            label={row.answer ?? row.task}
+            placeholder="your answer; Enter puts it in the prompt, you send it"
+            submitLabel="fill"
+            autoFocus
+            onSubmit={async (value: string) => {
+              if (value.trim() === '') return
+              const filled = await $.prompt.fill({ text: answerText(row, value.trim()), mode: 'insert' })
+              if (!filled.isFilled) $.ui.toast('The prompt box cannot take the answer now.')
+              await update($, workAnswering, () => false)
+            }}
+          />
+        ) : (
+          <Box key="work-actions" flexDirection="row" flexWrap="wrap" columnGap={2}>
+            {row.flag === '' ? null : <Button
+                key="work:answer"
+                plain
+                hotkey="a"
+                label="answer"
+                onPress={async () => {
+                  await update($, workAnswering, () => true)
+                  // The engine answers {} or { deny }; `claude plugin test` has no ring and rejects.
+                  await $.ui.focus({ requestId: PANE, key: 'work:reply' }).catch(() => undefined)
+                }}
+              />}
+            <Button
+              key="work:copy"
+              plain
+              hotkey="y"
+              label={row.pr !== null ? 'copy PR link' : row.report !== null ? 'copy report path' : 'copy task id'}
+              onPress={async () => {
+                const copied = await $.ui.copy({ text: copyText(row) })
+                $.ui.toast(copied.isCopied ? `Copied ${copyText(row)}` : `notes-keeping: the copy did not take (${copied.reason})`)
+              }}
+            />
+            {row.pr === null && row.report === null ? null : <Button key="work:view" plain hotkey="v" label={row.pr !== null ? 'view PR' : 'view report'} onPress={() => viewRow($, row)} />}
+            {row.live && row.window !== null ? <Button key="work:go" plain hotkey="g" label="go to worker" onPress={() => $.process.run(['tmux', 'switch-client', '-t', row.window ?? ''], { timeoutMs: GIT_MS })} /> : null}
+            {row.word === 'call' ? null : (
+              <Button
+                key="work:crew"
+                plain
+                hotkey="r"
+                label="re-read"
+                onPress={async () => {
+                  const bridge = await bridgeOf($)
+                  if (bridge === undefined) return
+                  const text = await runBridge($, bridge, 'crew', row.task).catch((error: unknown) => `failed: ${message(error)}`)
+                  await update($, crew, () => ({ task: row.task, text }))
+                  await update($, workOpen, () => row.task)
+                  await update($, view, () => 'work-item')
+                }}
+              />
+            )}
+          </Box>
+        )
+      content =
+        at === 'work' ? (
+          <Box key="content" flexDirection="column">
+            <WorkSlot
+              Box={Box}
+              Button={Button}
+              Text={Text}
+              fleet={work}
+              labels={labels}
+              hidden={hideWork}
+              selected={row?.task}
+              now={now}
+              onOpen={async (one: string) => {
+                await update($, workOpen, () => one)
+                await update($, workAnswering, () => false)
+                await update($, view, () => 'work-item')
+              }}
+              onToggle={(group: WorkGroup) => update($, workHidden, list => (list.includes(group) ? list.filter(other => other !== group) : [...list, group]))}
+            />
+            {actions}
+            {hint('Up and Down select, Enter: details  a: answer (fills the prompt)  y: copy  v: view PR/report  g: go to worker  r: re-read  1-6 filters  b back')}
+          </Box>
+        ) : row === undefined ? (
+          <Box key="content" flexDirection="column">
+            <Text dimColor>This row is no longer in the fleet.</Text>
+            {hint('b goes back')}
+          </Box>
+        ) : (
+          <Box key="content" flexDirection="column">
+            {details(row, nameOf(row, labels), now, item === undefined ? undefined : shown(item), crewRead?.task === row.task ? crewRead.text : undefined).map((line, i) => (
+              <Text key={`work-line:${i}`}>{line}</Text>
+            ))}
+            {item === undefined ? null : (
+              <Button
+                key="work:item"
+                plain
+                hotkey="d"
+                label="open the todo item"
+                onPress={async () => {
+                  await update($, todoOpen, () => keyOf(item.text))
+                  await update($, view, () => 'item')
+                }}
+              />
+            )}
+            {actions}
+            {hint('a: answer (fills the prompt)  y: copy  v: view PR/report  g: go to worker  r: re-read crew state  d: todo item  b back')}
+          </Box>
+        )
+    } else if (at === 'history') {
       const dir = await notesDir($)
       const own = current?.path
       const names = (await listNotes($)).filter(name => own === undefined || !own.endsWith(`/${name}`))

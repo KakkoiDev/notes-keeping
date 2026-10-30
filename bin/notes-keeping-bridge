@@ -36,12 +36,25 @@ home opted in). Four verbs are the plugin's; five are firstmate's.
                              drops one whose caller was killed before then.
   active                     print the notes file a session asked for pending updates within the last 15 seconds, the
                              latest when several did; exits 1 when none did.
+  fleet <notes-file>         read-only: print {"rows": [...], "calls": <n>} for the Work view. A row per state/<task>.meta
+                             and per live captain hold, from the metas, the last state line of each state/<task>.status,
+                             one `tmux list-windows -a` and the backlog's tasks (bin/fm-tasks-axi.sh list, read at most
+                             once per 30 seconds). A meta row is gone (gone: true) when its window is not live and its
+                             last state line is done. flag "!": a live captain hold (hold_kind captain, not done, no
+                             unresolved blocker, no future hold_until, set under 14 days ago) whose origin or own id is a
+                             shown meta row, or whose id or origin is linked to an item in <notes-file>; other live holds
+                             are only counted in calls. flag "?": a last state line of needs-decision, blocked or failed,
+                             or a worker gone without a done line. No prose sets a flag.
+  waiting <task-id> <text>   firstmate's Waiting-on cell for the task's row, until state/<task>.status gets another state line.
+  crew <task-id>             print bin/fm-crew-state.sh <task-id> for this home.
 
-Links are appended to state/notes-todo-links.jsonl, blocks to state/notes-todo-blocks.jsonl; queued updates are files in state/notes-keeping-queue/, and the
+Links are appended to state/notes-todo-links.jsonl, blocks to state/notes-todo-blocks.jsonl, waiting cells to
+state/notes-fleet-waiting.jsonl; queued updates are files in state/notes-keeping-queue/, and the
 active notes file is state/notes-keeping-active.json. An item's key is id:<id>, or its text lowercased with whitespace
 collapsed, the same text key the plugin falls back to for an item without an id. FM_HOME overrides the home whose state/ is used. FM_ROOT names the firstmate checkout whose
 bin/fm-inbox.sh takes the notes; without it the checkout is the parent of this file's directory, so a firstmate
-config/notes-keeping-bridge symlink to this file needs neither.
+config/notes-keeping-bridge symlink to this file needs neither. fleet keeps the backlog read in
+NOTES_KEEPING_FLEET_CACHE (default a folder under the system temporary directory), never under state/.
 """
 import hashlib
 import json
@@ -50,7 +63,9 @@ import re
 import secrets
 import subprocess
 import sys
+import tempfile
 import time
+from datetime import datetime, timezone
 
 ROOT = os.environ.get('FM_ROOT') or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 HOME = os.environ.get('FM_HOME') or ROOT
@@ -70,8 +85,27 @@ ADDED = re.compile(r'^\+ \[.\] ')
 ID_TAG = re.compile(r' \[id:[a-z0-9]+\]$')
 ITEM_ID = re.compile(r'^id:([a-z0-9]+)$')
 TASK_ID = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]*$')
+WAITING = os.path.join(STATE, 'notes-fleet-waiting.jsonl')
+TASKS_AXI = os.path.join(ROOT, 'bin', 'fm-tasks-axi.sh')
+CREW_STATE = os.path.join(ROOT, 'bin', 'fm-crew-state.sh')
+CACHE = os.environ.get('NOTES_KEEPING_FLEET_CACHE') or os.path.join(tempfile.gettempdir(), 'notes-keeping-fleet')
+TASKS_S = 30
+TASKS_FIELDS = 'created,hold_kind,hold_until,hold_reason,blocked_by,body'
+# The age at which an undated captain hold stops being live, as fm-fleet-snapshot.sh's FM_SNAPSHOT_UNDATED_HOLD_AGE_DAYS default.
+AGED_DAYS = 14
+# A state line with any bracketed stamps ([at=], [key=]) before its colon.
+FLEET_LINE = re.compile(r'^(%s)((?: \[[^\]]*\])*):\s?(.*)$' % '|'.join(re.escape(s) for s in STATES))
+STAMP = re.compile(r'\[(at|key)=([^\]]*)\]')
+PR_URL = re.compile(r'https://\S+/pull/\d+')
+REPORT = re.compile(r'(/\S+\.md)\b')
+HOLD_SET = re.compile(r'Captain hold set: (\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)')
+HOLD_ORIGIN = re.compile(r'Captain hold origin: ([A-Za-z0-9][A-Za-z0-9._-]*)')
+NOTE_ID = re.compile(r'<!-- id:([a-z0-9]+) -->')
+WORD = {'needs-decision': 'decision'}
+ASKS = ('needs-decision', 'blocked', 'failed')
 USAGE = ('usage: notes-keeping-bridge status <notes-file> | notify <notes-file> | link <task-id> <item> [--by <name>] | unlink <item>'
-         ' | block <task-id> --reason <text> [--by <name>] | pending <notes-file> | answer <request> | update <notes-file> <text> --by <name> --task <task-id> | active')
+         ' | block <task-id> --reason <text> [--by <name>] | pending <notes-file> | answer <request> | update <notes-file> <text> --by <name> --task <task-id> | active'
+         ' | fleet <notes-file> | waiting <task-id> <text> | crew <task-id>')
 
 
 def die(text, code=2):
@@ -327,6 +361,230 @@ def active():
     print(record['file'])
 
 
+def toon_row(line):
+    """The values of one tasks-axi list row: comma separated, a quoted value with backslash escapes."""
+    out, i, n = [], 0, len(line)
+    while True:
+        if i < n and line[i] == '"':
+            i += 1
+            chars = []
+            while i < n and line[i] != '"':
+                if line[i] == '\\' and i + 1 < n:
+                    chars.append({'n': '\n', 't': '\t'}.get(line[i + 1], line[i + 1]))
+                    i += 2
+                else:
+                    chars.append(line[i])
+                    i += 1
+            out.append(''.join(chars))
+            i += 1
+        else:
+            end = line.find(',', i)
+            end = n if end < 0 else end
+            out.append(line[i:end])
+            i = end
+        if i >= n:
+            return out
+        i += 1
+
+
+def backlog():
+    """The backlog's tasks by id, a "-" value read as None; one fm-tasks-axi.sh list per TASKS_S seconds."""
+    path = os.path.join(CACHE, hashlib.sha256(STATE.encode()).hexdigest()[:16] + '.json')
+    try:
+        if time.time() - os.path.getmtime(path) < TASKS_S:
+            with open(path, encoding='utf-8') as f:
+                return json.load(f)
+    except (OSError, ValueError):
+        pass
+    try:
+        done = subprocess.run([TASKS_AXI, 'list', '--limit', '2000', '--fields', TASKS_FIELDS], capture_output=True, text=True, env={**os.environ, 'FM_HOME': HOME})
+    except OSError:
+        return {}
+    if done.returncode != 0:
+        return {}
+    out, fields = {}, None
+    for line in done.stdout.split('\n'):
+        m = re.match(r'^tasks\[\d+\]\{([^}]*)\}:$', line)
+        if m:
+            fields = m.group(1).split(',')
+        elif fields is not None and line.startswith('  '):
+            values = toon_row(line[2:])
+            if len(values) == len(fields):
+                row = {k: (None if v == '-' else v) for k, v in zip(fields, values)}
+                out[row['id']] = row
+        else:
+            fields = None
+    os.makedirs(CACHE, exist_ok=True)
+    write_json(path, out)
+    return out
+
+
+def epoch(iso):
+    try:
+        return int(datetime.strptime(iso, '%Y-%m-%dT%H:%M:%SZ').replace(tzinfo=timezone.utc).timestamp())
+    except (TypeError, ValueError):
+        return None
+
+
+def hold_set(task):
+    """When the captain hold was set: its machine-written stamp in the body, else the day the task was created."""
+    m = HOLD_SET.search(task.get('body') or '')
+    return epoch(m.group(1)) if m else epoch(f"{task.get('created')}T00:00:00Z")
+
+
+def is_live_hold(task, tasks, now):
+    """fm-fleet-snapshot.sh's hold_bucket == "live", from structured fields only."""
+    if task.get('hold_kind') != 'captain' or not task.get('hold_reason') or task.get('state') == 'done':
+        return False
+    blockers = [b for b in re.split(r'[,;\s]+', task.get('blocked_by') or '') if b not in ('', 'none')]
+    if any((tasks.get(b) or {}).get('state') != 'done' for b in blockers):
+        return False
+    until = task.get('hold_until')
+    if until:
+        return until <= datetime.fromtimestamp(now, timezone.utc).strftime('%Y-%m-%d')
+    since = hold_set(task)
+    return since is None or (now - since) // 86400 < AGED_DAYS
+
+
+def read_meta(task):
+    out = {}
+    try:
+        with open(os.path.join(STATE, f'{task}.meta'), encoding='utf-8', errors='replace') as f:
+            for line in f:
+                key, sep, value = line.rstrip('\n').partition('=')
+                if sep:
+                    out[key] = value
+    except FileNotFoundError:
+        pass
+    return out
+
+
+def fleet_lines(task):
+    """The task's state lines in state/<task>.status, in order: state, [at=] stamp, [key=] and text."""
+    out = []
+    try:
+        with open(os.path.join(STATE, f'{task}.status'), encoding='utf-8', errors='replace') as f:
+            for line in f:
+                m = FLEET_LINE.match(line.rstrip('\n'))
+                if m:
+                    stamps = dict(STAMP.findall(m.group(2)))
+                    at = stamps.get('at', '')
+                    out.append({'state': m.group(1), 'at': int(at) if at.isdigit() else None, 'key': stamps.get('key'), 'text': m.group(3)})
+    except FileNotFoundError:
+        pass
+    return out
+
+
+def waitings():
+    """Latest waiting cell per task."""
+    out = {}
+    try:
+        f = open(WAITING, encoding='utf-8')
+    except FileNotFoundError:
+        return out
+    with f:
+        for line in f:
+            try:
+                record = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(record.get('task'), str) and isinstance(record.get('text'), str) and isinstance(record.get('lines'), int):
+                out[record['task']] = record
+    return out
+
+
+def windows():
+    try:
+        done = subprocess.run(['tmux', 'list-windows', '-a', '-F', '#{session_name}:#{window_name}'], capture_output=True, text=True)
+    except OSError:
+        return set()
+    return set(done.stdout.split('\n')) - {''} if done.returncode == 0 else set()
+
+
+def noted(notes_file):
+    """The tasks linked to an item the notes file holds, by the item's id or text key."""
+    try:
+        with open(notes_file, encoding='utf-8', errors='replace') as f:
+            text = f.read()
+    except OSError:
+        return set()
+    ids = set(NOTE_ID.findall(text))
+    keys = {key_of(NOTE_ID.sub('', m)) for m in re.findall(r'^- \[.\] (.*)$', text, re.M)}
+    return {r['task'] for r in links().values() if r.get('id') in ids or (r.get('id') is None and r['key'] in keys)}
+
+
+def item_of(task):
+    return next((r['id'] for r in links().values() if r['task'] == task and isinstance(r.get('id'), str)), None)
+
+
+def meta_row(task, meta, lines, live, cell, title):
+    last = lines[-1] if lines else None
+    state = last['state'] if last else None
+    text = last['text'] if last else ''
+    is_live = meta.get('window') in live
+    gone = not is_live and state == 'done'
+    is_lost = not is_live and not gone
+    if is_lost:
+        waiting = f'firstmate: worker gone; last: {text}' if last else 'firstmate: worker gone; no state line'
+    elif state in ASKS:
+        waiting = f'firstmate: {text}'
+    elif state == 'working':
+        waiting = f'worker: {text}'
+    else:
+        waiting = text
+    if cell is not None and len(lines) <= cell['lines']:
+        waiting = cell['text']
+    flag = '?' if is_lost or state in ASKS else ''
+    pr = meta.get('pr') or next(iter(PR_URL.findall(text)), None)
+    report = REPORT.search(text)
+    todo = meta.get('todo', '')
+    return {
+        'task': task, 'kind': meta.get('kind'), 'title': title, 'word': 'idle' if state == 'paused' and meta.get('kind') == 'scout' else WORD.get(state, state or 'none'),
+        'at': last['at'] if last else None, 'flag': flag, 'waiting': waiting, 'window': meta.get('window'), 'live': is_live, 'gone': gone,
+        'pr': pr, 'report': report.group(1) if report else None, 'todo': todo[3:] if todo.startswith('id:') else None,
+        'answer': (f"{task} {last['key']}" if last and last['key'] else task) if flag else None,
+    }
+
+
+def fleet(notes_file):
+    now = int(time.time())
+    tasks = backlog()
+    live = windows()
+    cells = waitings()
+    rows = []
+    for name in sorted(os.listdir(STATE)) if os.path.isdir(STATE) else []:
+        task = name[:-len('.meta')]
+        if name.endswith('.meta') and TASK_ID.match(task):
+            title = (tasks.get(task) or {}).get('title')
+            rows.append(meta_row(task, read_meta(task), fleet_lines(task), live, cells.get(task), title.split('\n')[0] if title else None))
+    shown = {r['task'] for r in rows if not r['gone']}
+    tied = noted(notes_file)
+    calls = 0
+    for task in tasks.values():
+        if not is_live_hold(task, tasks, now):
+            continue
+        m = HOLD_ORIGIN.search(task.get('body') or '')
+        origin = m.group(1) if m else None
+        if not ({task['id'], origin} & (shown | tied)):
+            calls += 1
+            continue
+        report = REPORT.search(task['hold_reason']) or re.search(r'(\S+\.md)\b', task['hold_reason'])
+        rows.append({
+            'task': task['id'], 'kind': task.get('kind'), 'title': (task.get('title') or '').split('\n')[0] or None, 'word': 'call', 'at': hold_set(task), 'flag': '!',
+            'waiting': f"you: {task['hold_reason']}", 'window': None, 'live': False, 'gone': False, 'pr': next(iter(PR_URL.findall(task['hold_reason'])), None),
+            'report': report.group(1) if report else None, 'todo': item_of(task['id']), 'answer': f"{origin} {task['id']}" if origin else task['id'], 'origin': origin,
+        })
+    rows.sort(key=lambda r: ({'!': 0, '?': 1}.get(r['flag'], 2), -(r['at'] or 0)))
+    print(json.dumps({'rows': rows, 'calls': calls}, ensure_ascii=False))
+
+
+def crew(task):
+    done = subprocess.run([CREW_STATE, task], capture_output=True, text=True, env={**os.environ, 'FM_HOME': HOME})
+    sys.stdout.write(done.stdout)
+    if done.returncode != 0:
+        die(f'fm-crew-state.sh failed ({done.returncode}): {done.stderr.strip()}', 1)
+
+
 def main(argv):
     verb, args = (argv[0], argv[1:]) if argv else ('', [])
     if verb == 'status' and len(args) == 1:
@@ -373,6 +631,19 @@ def main(argv):
         update(args[0], text, by, task)
     elif verb == 'active' and not args:
         active()
+    elif verb == 'fleet' and len(args) == 1:
+        fleet(args[0])
+    elif verb == 'waiting' and len(args) >= 1:
+        task, text = args[0], ' '.join(' '.join(args[1:]).split())
+        if not TASK_ID.match(task):
+            die(f'not a task id: {task}')
+        if text == '':
+            die('waiting needs <text>')
+        append({'task': task, 'text': text, 'lines': len(fleet_lines(task)), 'at': int(time.time())}, WAITING)
+    elif verb == 'crew' and len(args) == 1:
+        if not TASK_ID.match(args[0]):
+            die(f'not a task id: {args[0]}')
+        crew(args[0])
     else:
         die(USAGE)
 
