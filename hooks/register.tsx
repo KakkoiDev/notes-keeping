@@ -908,7 +908,10 @@ async function poll($: EngineInterface): Promise<string> {
     if (current === null && (await read($, handled)) !== '') await update($, handled, () => '')
     return isInPane ? `selection in a notes pane: ${(picked?.text ?? '').trim()}` : 'no selection'
   }
-  if (text === (await read($, handled))) return `already answered: ${text}`
+  const answered = await read($, handled)
+  if (text === answered) return `already answered: ${text}`
+  // Other text is selected: the answered one is no longer held, and selecting it again raises the pane.
+  if (answered !== '') await update($, handled, () => '')
   if (text === current?.selection) return `pane already open: ${text}`
   // Opening the dock mid-drag reflows the transcript under the pointer, so the pane waits for a still selection.
   if (text !== seen) {

@@ -53,7 +53,7 @@ Select text in the transcript and hold still. The Selection pane opens (text sel
 
 Any other key hands the keyboard back to the prompt and closes the pane. The pane is opened by a timer, not by a key press, so the terminal seats it only from 144 columns (110 once you have opened it yourself and not closed it by hand). Below that the same actions are a bar above the prompt on keys `1` Reply, `2` Important, `3` Dismiss, and a toast says so once per session with the width it needs.
 
-Leaving the pane never blocks the next selection: Esc, the close mark, `x`, `i`, a sent reply, the Ctrl+q chord, switching tabs, and a click in the transcript (which also closes an open reply box) each leave the next selection free to open the menu. One exception: after Esc, selecting the very same text again does nothing while the terminal still holds that selection, because the plugin cannot tell a re-selection from a retained one; select other text first. An empty reply keeps the box open.
+Leaving the pane never blocks the next selection: Esc, the close mark, `x`, `i`, a sent reply, the Ctrl+q chord, switching tabs, and a click in the transcript (which also closes an open reply box) each leave the next selection free to open the menu. Selecting the same text again after Esc opens the menu once the poll (every 600 ms) has read any other text in between, as it does during a drag; a re-selection quicker than that (a double click on the same word) does nothing while the terminal still holds the old selection, because the plugin cannot tell it from a retained one. An empty reply keeps the box open.
 
 Queued replies go out ahead of your next message when you press Enter, unless you moved them into the prompt first with `s`.
 

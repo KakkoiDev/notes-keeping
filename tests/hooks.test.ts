@@ -915,6 +915,30 @@ test('Esc or the close mark on the menu, or on the reply box with or without a d
   await menu.unmount()
 })
 
+// Mid-turn the terminal keeps the selection through Esc; a drag over the same text reads its shorter runs first.
+test('after Esc on the reply box, selecting the same text again by a drag opens the menu', async ($, on) => {
+  let selection: string | undefined
+  const { clock, ui } = engine(on, { [BOUND]: NOTES }, { [`session:${SESSION}`]: BOUND }, () => selection)
+  engineDraws(on)
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
+  selection = 'loopback jitter'
+  await clock.advance(1200)
+  const menu = await $.ui.mount({ ...SELECT_PANE, surface: 'terminal' })
+  await menu.press({ key: 'reply-open' })
+  await menu.unmount()
+  await clock.advance(600)
+  hostClose(ui, 'notes-keeping-select')
+  await clock.advance(1200)
+  const opens = ui.opened.length
+  clipboard.text = 'loopback jitter'
+  for (const run of ['lo', 'loopback', 'loopback jitte', 'loopback jitter']) {
+    selection = run
+    await clock.advance(600)
+  }
+  await clock.advance(600)
+  expect(ui.opened.slice(opens)).toEqual([{ id: 'notes-keeping-select', focus: true }])
+})
+
 test('a reply box that never held the keyboard and is gone without a close event leaves the next selection able to open the menu', async ($, on) => {
   let selection: string | undefined
   const { clock, ui } = engine(on, { [BOUND]: NOTES }, { [`session:${SESSION}`]: BOUND }, () => selection)
