@@ -2546,6 +2546,28 @@ test('the row of toggles is the legend Claude reads with the todo list, mark and
   await pane.unmount()
 })
 
+// The end column of each toggle in the row as the terminal draws a plain Button with a hotkey (`1: label`), the row's
+// gap between toggles, starting a new line where a wrapping row runs past `columns`.
+function toggleEnds(labels: { hotkey: string; label: string }[], gap: number, wraps: boolean, columns: number): number[] {
+  let at = 0
+  return labels.map(({ hotkey, label }) => {
+    const width = `${hotkey}: ${label}`.length
+    const start = at === 0 ? 0 : at + gap
+    at = wraps && at > 0 && start + width > columns ? width : start + width
+    return at
+  })
+}
+
+test('every status toggle, [!] blocked included, fits a sidebar 89 columns wide', async ($, on) => {
+  const { pane } = await keynav($, on)
+  const row = await pane.find({ key: 'filters' })
+  const toggles = (await pane.findAll({ type: 'Button' })).filter(button => button.key?.startsWith('show:') === true)
+  expect(toggles.map(button => button.key)).toContain('show:blocked')
+  const ends = toggleEnds(toggles.map(button => ({ hotkey: button.props.hotkey, label: button.props.label })), row?.props.gap, row?.props.flexWrap === 'wrap', 89)
+  expect(ends.filter(end => end > 89)).toEqual([])
+  await pane.unmount()
+})
+
 test('keys 1 to 4 hide and show todo, in-progress, done and declined items, and the pane says which are shown and which marker each status is', async ($, on) => {
   const { pane } = await keynav($, on)
   const toggles = ['show:todo', 'show:in-progress', 'show:done', 'show:declined']
