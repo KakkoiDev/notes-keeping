@@ -1,7 +1,8 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { Notes, Opened, Pair, Select, Todo, View } from '../types'
+import type { ChatNote, Notes, Opened, Pair, Select, Todo, View } from '../types'
+import { hrefOf, marked, noteOf } from './anchor'
 import type { ActorId } from './actors'
 import { actorLabel } from './actors'
 import type { Entry } from './logs'
@@ -16,6 +17,7 @@ import {
   addTurn,
   addUpdate,
   carryOver,
+  chatNotes,
   chatPair,
   create,
   dropEmptyUpdate,
@@ -60,6 +62,8 @@ const PASTE_MS = 2_000
 const PREVIEW = 60
 const HISTORY_CAP = 20
 const NOTE = 'note:'
+// The engine's mark opening a reply on macOS, as Claude Code 2.1.314 draws it.
+const BULLET = '⏺ '
 const HEAD_CHARS = 200
 const NEAR = 2
 
@@ -108,6 +112,8 @@ const todoCursor = atom({ plugin: 'notes-keeping', key: 'todoCursor' } as const,
 const hidden = atom({ plugin: 'notes-keeping', key: 'hidden' } as const, [] as Status[])
 // The todo item the Item view shows, by its row id.
 const todoOpen = atom({ plugin: 'notes-keeping', key: 'todoOpen' } as const, null as string | null)
+// The note the Note view shows, by its id.
+const noteOpen = atom({ plugin: 'notes-keeping', key: 'noteOpen' } as const, null as string | null)
 
 function message(error: unknown): string {
   return (error instanceof Error ? error.message : String(error)).split('\n')[0] ?? 'unknown error'
@@ -748,8 +754,11 @@ async function finish($: EngineInterface, selection: string): Promise<void> {
   isReflowed = true
 }
 
-async function queueReply($: EngineInterface, agent: string, user: string): Promise<void> {
-  const next = await update($, queue, list => [...list, { agent, user }])
+// A reply to text selected in one transcript row is a note anchored there, at the first occurrence no other note holds.
+async function queueReply($: EngineInterface, agent: string, user: string, row?: string): Promise<void> {
+  const held = [...chatNotes((await read($, notes))?.sections.chat ?? ''), ...(await read($, queue)).flatMap(pair => (pair.note === undefined ? [] : [{ ...pair.note, agent: pair.agent }]))]
+  const note = row === undefined ? undefined : { id: idFor(`${row}\n${agent}\n${user}`, new Set(held.map(one => one.id))), row, at: held.filter(one => one.row === row && one.agent === agent).length }
+  const next = await update($, queue, list => [...list, note === undefined ? { agent, user } : { agent, user, note }])
   showQueue($, next.length)
   await finish($, agent)
 }
@@ -766,15 +775,15 @@ async function sendQueue($: EngineInterface): Promise<void> {
     $.ui.toast('The prompt box cannot take the replies now; they stay queued.')
     return
   }
-  warn($, told('', await edit($, 'reply', md => pending.reduce((text, pair) => addChat(text, pair.agent, pair.user), md))))
+  warn($, told('', await edit($, 'reply', md => pending.reduce((text, pair) => addChat(text, pair.agent, pair.user, pair.note), md))))
   await update($, queue, () => [])
   showQueue($, 0)
 }
 
 // An open notes pane holding the keyboard refuses the selection pane's focus and keeps it a tab behind, so it closes first.
-async function openSelect($: EngineInterface, selection: string): Promise<void> {
+async function openSelect($: EngineInterface, selection: string, row: string | undefined): Promise<void> {
   if ((await $.ui.panes()).some(pane => pane.id === PANE)) await hideNotes($)
-  await update($, select, () => ({ mode: 'menu', selection, isPlaced: false, hadFocus: false }))
+  await update($, select, () => ({ mode: 'menu', selection, ...(row === undefined ? {} : { row }), isPlaced: false, hadFocus: false }))
   const opened = await $.ui.open({ id: SELECT, title: 'Selection', focus: true, closeOnEscape: true, rows: 4 })
   await update($, select, current => (current === null ? null : { ...current, isPlaced: opened.isPlaced }))
   isReflowed = true
@@ -784,8 +793,8 @@ async function openSelect($: EngineInterface, selection: string): Promise<void> 
   }
 }
 
-async function openReply($: EngineInterface, selection: string): Promise<void> {
-  await update($, select, () => ({ mode: 'reply', selection, isPlaced: true, hadFocus: false }))
+async function openReply($: EngineInterface, current: Select): Promise<void> {
+  await update($, select, () => ({ ...current, mode: 'reply', isPlaced: true, hadFocus: false }))
   await $.ui.open({ id: SELECT, title: 'Reply', focus: true, closeOnEscape: true, rows: 4 })
 }
 
@@ -920,7 +929,7 @@ async function poll($: EngineInterface): Promise<string> {
     return `still changing: ${text}`
   }
   if (!(await isReleased($, text))) return `held, the clipboard has not taken it: ${text}`
-  await openSelect($, text)
+  await openSelect($, text, picked?.requestId)
   return `opened: ${text}`
 }
 
@@ -954,6 +963,22 @@ async function debug($: EngineInterface): Promise<string> {
   ].join('\n')
 }
 
+// The notes file's # Chat, parsed once per change of it.
+let parsedChat = { chat: '', notes: [] as ChatNote[] }
+
+// Every anchored reply: those in the notes file, then those still queued.
+async function allNotes($: EngineInterface): Promise<ChatNote[]> {
+  const chat = (await read($, notes))?.sections.chat ?? ''
+  if (chat !== parsedChat.chat) parsedChat = { chat, notes: chatNotes(chat) }
+  const queued = (await read($, queue)).flatMap(pair => (pair.note === undefined ? [] : [{ ...pair.note, agent: pair.agent, user: pair.user }]))
+  return [...parsedChat.notes, ...queued]
+}
+
+async function openNote($: EngineInterface, id: string): Promise<void> {
+  await update($, noteOpen, () => id)
+  await showNotes($, 'note')
+}
+
 function isDrawn(surface: string): boolean {
   return surface === 'terminal' || surface === 'desktop'
 }
@@ -966,6 +991,8 @@ export const register: Register = on => {
       argumentHint: 'init|objectives|update|important|reply|replies|history|show|hide [text]',
     })
     resumed = (await $.session.messages()).length > 0
+    // The transcript's marks read the notes file from state, which a new process starts without.
+    await refresh($)
     void syncTodo($, '')
     if (e.isInteractive) {
       $.clock.every(POLL_MS, async () => {
@@ -1054,10 +1081,11 @@ export const register: Register = on => {
           return { text: await important($, text, rest === '' ? AGENT_TAG : USER_TAG) }
         }
         case 'reply': {
-          const agent = await selected($)
+          const picked = await $.ui.selection()
+          const agent = (picked?.text ?? '').trim()
           if (agent === '') return { text: 'Select the text to reply to first.' }
           if (rest === '') return { text: 'Usage: /notes-keeping reply <your reply>' }
-          await queueReply($, agent, rest)
+          await queueReply($, agent, rest, picked?.requestId)
           return { text: 'Reply queued; it goes out with your next message.' }
         }
         case 'replies':
@@ -1167,6 +1195,33 @@ export const register: Register = on => {
     )
   })
 
+  // A reply block holding text a note was written on draws it as a link through the engine's own markdown; a click opens the note.
+  on('ui.render', { component: 'AssistantMessage' }, async ($, e, next) => {
+    if (!isDrawn(e.surface) || e.props.isSummary === true) return next(e)
+    const here = (await allNotes($)).filter(note => note.row === e.requestId)
+    if (here.length === 0) return next(e)
+    const text = marked(e.props.text, here)
+    if (text === e.props.text) return next(e)
+    const { Box, Markdown, Text } = $.ui.resolve(e)
+    // The tree replaces the engine's drawing of the row, its two-column gutter and the bullet opening a reply included.
+    return (
+      <Box flexDirection="row">
+        <Text color="text">{e.props.isFirstOfReply ? BULLET : '  '}</Text>
+        <Box flexGrow={1}>
+          <Markdown
+            key="notes"
+            text={text}
+            pressableLinks={here.map(note => hrefOf(note.id))}
+            onLinkPress={link => {
+              const id = noteOf(link.href)
+              if (id !== undefined) return openNote($, id)
+            }}
+          />
+        </Box>
+      </Box>
+    )
+  })
+
   // The band carries the menu only when the selection pane could not be drawn (a narrow terminal).
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const current = await read($, select)
@@ -1178,7 +1233,7 @@ export const register: Register = on => {
         <Text dimColor wrap="truncate-end">
           Selected: {current.selection.replace(/\s+/g, ' ').slice(0, width)}
         </Text>
-        <Button key="reply-open" plain hotkey="1" action={ACTION} label="Reply" onPress={() => openReply($, current.selection)} />
+        <Button key="reply-open" plain hotkey="1" action={ACTION} label="Reply" onPress={() => openReply($, current)} />
         <Button
           key="important"
           plain
@@ -1216,7 +1271,7 @@ export const register: Register = on => {
             submitLabel="queue"
             autoFocus
             onSubmit={async (value: string) => {
-              if (value.trim() !== '') await queueReply($, current.selection, value.trim())
+              if (value.trim() !== '') await queueReply($, current.selection, value.trim(), current.row)
             }}
           />
         </Box>
@@ -1228,7 +1283,7 @@ export const register: Register = on => {
           {AGENT_TAG} {preview}
         </Text>
         <Box flexDirection="row" gap={2}>
-          <Button key="reply-open" plain hotkey="r" action={ACTION} label="Reply" onPress={() => openReply($, current.selection)} />
+          <Button key="reply-open" plain hotkey="r" action={ACTION} label="Reply" onPress={() => openReply($, current)} />
           <Button
             key="important"
             plain
@@ -1543,6 +1598,19 @@ export const register: Register = on => {
             {hint('Read-only. b goes back')}
           </Box>
         )
+    } else if (at === 'note') {
+      const openId = await read($, noteOpen)
+      const one = (await allNotes($)).find(note => note.id === openId)
+      const isQueued = list.some(pair => pair.note?.id === openId)
+      content = (
+        <Box key="content" flexDirection="column">
+          {one === undefined ? <Text dimColor>This note is no longer in the notes file or the queue.</Text> : null}
+          {one === undefined ? null : <Text dimColor>{`${AGENT_TAG} ${one.agent}`}</Text>}
+          {one === undefined ? null : <Text>{`${USER_TAG} ${one.user}`}</Text>}
+          {isQueued ? <Text dimColor>Queued: it goes out with your next message.</Text> : null}
+          {hint('Read-only. b goes back')}
+        </Box>
+      )
     } else if (at === 'important') {
       content = body('Important', s?.important ?? '')
     } else if (at === 'chat') {

@@ -1,4 +1,4 @@
-import type { NameParts, Sections } from '../types'
+import type { ChatNote, NameParts, Note, Pair, Sections } from '../types'
 import type { Item } from './todo'
 import { format, idOf, items, keyOf, openObjectives, parse, stamped, withoutIds } from './todo'
 
@@ -183,18 +183,27 @@ export function addImportant(md: string, tag: string, text: string): string {
   return appendTo(md, IMPORTANT, [CHAT], `${tag} ${text.trim()}`)
 }
 
-export function chatPair(agent: string, user: string): string {
-  return `${AGENT_TAG} ${agent.trim()}\n${USER_TAG} ${user.trim()}`
+// The prompt carries a pair without its note; the notes file carries the note after the quoted text.
+export function chatPair(agent: string, user: string, note?: Note): string {
+  const tag = note === undefined ? '' : ` <!-- note:${note.id} row:${note.row} at:${note.at} -->`
+  return `${AGENT_TAG} ${agent.trim()}${tag}\n${USER_TAG} ${user.trim()}`
 }
 
-export function addChat(md: string, agent: string, user: string): string {
-  return appendTo(md, CHAT, [LOGS], chatPair(agent, user))
+export function addChat(md: string, agent: string, user: string, note?: Note): string {
+  return appendTo(md, CHAT, [LOGS], chatPair(agent, user, note))
 }
 
 // One turn that carried replies: each pair, then the message the user typed with them.
-export function addTurn(md: string, pairs: readonly { agent: string; user: string }[], message: string): string {
-  const blocks = pairs.map(pair => chatPair(pair.agent, pair.user))
+export function addTurn(md: string, pairs: readonly Pair[], message: string): string {
+  const blocks = pairs.map(pair => chatPair(pair.agent, pair.user, pair.note))
   return appendTo(md, CHAT, [LOGS], [...blocks, `${USER_TAG} ${message.trim()}`].join('\n\n'))
+}
+
+// The quoted text runs from its tag to the note, never past another pair's tag.
+const NOTED = /(?:^|\n)\[AI_AGENT\] ((?:(?!\n\[(?:AI_AGENT|USER)\] )[\s\S])*?) <!-- note:([a-z0-9]+) row:(\S+) at:(\d+) -->\n\[USER\] ([^\n]*)/g
+
+export function chatNotes(chat: string): ChatNote[] {
+  return [...chat.matchAll(NOTED)].map(m => ({ id: m[2] ?? '', row: m[3] ?? '', at: Number(m[4]), agent: m[1] ?? '', user: m[5] ?? '' }))
 }
 
 function readObjectives(doc: string): Initial {

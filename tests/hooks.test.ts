@@ -24,6 +24,8 @@ const TICK = new Date(2026, 9, 26, 10, 58, 5).toISOString().replace(/\.\d{3}Z$/,
 const cell = (text: string) => `id:${idFor(text, new Set())} ${text}`
 const logsOf = (md: string | undefined) => sections(md ?? '').logs.split('\n').filter(line => line !== '')
 const bare = (text: string | undefined) => withoutIds(text ?? '')
+// The note a reply to text selected in `row` carries in # Chat, the first in that row.
+const anchor = (row: string, agent: string, user: string) => ` <!-- note:${idFor(`${row}\n${agent}\n${user}`, new Set())} row:${row} at:0 -->`
 
 type Ask = { lines: { id: string; text: string }[]; statuses: { id: string; text: string }[]; answer: string }
 const BRIDGE = `${ROOT}/config/notes-keeping-bridge`
@@ -392,7 +394,7 @@ test('a queued reply goes out with the next composer Enter, recorded as one turn
     '[AI_AGENT] Shall I merge?\n[USER] Merge it\n\ncarry on',
     'plain',
   ])
-  expect(fs[NOW]?.endsWith('# Chat\n\n[AI_AGENT] Shall I merge?\n[USER] Merge it\n\n[USER] carry on\n')).toBe(true)
+  expect(fs[NOW]?.endsWith(`# Chat\n\n[AI_AGENT] Shall I merge?${anchor('row-1', 'Shall I merge?', 'Merge it')}\n[USER] Merge it\n\n[USER] carry on\n`)).toBe(true)
   expect(ui.status.at(-1)).toBeUndefined()
   expect(commits(git)).toEqual([`init: ${FILE}`, `reply: ${FILE}`])
 })
@@ -1169,7 +1171,7 @@ test('the reply quotes the text selected, not the text the opened dock reflows u
   await box.unmount()
   await submit($, 'next')
   expect(sent.at(-1)?.text).toBe(`[AI_AGENT] ${PICKED}\n[USER] ok\n\nnext`)
-  expect(fs[BOUND]?.endsWith(`[USER] a\n\n[AI_AGENT] ${PICKED}\n[USER] ok\n\n[USER] next\n`)).toBe(true)
+  expect(fs[BOUND]?.endsWith(`[USER] a\n\n[AI_AGENT] ${PICKED}${anchor('row-1', PICKED, 'ok')}\n[USER] ok\n\n[USER] next\n`)).toBe(true)
 })
 
 test('with a draft in the prompt the unfocused pane also keeps the text selected through the reflow', async ($, on) => {
@@ -1582,7 +1584,7 @@ test('the queue view lists every queued reply in its own editable field, removes
   ui.isFillable = true
   await pane.press({ key: 'send' })
   expect(ui.fills.at(-1)).toEqual({ text: '[AI_AGENT] Second question\n[USER] two, reworded', mode: 'insert' })
-  expect(fs[BOUND]).toContain('[AI_AGENT] Second question\n[USER] two, reworded')
+  expect(fs[BOUND]).toContain(`[AI_AGENT] Second question${anchor('row-1', 'Second question', 'two')}\n[USER] two, reworded`)
   expect(await pane.find({ type: 'Text', text: 'No replies queued.' })).toBeDefined()
   expect(await hint.find({ key: 'send-queue' })).toBeUndefined()
   await hint.unmount()
@@ -2717,4 +2719,87 @@ test('the shown statuses stay as set when the panel is closed and opened again',
   expect((await again.find({ key: 'show:declined' }))?.props.label).toBe('[-] declined: hidden')
   expect(await again.find({ key: 'todo:four' })).toBeUndefined()
   await again.unmount()
+})
+
+// One block of an assistant reply as the transcript draws it, in the row `requestId`.
+function reply(requestId: string, text: string, isFirstOfReply = true) {
+  return { plugin: 'notes-keeping', component: 'AssistantMessage', requestId, surface: 'terminal', props: { text, isFirstOfReply } } as const
+}
+
+test('a reply to text selected in an assistant row marks that text as a link in the row, queued and once sent; a click opens the note', async ($, on) => {
+  const fs: Fs = { [BOUND]: '# Objectives\n\nPlan\n\n## Updates\n\n# Important\n\n# Chat\n' }
+  let selection: string | undefined
+  const sent = submitting(on)
+  const { clock, ui } = engine(on, fs, { [`session:${SESSION}`]: BOUND }, () => selection)
+  engineDraws(on)
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
+  const source = 'The quick **brown** fox jumps.'
+
+  // No note yet: the engine draws the row.
+  const before = await $.ui.mount(reply('row-1', source))
+  expect(await before.find({ type: 'Markdown' })).toBeUndefined()
+  await before.unmount()
+
+  selection = 'brown fox'
+  await clock.advance(1200)
+  const menu = await $.ui.mount({ ...SELECT_PANE, surface: 'terminal' })
+  await menu.press({ key: 'reply-open' })
+  await menu.input({ key: 'reply', text: 'Too slow' })
+  await menu.unmount()
+  selection = undefined
+
+  const queued = await $.ui.mount(reply('row-1', source))
+  const text = (await queued.find({ type: 'Markdown' }))?.props.text as string
+  const href = /\]\((https:[^)]+)\)/.exec(text)?.[1] ?? ''
+  expect(text).toBe(`The quick [**brown** fox](${href}) jumps.`)
+  // The drawing replaces the engine's, gutter included: the reply's bullet on its first block, two blanks on the others.
+  expect(await queued.find({ type: 'Text', text: '⏺ ' })).toBeDefined()
+  await queued.unmount()
+  const later = await $.ui.mount(reply('row-1', source, false))
+  expect(await later.find({ type: 'Text', text: '⏺ ' })).toBeUndefined()
+  expect(await later.find({ type: 'Text', text: '  ' })).toBeDefined()
+  await later.unmount()
+  // Another row holding the same text is not the one selected.
+  const other = await $.ui.mount(reply('row-2', source))
+  expect(await other.find({ type: 'Markdown' })).toBeUndefined()
+  await other.unmount()
+
+  await submit($, 'carry on')
+  expect(sent.at(-1)?.text).toBe('[AI_AGENT] brown fox\n[USER] Too slow\n\ncarry on')
+  const id = href.split('/').pop()
+  expect(sections(fs[BOUND] ?? '').chat).toBe(`[AI_AGENT] brown fox <!-- note:${id} row:row-1 at:0 -->\n[USER] Too slow\n\n[USER] carry on`)
+
+  const row = await $.ui.mount(reply('row-1', source))
+  expect((await row.find({ type: 'Markdown' }))?.props.text).toBe(text)
+  await row.press({ key: 'notes', link: { href } })
+  expect(ui.opened.at(-1)).toEqual({ id: 'notes-keeping', focus: true })
+  await row.unmount()
+  const pane = await $.ui.mount({ ...NOTES_PANE, surface: 'terminal' })
+  expect(await pane.find({ type: 'Text', text: '[AI_AGENT] brown fox' })).toBeDefined()
+  expect(await pane.find({ type: 'Text', text: '[USER] Too slow' })).toBeDefined()
+  await pane.unmount()
+})
+
+test('a resumed session marks the rows its notes file anchors as soon as it starts, before anything else reads the file', async ($, on) => {
+  const note = ' <!-- note:k3x9 row:row-1 at:0 -->'
+  const fs: Fs = { [BOUND]: `# Objectives\n\nPlan\n\n## Updates\n\n# Important\n\n# Chat\n\n[AI_AGENT] brown fox${note}\n[USER] Too slow\n` }
+  engine(on, fs, { [`session:${SESSION}`]: BOUND })
+  engineDraws(on)
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
+  await flush()
+  const row = await $.ui.mount(reply('row-1', 'The quick brown fox jumps.'))
+  expect((await row.find({ type: 'Markdown' }))?.props.text).toBe('The quick [brown fox](https://notes-keeping.invalid/note/k3x9) jumps.')
+  await row.unmount()
+})
+
+test('a reply moved into the prompt with s keeps its anchor in # Chat', async ($, on) => {
+  const fs: Fs = { [BOUND]: '# Objectives\n\nPlan\n\n## Updates\n\n# Important\n\n# Chat\n' }
+  engine(on, fs, { [`session:${SESSION}`]: BOUND }, () => 'brown fox')
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: false })
+  await run($, 'reply Too slow')
+  await run($, 'show')
+  const pane = await $.ui.mount({ ...NOTES_PANE, surface: 'terminal' })
+  await pane.press({ key: 'send' })
+  await pane.unmount()
+  expect(sections(fs[BOUND] ?? '').chat).toBe(`[AI_AGENT] brown fox${anchor('row-1', 'brown fox', 'Too slow')}\n[USER] Too slow`)
 })

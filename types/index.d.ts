@@ -13,13 +13,18 @@ export type Notes = { path: string; sections: Sections }
 
 export type NameParts = { date: string; time: string; project: string; shortId: string }
 
-// isPlaced: the selection pane is drawn; hadFocus: it held the keyboard, so losing it closes it.
-export type Select = { mode: 'menu' | 'reply'; selection: string; isPlaced: boolean; hadFocus: boolean }
+// row: the transcript row the selection lies in; isPlaced: the selection pane is drawn; hadFocus: it held the keyboard, so losing it closes it.
+export type Select = { mode: 'menu' | 'reply'; selection: string; row?: string; isPlaced: boolean; hadFocus: boolean }
 
-export type Pair = { agent: string; user: string }
+// A reply's anchor: the note's id, the transcript row (requestId) the quoted text was selected in, and which occurrence of it in that row.
+export type Note = { id: string; row: string; at: number }
 
-// item: one todo item whole, opened from the Todos view.
-export type View = 'todos' | 'objectives' | 'important' | 'chat' | 'queue' | 'history' | 'logs' | 'item'
+export type Pair = { agent: string; user: string; note?: Note }
+
+export type ChatNote = Note & { agent: string; user: string }
+
+// item: one todo item whole, opened from the Todos view; note: one reply, opened from its mark in the transcript.
+export type View = 'todos' | 'objectives' | 'important' | 'chat' | 'queue' | 'history' | 'logs' | 'item' | 'note'
 
 // The note the History view shows whole (preview) or is about to attach (confirm).
 export type Opened = { name: string; step: 'preview' | 'confirm' }
@@ -41,6 +46,7 @@ declare module 'claude-code' {
       cursor: string | null
       todoCursor: string | null
       todoOpen: string | null
+      noteOpen: string | null
       hidden: Todo['status'][]
     }
   }

@@ -57,6 +57,20 @@ Leaving the pane never blocks the next selection: Esc, the close mark, `x`, `i`,
 
 Queued replies go out ahead of your next message when you press Enter, unless you moved them into the prompt first with `s`.
 
+### Marks on replied text
+
+A reply to text selected inside one block of Claude's reply is a note anchored there. From the moment it is queued, that text in the transcript is drawn as a link (blue, the reply's other formatting kept); a plain click on it opens the panel at the note: the quoted text, your reply, and whether it is still queued (`b` goes back). The mark comes back after scrolling, a resize and `--continue`.
+
+In `# Chat` the anchor follows the quoted text: `[AI_AGENT] brown fox <!-- note:13y3ouz row:<message id> at:0 -->`. `row` is the transcript row the text was selected in and `at` which occurrence of the text in that row; leave the comment in place when you edit the file. The prompt Claude receives carries the pair without it.
+
+Limits:
+
+- Only Claude's reply text is marked; your own prompts, tool rows and a selection over several rows (which has no row) keep a note without a mark.
+- The terminal reports no position inside a row, so when the same text appears twice in one block the first note marks the first occurrence, a second note on the same text the next one.
+- Text in a fenced code block is not marked (a link cannot be drawn there). A mark that would cut a code span, bold or a link grows to hold it whole; a link inside the mark is drawn as its label.
+- The mark takes over the drawing of that block, so it is drawn by the plugin with the engine's markdown renderer and the reply bullet (`⏺`). Clicks need the fullscreen terminal; ctrl, alt or cmd click opens the link's `https://notes-keeping.invalid/...` target instead.
+- Rows from before a compaction are not drawn after `--continue`, so their notes stay in the file without a mark.
+
 ## Todo list
 
 The list lives in the notes file under `# Todo`, between `## Updates` and `# Important`. A file without the section

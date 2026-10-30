@@ -7,6 +7,7 @@ import {
   addSession,
   addUpdate,
   carryOver,
+  chatNotes,
   create,
   fileName,
   inject,
@@ -230,6 +231,31 @@ describe('section writer', () => {
   test('addTurn records each queued pair, then the message typed with them', () => {
     const md = addTurn(create('Plan', ID), [{ agent: 'Merge?', user: 'Yes' }, { agent: 'Push?', user: 'No' }], 'carry on')
     expect(sections(md).chat).toBe('[AI_AGENT] Merge?\n[USER] Yes\n\n[AI_AGENT] Push?\n[USER] No\n\n[USER] carry on')
+  })
+
+  test('a reply anchored to a transcript row carries its note id, row and occurrence after the quoted text, and reads back', () => {
+    const note = { id: 'k3x9', row: '2cc6721d-79e7-4487-9aaa-a9ef47567336', at: 1 }
+    let md = addChat(create('Plan', ID), 'Merge?', 'Yes')
+    md = addChat(md, 'Look:\n\nthe second line', 'Why?', note)
+    md = addTurn(md, [{ agent: 'Push?', user: 'No', note: { ...note, id: 'p7q2', at: 0 } }], 'carry on')
+    expect(sections(md).chat).toBe(
+      [
+        '[AI_AGENT] Merge?',
+        '[USER] Yes',
+        '',
+        `[AI_AGENT] Look:\n\nthe second line <!-- note:k3x9 row:${note.row} at:1 -->`,
+        '[USER] Why?',
+        '',
+        `[AI_AGENT] Push? <!-- note:p7q2 row:${note.row} at:0 -->`,
+        '[USER] No',
+        '',
+        '[USER] carry on',
+      ].join('\n'),
+    )
+    expect(chatNotes(sections(md).chat)).toEqual([
+      { id: 'k3x9', row: note.row, at: 1, agent: 'Look:\n\nthe second line', user: 'Why?' },
+      { id: 'p7q2', row: note.row, at: 0, agent: 'Push?', user: 'No' },
+    ])
   })
 
   test('a file missing sections gets them back on the next write', () => {
