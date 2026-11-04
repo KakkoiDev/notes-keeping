@@ -260,7 +260,8 @@ the others dim.
 
 | Key | Does |
 | --- | --- |
-| Up, Down | select an item |
+| `j`, `k` | select the next or previous shown item; stays put at either end |
+| Up, Down | move the ring through every marker and text in turn (a marker or text under the ring selects its item) |
 | Enter | with the ring on its marker, cycle its status: todo, in-progress, done, declined, todo; blocked goes to todo. With the ring on its text, open it as `d` does |
 | `d` | open it in the Item view, as a click on its text does |
 | `f` | step it forward one status; at declined it stays declined |
@@ -270,7 +271,7 @@ the others dim.
 The row of toggles above the list is also the marker legend: `1: [ ] todo: shown  2: [~] in-progress: shown ...`,
 the same marks and names, in the same order, as the legend Claude reads with the list (both come from `MARKS` in
 `hooks/todo.ts`).
-A hidden status is drawn dim and its items are skipped by Up and Down; when every status is hidden the list reads
+A hidden status is drawn dim and its items are skipped by `j`, `k`, Up and Down; when every status is hidden the list reads
 `(n items, every status hidden)`. A status change or a toggle that hides the selected item moves the selection to the
 next shown item, or to the one before when it was the last. A step that leaves the status as it was (`f` at declined,
 `p` at todo) writes nothing and notifies nothing. The shown statuses are kept for the session: closing and opening

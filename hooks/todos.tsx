@@ -57,11 +57,17 @@ export function TodoSlot(props: {
   onCycle: (id: string) => unknown
   onOpen: (id: string) => unknown
   onStep: (id: string, by: 1 | -1) => unknown
+  onSelect: (id: string) => unknown
   onToggle: (status: Todo['status']) => unknown
 }) {
-  const { Box, Button, Text, todos, hidden, selected, landing, onCycle, onOpen, onStep, onToggle } = props
+  const { Box, Button, Text, todos, hidden, selected, landing, onCycle, onOpen, onStep, onSelect, onToggle } = props
   const shown = todos.filter(item => !hidden.includes(item.status))
   const step = (by: 1 | -1) => () => (selected === undefined ? undefined : onStep(selected, by))
+  const at = shown.findIndex(item => item.id === selected)
+  const move = (by: 1 | -1) => () => {
+    const to = shown[Math.min(shown.length - 1, Math.max(0, at + by))]
+    return to === undefined || to.id === selected ? undefined : onSelect(to.id)
+  }
   return (
     <Box flexDirection="column" marginBottom={1}>
       <Text bold>Todo</Text>
@@ -96,12 +102,14 @@ export function TodoSlot(props: {
           </Box>
         ))
       )}
-      <Box flexDirection="row" gap={2}>
+      <Box flexDirection="row" flexWrap="wrap" columnGap={2}>
+        <Button key="select:down" plain hotkey="j" label="next item" onPress={move(1)} />
+        <Button key="select:up" plain hotkey="k" label="previous item" onPress={move(-1)} />
         <Button key="status:next" plain hotkey="f" label="next status" onPress={step(1)} />
         <Button key="status:prev" plain hotkey="p" label="previous status" onPress={step(-1)} />
         <Button key="item:open" plain hotkey="d" label="open item" onPress={() => (selected === undefined ? undefined : onOpen(selected))} />
       </Box>
-      <Text dimColor>Up and Down select an item, Enter or a click on its marker cycles its status, d or a click on its text opens it, f and p step it forward and back, 1 to 5 show or hide a status</Text>
+      <Text dimColor>j and k select the next and previous item (Up and Down walk every marker and text), Enter or a click on its marker cycles its status, d or a click on its text opens it, f and p step it forward and back, 1 to 5 show or hide a status</Text>
     </Box>
   )
 }

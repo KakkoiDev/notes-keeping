@@ -1553,6 +1553,8 @@ test('the panel opens on the Todos view, t brings it back, and the other views c
     'show:blocked',
     'todo:ship it',
     'open:ship it',
+    'select:down',
+    'select:up',
     'status:next',
     'status:prev',
     'item:open',
@@ -2711,7 +2713,7 @@ test('d opens the selected item, the ring on the text of a row selects it, and t
   const { pane } = await keynav($, on, { [BOUND]: SOURCED })
   expect((await pane.find({ key: 'item:open' }))?.props).toMatchObject({ hotkey: 'd' })
   expect(
-    await pane.find({ type: 'Text', text: 'Up and Down select an item, Enter or a click on its marker cycles its status, d or a click on its text opens it, f and p step it forward and back, 1 to 5 show or hide a status' }),
+    await pane.find({ type: 'Text', text: 'j and k select the next and previous item (Up and Down walk every marker and text), Enter or a click on its marker cycles its status, d or a click on its text opens it, f and p step it forward and back, 1 to 5 show or hide a status' }),
   ).toBeDefined()
   await pane.press({ key: 'item:open' })
   expect(await pane.find({ type: 'Text', text: '1. Ship the bridge\n   See the notes\n   - https://example.com/spec' })).toBeDefined()
@@ -2788,6 +2790,28 @@ test('a click on a todo row selects it, so f and p step the clicked item', async
   await flush()
   expect(marker(fs, 'Two')).toBe('~')
   expect(marker(fs, 'One')).toBe(' ')
+  await pane.unmount()
+})
+
+test('in the Todos view j selects the next shown item and k the previous one, staying put at either end', async ($, on) => {
+  const { pane } = await keynav($, on)
+  expect((await pane.find({ key: 'select:down' }))?.props).toMatchObject({ hotkey: 'j' })
+  expect((await pane.find({ key: 'select:up' }))?.props).toMatchObject({ hotkey: 'k' })
+  expect(await selectedTodo(pane)).toEqual(['one'])
+  const seen: string[][] = []
+  for (const key of ['select:down', 'select:down', 'select:down', 'select:down', 'select:up']) {
+    await pane.press({ key })
+    await flush()
+    seen.push(await selectedTodo(pane))
+  }
+  expect(seen).toEqual([['two'], ['three'], ['four'], ['four'], ['three']])
+  // A hidden status is skipped.
+  await pane.press({ key: 'show:in-progress' })
+  await flush()
+  await ring($, 'todo:one')
+  await pane.press({ key: 'select:down' })
+  await flush()
+  expect(await selectedTodo(pane)).toEqual(['three'])
   await pane.unmount()
 })
 

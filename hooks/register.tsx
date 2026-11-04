@@ -1475,6 +1475,11 @@ export const register: Register = on => {
           await update($, view, () => 'item')
         }}
         onStep={(id, by) => change(id, status => stepStatus(status, by))}
+        onSelect={async id => {
+          await update($, todoCursor, () => id)
+          // The engine answers {} or { deny }; `claude plugin test` has no ring and rejects.
+          await $.ui.focus({ requestId: PANE, key: rowKey(id, landing) }).catch(() => undefined)
+        }}
         onToggle={async status => {
           const now = hide.includes(status) ? hide.filter(other => other !== status) : [...hide, status]
           const at = rows.find(item => item.id === selected)
