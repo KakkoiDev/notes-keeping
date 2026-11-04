@@ -16,6 +16,7 @@ home() {
 }
 
 b() { FM_HOME="$H" "$BRIDGE" "$@"; }
+st() { b status /n.md | python3 -c 'import json,sys; print(next(iter(json.load(sys.stdin).values()))["status"])'; }
 
 check() {  # <name> <expected> <actual>
   if [ "$2" = "$3" ]; then
@@ -37,20 +38,28 @@ check 'a linked task with no state files reports null' '{"Review this PR: https:
 echo "working [at=1]: started" > "$H/state/pr-review.status"
 check 'a task with a meta is in-progress' '{"Review this PR: https://x/pull/1": {"status": "in-progress", "task": "pr-review"}}' "$(b status /n.md)"
 printf 'done [at=2]: PR https://x/pull/2\nresolved [at=3]: cleared\n' >> "$H/state/pr-review.status"
-check 'a last state line of done is done, while the meta is still there and after a resolved line' '{"Review this PR: https://x/pull/1": {"status": "done", "task": "pr-review"}}' "$(b status /n.md)"
+check 'a done line with a PR opened is in-progress: nothing landed' '{"Review this PR: https://x/pull/1": {"status": "in-progress", "task": "pr-review"}}' "$(b status /n.md)"
+printf 'done [at=4]: ready in branch fm/pr-review\n' >> "$H/state/pr-review.status"
+check 'a done line with a branch ready to land is in-progress' 'in-progress' "$(st)"
+: > "$H/state/pr-review.pr-poll-merge-notified"
+check 'a merged PR reports done while the meta is still there' 'done' "$(st)"
+rm "$H/state/pr-review.pr-poll-merge-notified"
 rm "$H/state/pr-review.meta"
-check 'done survives teardown removing the meta' '{"Review this PR: https://x/pull/1": {"status": "done", "task": "pr-review"}}' "$(b status /n.md)"
-echo "failed [at=4]: broke" >> "$H/state/pr-review.status"
+check 'a done line with no meta and no outcome reports null' 'None' "$(st)"
+echo "failed [at=5]: broke" >> "$H/state/pr-review.status"
 check 'a failed task with no meta reports null' '{"Review this PR: https://x/pull/1": {"status": null, "task": "pr-review"}}' "$(b status /n.md)"
-check 'an old-style line without a stamp counts' 'done' "$(printf 'done: PR x\n' > "$H/state/pr-review.status"; b status /n.md | python3 -c 'import json,sys; print(next(iter(json.load(sys.stdin).values()))["status"])')"
+: > "$H/state/pr-review.status"
+: > "$H/state/pr-review.meta"
+b block pr-review --reason 'no slot'
+check 'an old-style line without a stamp counts' 'in-progress' "$(printf 'done: PR x\n' > "$H/state/pr-review.status"; st)"
 
 home
 b link scout-x id:ab12cd3 --by firstmate
 printf 'window=w\nkind=scout\nmodel=opus\n' > "$H/state/scout-x.meta"
 printf 'working [at=1]: started\ndone [at=2]: report at /r.md\n' > "$H/state/scout-x.status"
-check 'a scout whose last state line is done stays in-progress: its report does not finish the todo' 'in-progress' "$(b status /n.md | python3 -c 'import json,sys; print(next(iter(json.load(sys.stdin).values()))["status"])')"
+check 'a scout whose last state line is done stays in-progress: its report does not finish the todo' 'in-progress' "$(st)"
 printf 'window=w\nkind=ship\n' > "$H/state/scout-x.meta"
-check 'a ship task whose last state line is done is done' 'done' "$(b status /n.md | python3 -c 'import json,sys; print(next(iter(json.load(sys.stdin).values()))["status"])')"
+check 'a ship task whose last state line is done stays in-progress until its done outcome' 'in-progress' "$(st)"
 
 home
 b link first 'Ship  the BRIDGE'
@@ -222,7 +231,22 @@ check 'a state line after the block clears it' '{"id:ab12cd3": {"status": "in-pr
 b block spawn-x --reason 'stalled again' --by firstmate
 check 'a block after a state line holds until the next one' 'blocked stalled again' "$(b status /n.md | python3 -c 'import json,sys; v=next(iter(json.load(sys.stdin).values())); print(v["status"], v["reason"])')"
 echo "done [at=6]: PR https://x/pull/3" >> "$H/state/spawn-x.status"
-check 'a done line after the block reports done' 'done' "$(b status /n.md | python3 -c 'import json,sys; print(next(iter(json.load(sys.stdin).values()))["status"])')"
+check 'a done line after the block clears it' 'in-progress' "$(st)"
+
+# The four steps of firstmate data/todo-bridge-stale/repro-1793776341: blocked, resumed, done line, cleanup.
+home
+b link egm id:0v0nnnz --by firstmate
+printf 'id=x\n' > "$H/state/egm.meta"
+echo 'working [at=1]: start' > "$H/state/egm.status"
+b block egm --reason 'egm missing' --by firstmate
+check 'step 1: blocked' 'blocked' "$(st)"
+echo 'working [at=2]: resumed' >> "$H/state/egm.status"
+check 'step 2: resumed is in-progress' 'in-progress' "$(st)"
+echo 'done [at=3]: finished' >> "$H/state/egm.status"
+check 'step 3: a done line is in-progress until it lands' 'in-progress' "$(st)"
+rm "$H/state/egm.meta" "$H/state/egm.status"
+printf '{"task": "egm", "outcome": "done", "at": %d}\n' "$(( $(date +%s) + 1 ))" >> "$H/state/notes-todo-links.jsonl"
+check 'step 4: a block superseded before cleanup does not return once the status is gone; the done outcome reports done' 'done' "$(st)"
 
 home
 b block spawn-x --by firstmate 2>/dev/null

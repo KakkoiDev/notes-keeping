@@ -136,12 +136,14 @@ out.
     `{"<item text>": {"status": "blocked" | "in-progress" | "done" | null, "task": "<id>"}}` for every item linked to a firstmate
     task; an item linked by id (`bridge link <task> id:<id>`) is printed as `"id:<id>"` with an `"id"` field and
     matched by id, an item linked by text (older links) by its text. A linked item follows that status forward and Laya is never asked about it; a null status leaves it where it
-    is. The move is logged as `firstmate` with the task id. `bridge link <task> <item> --by <name>` records who made
+    is. `done` comes only from a landing: firstmate saw the task's PR merge (`state/<task>.pr-poll-merge-notified`), or
+    its cleanup recorded a done outcome; a task whose last
+    state line is `done` (a PR opened, a branch ready to land) is still `in-progress`. The move is logged as `firstmate` with the task id. `bridge link <task> <item> --by <name>` records who made
     the link (firstmate, a crewmate); `status` then prints a `"by"` field and the log row names it. A status you set on
     a linked item stays until the bridge reports a different one.
   - `bridge block <task> --reason <text> [--by <name>]` marks a task that could not be started. Its linked items report
     `blocked` with a `"reason"` field, move to `[!]` from todo or in-progress, and the log row reads
-    `<task>[, by <name>]: <reason>`. The block holds until `state/<task>.status` gets a state line written after it; the
+    `<task>[, by <name>]: <reason>`. The block holds until `state/<task>.status` gets a state line written after it, or an outcome is recorded after it; the
     item then follows the status the bridge reports (in-progress, done) out of blocked.
   - After every todo write, every click, and every five seconds, the plugin runs `bridge notify <notes file>` with the
     changes since its last write on stdin: `+ [ ] <item>` for a new item, `<item>: <from> -> <to> (<who>)` for every
