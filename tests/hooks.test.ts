@@ -2754,6 +2754,43 @@ test('a toggle, or a status change that hides a row, draws the selected row unde
   await pane.unmount()
 })
 
+test('a click in the notes pane while the prompt holds the keyboard hands the keyboard to the pane', async ($, on) => {
+  const fs: Fs = { [BOUND]: KEYNAV }
+  const { ui } = engine(on, fs, { ...SESSION_BOUND })
+  on('ui.focus', () => ({ value: {} }) as never)
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: false })
+  await flush()
+  await run($, 'show')
+  const pane = await $.ui.mount({ ...NOTES_PANE, surface: 'terminal' })
+  // The person clicks the prompt: it takes the keyboard back from the pane.
+  ui.panes.set('notes-keeping', { isFocused: false })
+  const opens = ui.opened.length
+  await pane.press({ key: 'todo:three' })
+  await flush()
+  expect(marker(fs, 'Three')).toBe('-')
+  expect(ui.opened.slice(opens)).toEqual([{ id: 'notes-keeping', focus: true }])
+  expect(ui.panes.get('notes-keeping')?.isFocused).toBe(true)
+  // A press while the pane already holds the keyboard opens nothing again.
+  await pane.press({ key: 'status:next' })
+  await flush()
+  expect(ui.opened.slice(opens)).toEqual([{ id: 'notes-keeping', focus: true }])
+  await pane.unmount()
+})
+
+test('a click on a todo row selects it, so f and p step the clicked item', async ($, on) => {
+  const { fs, pane } = await keynav($, on)
+  expect(await selectedTodo(pane)).toEqual(['one'])
+  await pane.press({ key: 'todo:two' })
+  await flush()
+  expect(marker(fs, 'Two')).toBe('x')
+  expect(await selectedTodo(pane)).toEqual(['two'])
+  await pane.press({ key: 'status:prev' })
+  await flush()
+  expect(marker(fs, 'Two')).toBe('~')
+  expect(marker(fs, 'One')).toBe(' ')
+  await pane.unmount()
+})
+
 test('the shown statuses stay as set when the panel is closed and opened again', async ($, on) => {
   const { pane } = await keynav($, on)
   await pane.press({ key: 'show:declined' })

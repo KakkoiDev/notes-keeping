@@ -1132,6 +1132,20 @@ export const register: Register = on => {
     return next(e)
   })
 
+  // A click on the pane presses its Button but leaves the keyboard where it was: after the press the pane takes it back,
+  // and a click on a todo row's marker selects that row. An open before the press runs drops the press.
+  on('ui.press', { requestId: PANE }, async ($, e, next) => {
+    const isFocused = (await $.ui.panes()).find(pane => pane.id === PANE)?.isFocused !== false
+    const id = /^todo(?:#\d+)?:/.test(e.element) ? rowId(e.element) : undefined
+    if (id !== undefined) {
+      await update($, todoCursor, () => id)
+      await $.ui.focus({ requestId: PANE, key: e.element }).catch(() => undefined)
+    }
+    const done = await next(e)
+    if (!isFocused) await $.ui.open({ id: PANE, title: TITLE, focus: true, closeOnEscape: true })
+    return done
+  })
+
   on('ui.close', async ($, e, next) => {
     if (e.id === SELECT) {
       const current = await read($, select)
