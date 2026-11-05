@@ -1,13 +1,13 @@
 import { describe, expect, test } from 'claude-code/testing'
 
 import type { FleetRow } from '../types'
-import { details, groupsOf, reportHead, reportLines, waitingText } from '../hooks/work'
+import { details, reportHead, reportLines, todoLines, unlinkedRows, waitingText } from '../hooks/work'
 
 const NOW = Date.UTC(2026, 10, 5, 2, 0, 0)
 const S = Math.floor(NOW / 1000)
 const row = (task: string, extra: Partial<FleetRow> = {}): FleetRow => ({
   task, kind: 'scout', title: null, word: 'working', at: S - 60, flag: '', waiting: '', window: `s:fm-${task}`, live: true, gone: false,
-  pr: null, report: null, summary: null, todo: null, answer: null, ...extra,
+  pr: null, report: null, summary: null, todos: [], answer: null, ...extra,
 })
 const CLEANROOM = {
   title: 'Cleanroom POC - report (step 1 blocked)',
@@ -24,22 +24,18 @@ describe('waiting', () => {
   })
 })
 
-describe('groups', () => {
-  test('rows fall under their group in the filter order, keeping their order; an empty or hidden group has no section', () => {
+describe('unlinked rows', () => {
+  test('the Work view lists the calls and live workers no open to-do links; gone rows only while shown', () => {
     const rows = [
-      row('ask', { flag: '?', word: 'blocked' }),
-      row('call', { flag: '!', word: 'call' }),
+      row('call', { flag: '!', word: 'call', live: false }),
+      row('linked-call', { flag: '!', word: 'call', live: false, todos: ['ab12cd3'] }),
       row('run'),
-      row('fin', { word: 'done' }),
-      row('old', { word: 'done', gone: true }),
-      row('ask2', { flag: '?', word: 'decision' }),
+      row('linked', { todos: ['ab12cd3'] }),
+      row('ended', { word: 'finished', live: false }),
+      row('old', { word: 'done', live: false, gone: true }),
     ]
-    expect(groupsOf(rows, ['gone']).map(g => [g.group, g.title, g.rows.map(r => r.task)])).toEqual([
-      ['you', 'Needs you', ['call']],
-      ['firstmate', 'Firstmate', ['ask', 'ask2']],
-      ['running', 'Running', ['run']],
-      ['done', 'Done', ['fin']],
-    ])
+    expect(unlinkedRows(rows, []).map(r => r.task)).toEqual(['call', 'run'])
+    expect(unlinkedRows(rows, ['gone']).map(r => r.task)).toEqual(['call', 'run', 'old'])
   })
 })
 
@@ -61,21 +57,25 @@ describe('report lines', () => {
 })
 
 describe('report head', () => {
-  test('the report view opens on the title, where the file is and when it was written, the outcome and the ask', () => {
+  test('the reader opens on the title with its age and b at the right edge, then the kind and the to-do; no path line', () => {
     const r = row('cleanroom-poc', { report: '/fm/data/cleanroom-poc/report.md', summary: CLEANROOM })
-    expect(reportHead(r, NOW)).toEqual([
-      'Cleanroom POC - report (step 1 blocked)',
-      '/fm/data/cleanroom-poc/report.md · written 9d ago',
-      'outcome  BLOCKED at spec step 1. Local webapp app is not running.',
-      'needs    Start the webapp API server and web frontend locally.',
+    expect(reportHead(r, NOW, { label: 'Fix the cleanroom', mark: '[~]' })).toEqual([
+      `${'Cleanroom POC - report (step 1 blocked)'.padEnd(89 - '9d ago · b: back'.length)}9d ago · b: back`,
+      'scout · to-do: Fix the cleanroom [~]',
     ])
+    expect(reportHead(r, NOW)).toEqual([`${'Cleanroom POC - report (step 1 blocked)'.padEnd(89 - '9d ago · b: back'.length)}9d ago · b: back`, 'scout'])
+  })
+
+  test('while a call on it is open, the reader pins what the report needs, with a: answer at the right edge', () => {
+    const r = row('cleanroom-poc', { report: '/fm/data/cleanroom-poc/report.md', summary: CLEANROOM })
+    expect(reportHead(r, NOW, undefined, CLEANROOM.ask)[2]).toBe(`${`! Needs you: ${CLEANROOM.ask}`.padEnd(89 - 'a: answer'.length)}a: answer`)
   })
 })
 
 describe('details', () => {
   test('the details put the report summary right under the name, before the raw state line', () => {
     const r = row('cleanroom-poc', { flag: '?', word: 'blocked', live: false, report: '/fm/data/cleanroom-poc/report.md', summary: CLEANROOM, waiting: 'firstmate: worker gone; last: app down' })
-    expect(details(r, 'cleanroom-poc', NOW, undefined, undefined).slice(0, 6)).toEqual([
+    expect(details(r, 'cleanroom-poc', NOW, undefined).slice(0, 6)).toEqual([
       'cleanroom-poc  ·  cleanroom-poc  ·  scout  ·  worker window gone',
       'report  Cleanroom POC - report (step 1 blocked)  (9d ago, v reads it here)',
       'outcome BLOCKED at spec step 1. Local webapp app is not running.',
@@ -83,5 +83,30 @@ describe('details', () => {
       'last    blocked 1m ago: gone: app down',
       'PR      none recorded',
     ])
+  })
+})
+
+describe('lines from real fleet output', () => {
+  const callOn = (question: string) => row('c', { word: 'call', todos: ['t1'], call: { question, options: [], at: S - 3600, state: 'open' } })
+  test('a call line keeps a capitalized name or acronym as written, lowers a plain first word', () => {
+    expect(todoLines([callOn('PROJ-790: send it?')], 't1', 'todo', NOW)[0].text).toMatch(/^    ! your call: PROJ-790: send it\?/)
+    expect(todoLines([callOn('XiaoXiao STEP 2 reply')], 't1', 'todo', NOW)[0].text).toMatch(/^    ! your call: XiaoXiao STEP 2 reply/)
+    expect(todoLines([callOn('Post the reply?')], 't1', 'todo', NOW)[0].text).toMatch(/^    ! your call: post the reply\?/)
+  })
+  test('a worker line names a PR link in its text as <repo>#<n>', () => {
+    const done = row('w', { word: 'done', todos: ['t1'], waiting: 'PR https://github.com/acme/webapp/pull/28276', live: false })
+    expect(todoLines([done], 't1', 'done', NOW)[0].text).toBe('      worker finished 1m ago · PR webapp#28276')
+  })
+  test('a worker line whose text already names its PR does not name it again', () => {
+    const pr = 'https://github.com/acme/webapp/pull/28077'
+    const done = row('w', { word: 'done', todos: ['t1'], waiting: `PR ${pr} checks green`, pr, live: false })
+    expect(todoLines([done], 't1', 'done', NOW)[0].text).toBe('      worker finished 1m ago · PR webapp#28077 checks green')
+  })
+  test('a worker line with no time carries no age', () => {
+    const stopped = row('w', { word: 'stopped', todos: ['t1'], at: null, live: false })
+    expect(todoLines([stopped], 't1', 'done', NOW)[0].text).toBe('      worker stopped')
+  })
+  test('the reader head leaves out a kind the row does not have', () => {
+    expect(reportHead(row('w', { kind: null, summary: CLEANROOM }), NOW, { label: 'Fix it', mark: '[~]' })[1]).toBe('to-do: Fix it [~]')
   })
 })

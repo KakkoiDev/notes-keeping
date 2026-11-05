@@ -236,6 +236,9 @@ b block spawn-x --reason 'stalled again' --by firstmate
 check 'a block after a state line holds until the next one' 'blocked stalled again' "$(b status /n.md | python3 -c 'import json,sys; v=next(iter(json.load(sys.stdin).values())); print(v["status"], v["reason"])')"
 echo "done [at=6]: PR https://x/pull/3" >> "$H/state/spawn-x.status"
 check 'a done line after the block clears it' 'in-progress' "$(st)"
+b block spawn-x --reason 'stalled a third time' --by firstmate
+echo "needs-decision [key=k] [at=7]: pick one" >> "$H/state/spawn-x.status"
+check 'a state line with two bracket tags after the block clears it' 'in-progress' "$(st)"
 
 home
 b link spawn-x id:ab12cd3 --by firstmate
@@ -318,7 +321,7 @@ fleet_home
 meta run-a 's:fm-run-a' todo=id:ab12cd3 pr=https://x/pull/7
 live 's:fm-run-a'
 echo "working [at=$((NOW - 60))]: implementing the view" > "$H/state/run-a.status"
-check 'a live worker is a row: word, waiting from the worker, its stamp, window, PR and todo' "working|worker: implementing the view|$((NOW - 60))|s:fm-run-a|https://x/pull/7|ab12cd3|True|False|" "$(field run-a '"|".join(str(r[k]) for k in ["word", "waiting", "at", "window", "pr", "todo", "live", "gone", "flag"])')"
+check 'a live worker is a row: word, waiting from the worker, its stamp, window, PR and todos' "working|worker: implementing the view|$((NOW - 60))|s:fm-run-a|https://x/pull/7|['ab12cd3']|True|False|" "$(field run-a '"|".join(str(r[k]) for k in ["word", "waiting", "at", "window", "pr", "todos", "live", "gone", "flag"])')"
 
 fleet_home
 meta ask 's:fm-ask'
@@ -342,10 +345,16 @@ printf "paused [at=$((NOW - 400000))]: waiting on captain: env file\n" > "$H/sta
 meta finished 's:fm-finished'
 printf "done [at=$NOW]: PR https://x/pull/1\n" > "$H/state/finished.status"
 meta silent 's:fm-silent'
-check 'a gone worker with an open wait is ?, and says the worker is gone' '?|False|False|firstmate: worker gone; last: waiting on captain: env file' "$(field died '"|".join([r["flag"], str(r["live"]), str(r["gone"]), r["waiting"]])')"
-check 'a gone worker whose last line is done is a gone record' 'True' "$(field finished 'r["gone"]')"
-check 'a gone worker that never wrote a state line is ?' '?|firstmate: worker gone; no state line' "$(field silent '"|".join([r["flag"], r["waiting"]])')"
-check 'gone records are left out of the shown rows' 'died silent' "$(ids | tr ' ' '\n' | sort | tr '\n' ' ' | sed 's/ $//')"
+check 'an unlinked worker gone with an open wait is a gone record, counted and not flagged' 'True||1' "$(field died '"|".join([str(r["gone"]), r["flag"], str(len([x for x in d["rows"] if x["task"] == "died"]))])')"
+check 'an unlinked worker gone after a done line is a gone record' 'True' "$(field finished 'r["gone"]')"
+check 'an unlinked worker gone with no state line is a gone record' 'True' "$(field silent 'r["gone"]')"
+check 'gone records are left out of the shown rows and counted at the top' ' 3' "$(ids) $(f fleet "$H/notes.md" | python3 -c 'import json,sys; print(json.load(sys.stdin)["gone"])')"
+printf '# Todo\n\n- [ ] Env <!-- id:ab12cd3 -->\n- [ ] Fin <!-- id:cd34ef5 -->\n' > "$H/notes.md"
+b link died id:ab12cd3
+b link finished id:cd34ef5
+check 'a worker gone with an open wait and linked to an open item is a ? row, word gone, saying the worker is gone' '?|False|gone|firstmate: worker gone; last: waiting on captain: env file' "$(field died '"|".join([r["flag"], str(r["gone"]), r["word"], r["waiting"]])')"
+check 'a worker gone after a done line and linked to an open item is a finished row' 'False|finished|' "$(field finished '"|".join([str(r["gone"]), r["word"], r["flag"]])')"
+check 'only the unlinked one is counted gone' '1' "$(f fleet "$H/notes.md" | python3 -c 'import json,sys; print(json.load(sys.stdin)["gone"])')"
 live 's:fm-finished'
 check 'a live worker whose last line is done is a row, not a gone record' 'False|done' "$(field finished 'str(r["gone"]) + "|" + r["word"]')"
 
@@ -372,6 +381,41 @@ TODAY=$(date -u +%Y-%m-%d)
 SET=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
 fleet_home
+printf '# Todo\n\n- [ ] Ship it <!-- id:ab12cd3 -->\n- [~] Review it <!-- id:cd34ef5 -->\n- [x] Done one <!-- id:ef56ab7 -->\n- [ ] Other <!-- id:zz99zz9 -->\n' > "$H/notes.md"
+tasks "hold-x,queued,captain,-,\"Hold X\",$TODAY,captain,\"-\",\"pick\",none,\"Captain hold set: $SET\\nCaptain hold origin: run-a\""
+meta run-a 's:fm-run-a'
+live 's:fm-run-a'
+echo "working [at=$NOW]: x" > "$H/state/run-a.status"
+b link run-a id:ab12cd3
+b link run-a id:cd34ef5
+b link run-a id:ef56ab7
+check 'a task linked to two open items carries both, in file order; a done item is left out' "['ab12cd3', 'cd34ef5']" "$(field run-a 'r["todos"]')"
+check 'a hold carries the open items its origin task is linked to' "['ab12cd3', 'cd34ef5']" "$(field hold-x 'r["todos"]')"
+b link hold-x id:zz99zz9
+check 'and the item linked to the hold itself, in file order' "['ab12cd3', 'cd34ef5', 'zz99zz9']" "$(field hold-x 'r["todos"]')"
+
+fleet_home
+mkdir -p "$H/data/fin-a" "$H/data/arch-b"
+printf '# Fin A report\n\nOutcome: shipped the fix.\nNeeds: nothing\n' > "$H/data/fin-a/report.md"
+touch -t 202611050100.00 "$H/data/fin-a/report.md"
+FIN_AT=$(python3 -c "import os; print(int(os.path.getmtime('$H/data/fin-a/report.md')))")
+printf '# Done archive\n\n## Archived 2026-11-04\n- [x] arch-b - Archived scout (repo: webapp) (kind: scout) PR https://x/pull/5 (done 2026-11-04)\n- [x] other - not linked (done 2026-11-04)\n' > "$H/data/done-archive.md"
+tasks "fin-a,done,ship,-,\"Fin A\",$TODAY,-,-,-,none,-" "stop-c,in_flight,ship,-,\"Stop C\",$TODAY,-,-,-,none,-" "unlinked-d,done,ship,-,\"Unlinked\",$TODAY,-,-,-,none,-"
+printf '# Todo\n\n- [ ] Ship it <!-- id:ab12cd3 -->\n- [ ] B <!-- id:bb00000 -->\n- [ ] C <!-- id:cc00000 -->\n- [ ] E <!-- id:ee00000 -->\n' > "$H/notes.md"
+b link fin-a id:ab12cd3
+b link arch-b id:bb00000
+b link stop-c id:cc00000
+b link nowhere-e id:ee00000
+check 'a linked done task with no meta and a report is a finished row with its summary and the report mtime' \
+  "finished|Fin A|$FIN_AT|Fin A report|shipped the fix.|['ab12cd3']|False|" \
+  "$(field fin-a '"|".join(str(x) for x in [r["word"], r["title"], r["at"], r["summary"]["title"], r["summary"]["outcome"], r["todos"], r["live"], r["flag"]])')"
+check 'a linked task in the done archive is a finished row with its kind, title, PR and done date' \
+  "finished|scout|Archived scout|https://x/pull/5|$(python3 -c 'import calendar,time; print(calendar.timegm(time.strptime("2026-11-04","%Y-%m-%d")))')" \
+  "$(field arch-b '"|".join(str(r[k]) for k in ["word", "kind", "title", "pr", "at"])')"
+check 'a linked task still in flight with no meta is stopped' 'stopped' "$(field stop-c 'r["word"]')"
+check 'a linked task with no record anywhere and no report is not a row; an unlinked one is not either' 'None None' "$(f fleet "$H/notes.md" | python3 -c 'import json,sys; rows={r["task"]: r for r in json.load(sys.stdin)["rows"]}; print(rows.get("nowhere-e"), rows.get("unlinked-d"))')"
+
+fleet_home
 meta origin-x 's:fm-origin-x'
 live 's:fm-origin-x'
 echo "working [at=$NOW]: studying" > "$H/state/origin-x.status"
@@ -381,6 +425,8 @@ tasks "origin-x,in_flight,task,-,\"Study the harness\",$TODAY,-,-,-,none,-" \
 check 'a live captain hold tied to a live task is a ! row waiting on you, answered as <task> <key>' '!|call|you: D1 learned facts, D2 promotion scope|origin-x decide-x|Harness decisions' "$(field decide-x '"|".join([r["flag"], r["word"], r["waiting"], r["answer"], r["title"]])')"
 check 'a live hold tied to nothing shown is counted, not a row' '1 None' "$(f fleet "$H/notes.md" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["calls"], next((r for r in d["rows"] if r["task"]=="lone-y"), None))')"
 check 'a task row takes its backlog title' 'Study the harness' "$(field origin-x 'r["title"]')"
+check 'a call with no Question: or Options: lines asks its title and offers no options' "{'question': 'Harness decisions', 'options': [], 'at': $(python3 -c "import calendar,time; print(calendar.timegm(time.strptime('$SET','%Y-%m-%dT%H:%M:%SZ')))"), 'state': 'open'}" "$(field decide-x 'r["call"]')"
+check 'a task row has no call' 'None' "$(field origin-x 'r.get("call")')"
 b link lone-y id:ab12cd3
 check 'a live hold linked to an item in the notes file is a ! row' '! 0' "$(f fleet "$H/notes.md" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(next(r for r in d["rows"] if r["task"]=="lone-y")["flag"], d["calls"])')"
 printf '# Todo\n\n- [ ] Other <!-- id:zz99zz9 -->\n' > "$H/other.md"
@@ -389,6 +435,46 @@ b unlink id:ab12cd3
 b link lone-y 'Parked by text'
 printf '# Todo\n\n- [/] Parked by text <!-- paused:after the review -->\n' > "$H/parked.md"
 check 'a hold linked by text to a paused item is tied to it, its reason not part of the text' '0' "$(f fleet "$H/parked.md" | python3 -c 'import json,sys; print(json.load(sys.stdin)["calls"])')"
+
+fleet_home
+meta origin-x 's:fm-origin-x'
+live 's:fm-origin-x'
+tasks "ask-q,queued,captain,-,\"Ask Q\",$TODAY,captain,\"-\",\"long reason\",none,\"Captain hold set: $SET\\nCaptain hold origin: origin-x\\nQuestion: Send the proposal to the client?\\nOptions: Store-only batch 1 (recommended)\\nOptions: Measure first only\\nOptions: Close it now\""
+check 'a call takes its Question: line and one option per Options: line' "Send the proposal to the client?|['Store-only batch 1 (recommended)', 'Measure first only', 'Close it now']" "$(field ask-q 'r["call"]["question"] + "|" + str(r["call"]["options"])')"
+
+# tasks with their closed date: id,state,kind,repo,title,created,closed,hold_kind,hold_until,hold_reason,blocked_by,body
+ctasks() { { printf 'count: %d\ntasks[%d]{id,state,kind,repo,title,created,closed,hold_kind,hold_until,hold_reason,blocked_by,body}:\n' "$#" "$#"; for row in "$@"; do printf '  %s\n' "$row"; done; } > "$H/tasks.txt"; }
+
+fleet_home
+printf '# Todo\n\n- [~] Scope it <!-- id:ab12cd3 -->\n' > "$H/notes.md"
+meta t 's:fm-t'
+live 's:fm-t'
+mkdir -p "$H/state/t.inbox/handled"
+echo 'origin-t ans-a: 1, but measure for 1 week' > "$H/state/t.inbox/handled/002.msg"
+touch -t 202611050815.00 "$H/state/t.inbox/handled/002.msg"
+SENT_AT=$(python3 -c "import os; print(int(os.path.getmtime('$H/state/t.inbox/handled/002.msg')))")
+READ_AT=$(python3 -c "import os; print(int(os.stat('$H/state/t.inbox/handled/002.msg').st_ctime))")
+printf 'working [at=%s]: before the answer\ndone [at=%s]: proposal posted to the client\n' "$((READ_AT - 100))" "$((READ_AT + 60))" > "$H/state/t.status"
+ctasks "ans-a,queued,captain,-,\"Send the proposal?\",$TODAY,-,-,-,-,none,\"Resolution recorded by fm-captain-hold.\\nDecision digest: abc\\nResolution mode: answered\\n\\nCaptain decision:\\n1, but measure for 1 week, not 2\\n\\nRouted to: t 002\\nCaptain hold origin: t\\nQuestion: Send the cut-scope proposal to the client?\\nOptions: Store-only batch 1\""
+b link t id:ab12cd3
+check 'an answered hold whose origin is on an open to-do stays a row, its call answered and asking nobody' "answered||Send the cut-scope proposal to the client?" "$(field ans-a 'r["call"]["state"] + "|" + r["flag"] + "|" + r["call"]["question"]')"
+check 'its trail starts with what the captain said and that firstmate recorded it' "[('you', None, '1, but measure for 1 week, not 2'), ('firstmate', None, 'recorded it')]" "$(field ans-a 'str([(s["who"], s["at"], s["text"]) for s in r["trail"][:2]])')"
+check 'a hold with Routed to: t 002 and t.inbox/handled/002.msg yields the 3 trail steps: sent, read, the next state line' "[('firstmate', $SENT_AT, 'sent it to the worker (message 002)'), ('worker', $READ_AT, 'read it'), ('worker', $((READ_AT + 60)), 'done: proposal posted to the client')]" "$(field ans-a 'str([(s["who"], s["at"], s["text"]) for s in r["trail"][2:]])')"
+mv "$H/state/t.inbox/handled/002.msg" "$H/state/t.inbox/002.msg"
+check 'a message not yet handled ends the trail at sent' "['you', 'firstmate', 'firstmate']" "$(field ans-a 'str([s["who"] for s in r["trail"]])')"
+rm "$H/state/t.inbox/002.msg"
+check 'a routed message with no file ends the trail at recorded' "['you', 'firstmate']" "$(field ans-a 'str([s["who"] for s in r["trail"]])')"
+b unlink id:ab12cd3
+check 'an answered hold on no open to-do is no row' 'None' "$(field ans-a 'r')"
+check 'a live hold has an empty trail and an open call' "[]|open" "$(fleet_home; meta origin-x 's:fm-origin-x'; live 's:fm-origin-x'; tasks "ask-q,queued,captain,-,\"Ask Q\",$TODAY,captain,\"-\",\"long reason\",none,\"Captain hold set: $SET\\nCaptain hold origin: origin-x\""; field ask-q 'str(r["trail"]) + "|" + r["call"]["state"]')"
+
+fleet_home
+ctasks "moot-a,done,captain,-,\"Moot A\",$TODAY,$TODAY,-,-,-,none,\"Resolution recorded by fm-captain-hold.\\nDecision digest: d\\nResolution mode: reconciled\\n\\nReconciliation evidence:\\nfollow-up fix-b shipped the change\"" \
+  "ans-b,done,captain,-,\"Ans B\",$TODAY,$TODAY,-,-,-,none,\"Resolution recorded by fm-captain-hold.\\nDecision digest: d\\nResolution mode: answered\\n\\nCaptain decision:\\nyes\"" \
+  "old-c,done,captain,-,\"Old C\",2026-01-01,2026-01-02,-,-,-,none,\"Resolution recorded by fm-captain-hold.\\nDecision digest: d\\nResolution mode: repaired\\n\\nCaptain decision:\\nx\"" \
+  "rel-d,done,captain,-,\"Rel D\",$TODAY,$TODAY,-,-,-,none,\"Resolution recorded by fm-captain-hold.\\nDecision digest: d\\nResolution mode: released\\n\\nCaptain decision:\\ngo\""
+check 'closedToday counts the captain holds closed today without the captain: not answered, not released' '1' "$(f fleet "$H/notes.md" | python3 -c 'import json,sys; print(json.load(sys.stdin)["closedToday"])')"
+check 'and closed lists each with its title and evidence line' "[{'task': 'moot-a', 'title': 'Moot A', 'evidence': 'follow-up fix-b shipped the change'}]" "$(f fleet "$H/notes.md" | python3 -c 'import json,sys; print(json.load(sys.stdin)["closed"])')"
 
 fleet_home
 meta origin-x 's:fm-origin-x'
@@ -439,24 +525,24 @@ printf '# Cleanroom POC - report (step 1 blocked)\n\nStatus: **BLOCKED** at spec
 touch -t 202610260640.00 "$H/data/scout-r/report.md"
 MTIME=$(python3 -c "import os; print(int(os.path.getmtime('$H/data/scout-r/report.md')))")
 check 'a task whose state line names no report takes data/<task>/report.md' "$H/data/scout-r/report.md" "$(field scout-r 'r["report"]')"
-check 'the summary has the title, the Status line as outcome, the first line under the captain heading as ask, and the mtime' \
-  "Cleanroom POC - report (step 1 blocked)|BLOCKED at spec step 1. App not running.|Start the API and web locally.|$MTIME" \
+check 'the summary has the title, a Status: line as the outcome, and the mtime; a heading for the captain is not read as the ask' \
+  "Cleanroom POC - report (step 1 blocked)|BLOCKED at spec step 1. App not running.|None|$MTIME" \
   "$(field scout-r '"|".join(str(r["summary"][k]) for k in ["title", "outcome", "ask", "at"])')"
-printf '# Four tools\n\n30 October 2026. A study.\n\n## 1. Summary\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\nNone of the four should be installed.\n\n- Needs: the captain picks one of A or B.\n' > "$H/data/scout-r/report.md"
-check 'without a Status line the outcome is the first prose line under a Summary heading, past a table; a Needs: line is the ask' \
-  'Four tools|None of the four should be installed.|the captain picks one of A or B.' \
+printf '# Slack ask\n\nSource: Slack C0123456789, thread 1700000000.000100.\nGenerated 2026-11-05. No writes made.\n\n## Summary\n\nThe thread asks for nothing.\n' > "$H/data/scout-r/report.md"
+check 'a report starting with metadata and no Outcome: line has no outcome: no prose line or Summary heading is guessed' \
+  'Slack ask|None|None' \
   "$(field scout-r '"|".join(str(r["summary"][k]) for k in ["title", "outcome", "ask"])')"
-printf '# jev-decider report\n\nBranch `fm/jev-decider`, four commits.\n\n## Commits\n\n1. one\n' > "$H/data/scout-r/report.md"
-check 'else the outcome is the first prose line after the title, and a report that asks nothing has no ask' \
-  'jev-decider report|Branch `fm/jev-decider`, four commits.|None' \
+printf '# Four tools\n\nOutcome: none of the four should be installed.\nNeeds: the captain picks A or B.\n\n## 1. Summary\n\nText.\n' > "$H/data/scout-r/report.md"
+check 'Outcome: and Needs: lines at the head are the outcome and the ask' \
+  'Four tools|none of the four should be installed.|the captain picks A or B.' \
   "$(field scout-r '"|".join(str(r["summary"][k]) for k in ["title", "outcome", "ask"])')"
-printf '# Sweep\n\nScout sweep, read-only.\n\n## Decisions made\n\n- kept A\n\n## Detail\n\nResult: one flake.\n\n## Questions for the captain\n\n```\ncode\n```\n\n---\n\nQ1. Close the 30 records?\n' > "$H/data/scout-r/report.md"
-check 'a Result: line past the first section is not the outcome; a heading that only mentions decisions is not an ask; fences and rules under the ask heading are skipped' \
-  'Scout sweep, read-only.|Q1. Close the 30 records?' \
+printf '# Late heads\n\n1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\n13\nOutcome: too late.\nNeeds: too late.\n' > "$H/data/scout-r/report.md"
+check 'Outcome: and Needs: lines past the first 15 lines are not read' \
+  'None|None' \
   "$(field scout-r '"|".join(str(r["summary"][k]) for k in ["outcome", "ask"])')"
 printf 'Plain notes with no heading.\n\nSecond paragraph.\n' > "$H/data/scout-r/report.md"
-check 'a report with no heading takes its first line as title and the next prose line as outcome' \
-  'Plain notes with no heading.|Second paragraph.' \
+check 'a report with no heading takes its first line as title and has no outcome' \
+  'Plain notes with no heading.|None' \
   "$(field scout-r '"|".join(str(r["summary"][k]) for k in ["title", "outcome"])')"
 echo "done [at=$NOW]: report at /nowhere/gone.md" > "$H/state/scout-r.status"
 check 'a named report that is not on disk keeps its path and has no summary' '/nowhere/gone.md|None' "$(field scout-r 'str(r["report"]) + "|" + str(r["summary"])')"
@@ -468,7 +554,7 @@ printf '# Plan calls\n\n## Hard questions (for the captain)\n\n### H1. Ship now,
 meta origin-x 's:fm-origin-x'
 live 's:fm-origin-x'
 tasks "plan-calls,queued,captain,-,\"Plan calls\",$TODAY,captain,\"-\",\"Five calls in data/plan/report.md\",none,\"Captain hold set: $SET\\nCaptain hold origin: origin-x\""
-check 'a captain hold naming a report carries its summary; a heading under the captain heading is the ask' 'Plan calls|H1. Ship now, or wait?' "$(field plan-calls 'r["summary"]["title"] + "|" + r["summary"]["ask"]')"
+check 'a captain hold naming a report carries its summary' 'Plan calls|None' "$(field plan-calls 'r["summary"]["title"] + "|" + str(r["summary"]["ask"])')"
 
 fleet_home
 f crew run-a > "$H/crew.out"

@@ -27,7 +27,7 @@ Toggle with ctrl+q (see below), `/notes-keeping show` / `hide`, or the `Notes` b
 
 | Key | Does |
 | --- | --- |
-| `t` | Todos view: the todo list (see [Todo list](#todo-list)) and the notes file path |
+| `t` | Todos view: the todo list, each to-do with the firstmate work linked to it (see [Todo list](#todo-list)), and the notes file path; labelled `Todos (N!)` while N open calls need you |
 | `n` | Paste view: paste outside text (a Slack message) and note parts of it (see [Pasted text](#pasted-text)) |
 | `o` | Objectives view: objectives and updates |
 | `i` | Important view |
@@ -36,8 +36,8 @@ Toggle with ctrl+q (see below), `/notes-keeping show` / `hide`, or the `Notes` b
 | `h` | History view: earlier notes, newest first; Up and Down pick one, Enter opens a read-only preview of what it holds, `a` attaches the picked note after a `y` / `n` confirmation (same copy as `/notes-keeping history <n\|file>`, so done and declined items stay behind); the original is never written. `b` in a preview or the confirmation steps back |
 | `l` | Logs view: the `# Logs` section of the notes file, newest first, read-only: time (UTC), who, item, `from -> to` (or the text of an objective or update) |
 | `s` | Send queue: put every queued reply into the prompt box, clear the queue, record them in `# Chat`; you press Enter |
-| `w` | Work view: firstmate's fleet, one row per task and per live captain call (see [Work view](#work-view)); shown only with a bridge, labelled `Work (N!)` while N rows need you |
-| `b` | Back to the Todos view (shown in every view but Todos); from a Work row's details, back to the Work view; from its report, back to its details |
+| `w` | in the Todos view, beside the line under the list: the Work view, the work no open to-do links (see [Work view](#work-view)); drawn only while there is some |
+| `b` | Back to the Todos view (shown in every view but Todos); from a Work row's details, back to the Work view; from a report, back to where `v` was pressed |
 | `u` | in the Objectives view: opens an input; Enter appends the text as a new `[UPDATE]` under `## Updates` (while the objectives are still empty it sets them instead) |
 | `e` | in the Objectives view: opens the notes file in `$VISUAL`, else `$EDITOR`, in a tmux popup (`tmux display-popup -E`; the session must run inside tmux), then shows and commits what the editor saved and runs the todo list over it, so an `[UPDATE]` written there becomes an item as one from `u` does; an `[UPDATE]` header the editor left with no text under it makes no item, and a toast names it. Todo runs keep writing the file while the editor is open. From the update box (after `u`, once the objectives are set), where `e` is typed into the field, ctrl+e does it instead (bind `{ "context": "PaneField", "bindings": { "ctrl+e": "app:toggleDiffNoiseFilter" } }` in `~/.claude/keybindings.json`), or a click on Open in editor: it first appends `[UPDATE] <time>` under `## Updates` holding the box's text, opens the editor on the line after it (`file:line` for hx, `+line` for vi, vim, nvim, nano, emacs and kak, the top of the file otherwise), and drops that header again if the editor leaves it empty |
 
@@ -221,56 +221,47 @@ an item marked `[/]` by hand with no reason reads `(paused: no reason recorded)`
   - `bridge open <notes file>`, read-only, prints `[{"id", "status", "text"}]` for every item under `# Todo` that is not
     done or declined, in file order, a paused one with its `"reason"`, so firstmate can `link` the captain's existing
     item instead of queuing a duplicate.
-  - Every five seconds an interactive session runs `bridge fleet <notes file>` for the [Work view](#work-view).
-    `bridge waiting <task> <text>` sets the Waiting-on cell of a task's row, held until the task writes its next state
-    line; `bridge crew <task>` prints `fm-crew-state.sh` for one task.
+  - Every five seconds an interactive session runs `bridge fleet <notes file>` for the work under the to-dos and the
+    [Work view](#work-view). `bridge waiting <task> <text>` sets what a task's row waits on, held until the task writes
+    its next state line; `bridge crew <task>` prints `fm-crew-state.sh` for one task (the panel no longer calls it).
 
 ### Work view
 
-`w` in the panel. Read-only rows from `bridge fleet`, refreshed every five seconds:
+Every five seconds an interactive session reads `bridge fleet` (see `bin/notes-keeping-bridge --help` for its rows and
+fields). The work is drawn under the to-dos it is linked to (see [In the pane](#in-the-pane)); the Work view, `w` under
+the Todos list, holds only the work no open to-do links:
 
-- one row per task with a meta whose tmux window is live, or whose worker is gone without a `done` state line;
-- one row per live captain hold (captain kind, not done, no open blocker, no future `hold_until`, set under 14 days
-  ago) whose origin task is a shown row, or that is linked to an item in this notes file. Other live holds are only
-  counted: `+N other calls · /bearings`;
-- a gone task record (window gone, last state line `done`) is hidden and counted, `6` shows them.
+```
+Work without a to-do                                           read 08:01 UTC · b: back
+! Harness decisions             call         2h  you: D1 learned facts
+1 worker gone without finishing · 3 calls closed without you today   [6] show gone  [x] show closed
+```
 
-Rows sit under a header per group, in the filter order: `Needs you · N`, `Firstmate`, `Running`, `Idle`, `Done`,
-`Gone`; a group with no shown row has no header.
+- one row per captain call and per live worker that no open item links: the linked todo item's label, else the backlog
+  title, else the task id; the state; the age of that state line; what it waits on (`you: <hold reason>`,
+  `firstmate: <text>` for a decision, block or failure, `gone: <text>`, `worker: <text>`). Under it, when it names a
+  report: `report <age>  <title>: <outcome>`, and on a `!` or `?` row `needs  <ask>`;
+- `Every live worker and open call is on a to-do.` when there is none;
+- the count of gone workers (window gone, no open item links them) and of the captain calls closed today by a resolution
+  not in your words (moot, repaired, reconciled); `6` lists the gone ones, `x` the closed calls with their evidence line;
+- live holds tied to nothing in this notes file are only counted: `+N other calls · /bearings`.
 
-A row's report is the `.md` path its last state line (or hold reason) names, else `data/<task>/report.md` when that
-file exists. `bridge fleet` reads the report's head into a summary: the title (first `# ` heading), the outcome (a
-`Status:`/`Outcome:`/`Verdict:`/`Result:`/`Conclusion:` line before the first section, else the first line under a
-Summary/Outcome/Verdict/Result/Conclusion/TL;DR heading, else the first prose line), what it asks the captain (a
-`Needs:`/`Decision needed:` line, else the first line under a heading such as "for the captain", "open questions" or
-"decisions needed") and the file's mtime. Under the row: `report <age>  <title>: <outcome>`, and on a `!` or `?` row
-`needs  <ask>`.
+A report summary comes from the report's head only: its `# ` title, then an `Outcome:` (or `Status:`, `Verdict:`)
+line and a `Needs:` line among its first 15 lines. Nothing else is read as either; a report without them shows its
+title alone.
 
-Columns: the linked todo item's label, else the backlog title, else the task id; the state (`call` for a hold,
-`decision`, `idle` for a paused scout); the age of that state line; Waiting on. Waiting on is firstmate's text from
-`bridge waiting` while it holds, else `you: <hold reason>`, `firstmate: <text>` for a decision, block or failure,
-`gone: <text>` for a worker whose window is gone, `worker: <text>` while working, or the paused worker's own text.
-
-Flags, from structured records only, never from a worker's words:
-
-- `!` needs you: a live captain hold. A new one raises one native notification (`Firstmate`), and the status line
-  under the prompt reads `work: N needs you · w`, after the queued-replies line when there is one.
-- `?` firstmate's move: a last state line of `needs-decision`, `blocked` or `failed`, or a worker gone without `done`.
-
-Rows sort `!`, then `?`, then newest first. The status-log line is the task's last event, not its current state: `r`
-reads the current state.
+Flags, from structured records only, never from a worker's words: `!` a live captain hold (a new one raises one native
+notification, `Firstmate`, and the status line under the prompt reads `calls: N need you · ctrl+q`, after the
+queued-replies line when there is one); `?` firstmate's move, a last state line of `needs-decision`, `blocked` or
+`failed`, or a linked worker gone without `done`.
 
 | Key | Does |
 | --- | --- |
-| Up, Down, Enter | select a row; Enter opens its details: the report summary, the last line and its age, PR, report path, linked todo item (`d` opens it) |
+| Up, Down, Enter | select a row; Enter opens its details: the report summary, the last line and its age, PR, report path, linked todo item (`d` opens it); there `y` copies the PR link, else the report path, `e` opens the report in the editor, `u` the PR, `g` goes to the worker's window |
 | `a` | on a `!` or `?` row: an input; Enter fills the prompt with `<task> <key>: <text>`, and you press Enter to send it to firstmate. The plugin closes nothing itself |
-| `v` | read the report in the panel: its summary, then the whole file as markdown (cut at 60,000 characters); `y` there copies its path |
-| `e` | open the report in `$VISUAL` / `$EDITOR` in a tmux popup |
-| `u` | open the PR in the browser |
-| `y` | copy the PR link, else the report path, else the task id |
-| `g` | `tmux switch-client` to the worker's window, while it is live |
-| `r` | read `fm-crew-state.sh` for that one task (up to a few seconds) into its details |
-| `1` to `6` | show or hide: `[!] you`, `[?] firstmate`, running, idle, done, gone |
+| `v` | read the report (see the report reader under [In the pane](#in-the-pane)) |
+| `6` | show or hide the gone workers |
+| `x` | show or hide the calls closed today without you |
   - Without the file nothing of this runs.
 - Claude never edits the notes file; its Edit and Write on the notes folder are denied.
 
@@ -342,6 +333,45 @@ write.
 The focus ring starts on the first shown item as the panel opens, no click needed; the selected item is drawn bright,
 the others dim.
 
+With a bridge, each to-do carries the firstmate work linked to it, by the task or by a call's origin task, under its
+text (dim unless selected; a call line never dim). A to-do with no link gets no line.
+
+```
+[~] PROJ-790 scope needs clarifying
+      worker finished 6h ago · PROJ-790: the smallest scope the client can accept
+    ! your call: send the cut-scope proposal to the client?                    open · 6h
+[~] Fix now task
+      worker finished 34m ago · checks green · PR webapp#28276
+      worker finished, to-do still in progress                          f: mark done
+[~] Review XiaoXiao's report
+      worker working 6m · posting the reply
+      you answered · reached the worker 7m ago · it read it
+```
+
+- a worker line per linked worker: `worker <state> <age>` and the report's `Outcome:`, else its title, else the worker's
+  last state line, then ` · PR <repo>#<n>` when it has one;
+- a call line per open call: its `Question:` line (else its title), `open · <age>` at the right edge;
+- once answered, in its place: `you answered`, then `· reached the worker <age> ago` once firstmate's `Routed to:` line
+  names an inbox message, and `· it read it` once that message is in `handled/`. Nothing is inferred: a missing record
+  ends the line;
+- when every linked worker finished and the to-do is still open: `worker finished, to-do still <status>` and
+  `f: mark done`. The plugin changes no status itself.
+
+Under the list, while there is work no open to-do links or a call closed today without you:
+`Not on a to-do: <n calls>, <n workers> · <n> calls closed without you today` and `w` to show it.
+
+The Item view (`d`, Enter on the text) adds, under the item's source, a card per linked call: `! Your call · open · asked
+<age> ago`, the question, and its `Options:` lines on `1` to `9`, each filling the prompt with `<task> <key>: <n>
+<option>`; `a` opens a field that fills `<task> <key>: <text>`. An answered call shows your words and its trail, time
+first (UTC). Then a block per linked worker (state and age, report title, `Outcome:` line) and the item's last three
+status changes from `# Logs`. Its keys, each drawn only when it acts: `v` report, `e` report in the editor, `u` PR, `g`
+the worker's window, `f` and `p` status, `j` and `k` the next and previous shown to-do.
+
+`v` opens the report reader: the report's title with its age and `b: back` at the right edge, its kind and the to-do it
+is on, and while a call on that to-do is open, `! Needs you: <Needs:>` with `a: answer`; then the whole file as markdown
+(cut at 60,000 characters). `y` copies its path, `e` opens it in the editor, `u` the PR, `b` goes back to where `v` was
+pressed.
+
 | Key | Does |
 | --- | --- |
 | `j`, `k` | select the next or previous shown item; stays put at either end |
@@ -351,6 +381,8 @@ the others dim.
 | `f` | step it forward one status; at declined it stays declined |
 | `p` | step it back one status; at todo it stays todo |
 | `z` | pause it: a field asks why; Enter writes `[/]` with the reason, logged as the captain. Enter on an empty field pauses nothing |
+| `a` | with an open call on it: its card in the Item view, the answer field open |
+| `v` | with a linked report: the report reader |
 | `1` `2` `3` `4` `5` `6` | show or hide the `[ ]` todo, `[~]` in-progress, `[x]` done, `[-]` declined, `[!]` blocked, `[/]` paused items |
 
 The row of toggles above the list is also the marker legend: `1: [ ] todo: shown  2: [~] in-progress: shown ...`,

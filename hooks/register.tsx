@@ -1,12 +1,12 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { ChatNote, Fleet, FleetRow, Notes, Opened, Pair, Select, Todo, View, WorkGroup } from '../types'
+import type { ChatNote, Fleet, FleetRow, Notes, Opened, Pair, Select, SubLine, Todo, View, WorkShown } from '../types'
 import { hrefOf, marked, noteOf } from './anchor'
 import type { ActorId } from './actors'
 import { actorLabel } from './actors'
 import type { Entry } from './logs'
-import { importLegacy, logRow, readRows } from './logs'
+import { historyOf, importLegacy, logRow, readRows } from './logs'
 import {
   AGENT_TAG,
   USER_TAG,
@@ -37,11 +37,11 @@ import {
   updateLine,
   withoutLogs,
 } from './notes'
-import { EMPTY, bridgeMoves, candidateKeys, candidates, changeLine, cleanLabel, context, cycle, cycleItem, diffSnapshot, emptyUpdates, format, idFor, idOf, isBackground, items, keyOf, labelPrompt, legend, moved, parse, pausedContext, pin, reconcile, row, settle, shown, snapshotOf, sourceOf, updateOf, why, withIds, withoutIds } from './todo'
+import { EMPTY, bridgeMoves, candidateKeys, candidates, changeLine, cleanLabel, context, cycle, cycleItem, diffSnapshot, emptyUpdates, format, idFor, idOf, isBackground, items, keyOf, labelPrompt, legend, markOf, moved, parse, pausedContext, pin, reconcile, row, settle, shown, snapshotOf, sourceOf, updateOf, why, withIds, withoutIds } from './todo'
 import type { Applied, Candidate, Change, Item, Memory, Move, Status, Verdict } from './todo'
 import { TodoSlot, nextShown, rowId, rowKey, selectedOf, stepStatus } from './todos'
 import type { Landing } from './todos'
-import { WorkSlot, answerText, copyText, details, groupOf, nameOf, needsYou, reportHead, selectedRow, workStatus } from './work'
+import { WorkSlot, answerText, copyText, details, unlinkedRows, nameOf, needsYou, reportHead, selectedRow, todoLines, unlinkedText, workStatus, callsShown, callHead, workerBlock, openCallOf, reportRowOf, trailLines } from './work'
 
 const NAME = 'notes-keeping'
 const PANE = 'notes-keeping'
@@ -81,8 +81,6 @@ const LOG_ROWS = 200
 // `pending` hands out the updates firstmate queued for a notes file and `answer` takes the outcome of one on stdin.
 const BRIDGE = 'config/notes-keeping-bridge'
 const BRIDGE_MS = 10_000
-// fm-crew-state.sh took up to 7 seconds on a loaded home.
-const CREW_MS = 30_000
 // The ! rows already notified, as <task>@<hold stamp>.
 const NOTIFIED = 'fleet:notified'
 
@@ -129,13 +127,15 @@ const todoPausing = atom({ plugin: 'notes-keeping', key: 'todoPausing' } as cons
 const noteOpen = atom({ plugin: 'notes-keeping', key: 'noteOpen' } as const, null as string | null)
 // The last `bridge fleet` read; null while the session root has no bridge.
 const fleet = atom({ plugin: 'notes-keeping', key: 'fleet' } as const, null as Fleet | null)
-const workHidden = atom({ plugin: 'notes-keeping', key: 'workHidden' } as const, ['gone'] as WorkGroup[])
+const workShown = atom({ plugin: 'notes-keeping', key: 'workShown' } as const, [] as WorkShown[])
 const workCursor = atom({ plugin: 'notes-keeping', key: 'workCursor' } as const, null as string | null)
 // The fleet row the Work item view shows, by its task id.
 const workOpen = atom({ plugin: 'notes-keeping', key: 'workOpen' } as const, null as string | null)
 const workAnswering = atom({ plugin: 'notes-keeping', key: 'workAnswering' } as const, false)
-// The last fm-crew-state.sh line read for a row.
-const crew = atom({ plugin: 'notes-keeping', key: 'crew' } as const, null as { task: string; text: string } | null)
+// The call, by task id, whose answer field the Item view shows.
+const callAnswering = atom({ plugin: 'notes-keeping', key: 'callAnswering' } as const, null as string | null)
+// The view v was pressed in, where b goes back to from the report reader.
+const reportFrom = atom({ plugin: 'notes-keeping', key: 'reportFrom' } as const, 'work-item' as View)
 
 function message(error: unknown): string {
   return (error instanceof Error ? error.message : String(error)).split('\n')[0] ?? 'unknown error'
@@ -298,8 +298,8 @@ async function bridgeOf($: EngineInterface): Promise<string | undefined> {
   return (await $.fs.exists(bridge)) ? bridge : undefined
 }
 
-async function runBridge($: EngineInterface, bridge: string, verb: 'status' | 'notify' | 'pending' | 'answer' | 'fleet' | 'crew', arg: string, stdin = ''): Promise<string> {
-  const done = await $.process.run([bridge, verb, arg], { stdin, timeoutMs: verb === 'crew' ? CREW_MS : BRIDGE_MS })
+async function runBridge($: EngineInterface, bridge: string, verb: 'status' | 'notify' | 'pending' | 'answer' | 'fleet', arg: string, stdin = ''): Promise<string> {
+  const done = await $.process.run([bridge, verb, arg], { stdin, timeoutMs: BRIDGE_MS })
   if (done.exitCode !== 0) throw new Error(`bridge ${verb} failed: ${done.stderr.trim().split('\n').pop() || done.exitCode}`)
   return done.stdout
 }
@@ -853,16 +853,16 @@ let isToldNoFleet = false
 async function watchFleet($: EngineInterface): Promise<void> {
   const bridge = await bridgeOf($)
   if (bridge === undefined) return
-  let raw: { rows: FleetRow[]; calls: number }
+  let raw: Omit<Fleet, 'at'>
   try {
-    raw = JSON.parse(await runBridge($, bridge, 'fleet', (await keptPath($)) ?? '')) as { rows: FleetRow[]; calls: number }
+    raw = JSON.parse(await runBridge($, bridge, 'fleet', (await keptPath($)) ?? '')) as Omit<Fleet, 'at'>
   } catch (error) {
     if (!isToldNoFleet) $.ui.toast(`notes-keeping: ${message(error)}`)
     isToldNoFleet = true
     return
   }
   const now = await $.clock.now()
-  const next = await update($, fleet, () => ({ rows: raw.rows, calls: raw.calls, at: now }))
+  const next = await update($, fleet, () => ({ rows: raw.rows, calls: raw.calls, gone: raw.gone, closedToday: raw.closedToday, closed: raw.closed, at: now }))
   const due = needsYou(next)
   const saved = await $.store.get(NOTIFIED)
   const sent = new Set(Array.isArray(saved) ? (saved as string[]) : [])
@@ -1513,16 +1513,18 @@ export const register: Register = on => {
     )
     const step = await read($, picked)
     const work = await read($, fleet)
-    const calls = needsYou(work).length
+    const hide = await read($, hidden)
+    const shownIds = new Set(s === undefined ? [] : items(s.todo).flatMap(item => (item.id !== undefined && !hide.includes(item.status) ? [item.id] : [])))
+    const calls = callsShown(work, shownIds)
+    const unlinked = work === null ? undefined : unlinkedText(work)
     const back = at === 'history' && step !== null ? async () => {
           await update($, picked, () => (step.step === 'confirm' ? { ...step, step: 'preview' } : null))
-        } : at === 'work-item' ? go('work') : at === 'work-report' ? go('work-item') : go('todos')
+        } : at === 'work-item' ? go('work') : at === 'work-report' ? go(await read($, reportFrom)) : go('todos')
     const nav = (
       <Box key="nav" flexDirection="row" flexWrap="wrap" columnGap={2} marginBottom={1}>
-        {tab('todos', 't', 'Todos', 'todos')}
+        {tab('todos', 't', calls === 0 ? 'Todos' : `Todos (${calls}!)`, 'todos')}
         {tab('paste', 'n', 'Paste', 'paste')}
         {tab('objectives', 'o', 'Objectives', 'objectives')}
-        {work === null ? null : tab('work', 'w', calls === 0 ? 'Work' : `Work (${calls}!)`, 'work')}
         {tab('important', 'i', 'Important', 'important')}
         {tab('chat', 'c', 'Chat', 'chat')}
         {tab('queue', 'q', `Queue (${list.length})`, 'queue')}
@@ -1532,7 +1534,6 @@ export const register: Register = on => {
         {at === 'todos' ? null : <Button key="view:back" plain hotkey="b" label="Back" onPress={back} />}
       </Box>
     )
-    const hide = await read($, hidden)
     const selected = selectedOf(rows, hide, await read($, todoCursor))
     // Selects `id` after `write` changes which rows show, and moves the ring there. The engine keeps the ring at its
     // position through the redraw that drops or adds rows, and a focus on a row already drawn lands before that
@@ -1551,6 +1552,12 @@ export const register: Register = on => {
       await (item !== undefined && hide.includes(to(item.status)) ? handOver(nextShown(rows, id, hide), write) : write())
     }
     const pausing = await read($, todoPausing)
+    const clockNow = await $.clock.now()
+    const subLines: Record<string, SubLine[]> = {}
+    const selectedItem = s === undefined ? undefined : items(s.todo).find(item => keyOf(item.text) === selected)
+    const reportRow = work === null || selectedItem?.id === undefined ? undefined : reportRowOf(work.rows, selectedItem.id)
+    const answerRow = work === null || selectedItem?.id === undefined ? undefined : work.rows.find(row => !row.gone && row.call?.state === 'open' && row.todos.includes(selectedItem.id ?? ''))
+    if (work !== null && s !== undefined) for (const item of items(s.todo)) if (item.id !== undefined) subLines[keyOf(item.text)] = todoLines(work.rows, item.id, item.status, clockNow)
     const pauseField =
       pausing === null || Input === undefined ? undefined : (
         <Input
@@ -1587,6 +1594,38 @@ export const register: Register = on => {
           await $.ui.focus({ requestId: PANE, key: rowKey(id, landing) }).catch(() => undefined)
         }}
         pause={pauseField}
+        lines={subLines}
+        keys={[
+          answerRow === undefined ? null : (
+            <Button
+              key="todo:answer"
+              plain
+              hotkey="a"
+              label="answer"
+              onPress={async () => {
+                await update($, todoOpen, () => selected ?? null)
+                await update($, callAnswering, () => answerRow.task)
+                await update($, view, () => 'item')
+                // The engine answers {} or { deny }; `claude plugin test` has no ring and rejects.
+                await $.ui.focus({ requestId: PANE, key: 'call:reply' }).catch(() => undefined)
+              }}
+            />
+          ),
+          reportRow === undefined ? null : (
+            <Button
+              key="todo:report"
+              plain
+              hotkey="v"
+              label="report"
+              onPress={async () => {
+                await update($, workOpen, () => reportRow.task)
+                await update($, workAnswering, () => false)
+                await update($, reportFrom, () => 'todos')
+                await update($, view, () => 'work-report')
+              }}
+            />
+          ),
+        ]}
         onPause={async id => {
           if (Input === undefined) return $.ui.toast('Pause from a terminal or desktop: this surface draws no field for the reason.')
           await update($, todoPausing, () => id)
@@ -1616,33 +1655,36 @@ export const register: Register = on => {
     if ((at === 'work' || at === 'work-item' || at === 'work-report') && work !== null) {
       const now = await $.clock.now()
       const labels = labelsOf(current)
-      const hideWork = await read($, workHidden)
-      const shownRows = work.rows.filter(one => !hideWork.includes(groupOf(one)))
+      const showWork = await read($, workShown)
+      const shownRows = unlinkedRows(work.rows, showWork)
       const task = at === 'work' ? selectedRow(shownRows, await read($, workCursor)) : await read($, workOpen)
       const row = work.rows.find(one => one.task === task)
-      const isAnswering = (await read($, workAnswering)) && row !== undefined && row.flag !== '' && Input !== undefined
-      const item = row === undefined || row.todo === null || s === undefined ? undefined : items(s.todo).find(one => one.id === row.todo)
-      const crewRead = await read($, crew)
+      const callRow = at === 'work-report' && row !== undefined ? openCallOf(work.rows, row) : undefined
+      // The row an answer goes to: in the reader, the open call it waits on; elsewhere the row itself.
+      const target = at === 'work-report' ? callRow : row !== undefined && row.flag !== '' ? row : undefined
+      const isAnswering = (await read($, workAnswering)) && target !== undefined && Input !== undefined
+      const item = row === undefined || row.todos[0] === undefined || s === undefined ? undefined : items(s.todo).find(one => one.id === row.todos[0])
       const reportText =
         at !== 'work-report' || row === undefined || row.report === null ? undefined : clipReport(await readText($, await reportPath($, row.report)).catch(() => undefined))
       const actions =
         row === undefined ? null : isAnswering && Input !== undefined ? (
           <Input
             key="work:reply"
-            label={row.answer ?? row.task}
+            label={target?.answer ?? target?.task}
             placeholder="your answer; Enter puts it in the prompt, you send it"
             submitLabel="fill"
             autoFocus
             onSubmit={async (value: string) => {
               if (value.trim() === '') return
-              const filled = await $.prompt.fill({ text: answerText(row, value.trim()), mode: 'insert' })
+              if (target === undefined) return
+              const filled = await $.prompt.fill({ text: answerText(target, value.trim()), mode: 'insert' })
               if (!filled.isFilled) $.ui.toast('The prompt box cannot take the answer now.')
               await update($, workAnswering, () => false)
             }}
           />
         ) : (
           <Box key="work-actions" flexDirection="row" flexWrap="wrap" columnGap={2}>
-            {row.flag === '' ? null : <Button
+            {target === undefined ? null : <Button
                 key="work:answer"
                 plain
                 hotkey="a"
@@ -1653,7 +1695,7 @@ export const register: Register = on => {
                   await $.ui.focus({ requestId: PANE, key: 'work:reply' }).catch(() => undefined)
                 }}
               />}
-            <Button
+            {at === 'work' ? null : <Button
               key="work:copy"
               plain
               hotkey="y"
@@ -1663,7 +1705,7 @@ export const register: Register = on => {
                 const copied = await $.ui.copy({ text })
                 $.ui.toast(copied.isCopied ? `Copied ${text}` : `notes-keeping: the copy did not take (${copied.reason})`)
               }}
-            />
+            />}
             {row.report === null || at === 'work-report' ? null : (
               <Button
                 key="work:view"
@@ -1673,29 +1715,14 @@ export const register: Register = on => {
                 onPress={async () => {
                   await update($, workOpen, () => row.task)
                   await update($, workAnswering, () => false)
+                  await update($, reportFrom, () => at)
                   await update($, view, () => 'work-report')
                 }}
               />
             )}
-            {row.report === null ? null : <Button key="work:edit" plain hotkey="e" label="report in editor" onPress={() => editReport($, row.report ?? '')} />}
-            {row.pr === null ? null : <Button key="work:pr" plain hotkey="u" label="open PR" onPress={() => $.process.run(['open', row.pr ?? ''], { timeoutMs: GIT_MS })} />}
-            {row.live && row.window !== null ? <Button key="work:go" plain hotkey="g" label="go to worker" onPress={() => $.process.run(['tmux', 'switch-client', '-t', row.window ?? ''], { timeoutMs: GIT_MS })} /> : null}
-            {row.word === 'call' ? null : (
-              <Button
-                key="work:crew"
-                plain
-                hotkey="r"
-                label="re-read"
-                onPress={async () => {
-                  const bridge = await bridgeOf($)
-                  if (bridge === undefined) return
-                  const text = await runBridge($, bridge, 'crew', row.task).catch((error: unknown) => `failed: ${message(error)}`)
-                  await update($, crew, () => ({ task: row.task, text }))
-                  await update($, workOpen, () => row.task)
-                  await update($, view, () => 'work-item')
-                }}
-              />
-            )}
+            {row.report === null || at === 'work' ? null : <Button key="work:edit" plain hotkey="e" label="report in editor" onPress={() => editReport($, row.report ?? '')} />}
+            {row.pr === null || at === 'work' ? null : <Button key="work:pr" plain hotkey="u" label="open PR" onPress={() => $.process.run(['open', row.pr ?? ''], { timeoutMs: GIT_MS })} />}
+            {row.live && row.window !== null && at === 'work-item' ? <Button key="work:go" plain hotkey="g" label="go to worker" onPress={() => $.process.run(['tmux', 'switch-client', '-t', row.window ?? ''], { timeoutMs: GIT_MS })} /> : null}
           </Box>
         )
       content =
@@ -1707,7 +1734,7 @@ export const register: Register = on => {
               Text={Text}
               fleet={work}
               labels={labels}
-              hidden={hideWork}
+              shown={showWork}
               selected={row?.task}
               now={now}
               onOpen={async (one: string) => {
@@ -1715,14 +1742,13 @@ export const register: Register = on => {
                 await update($, workAnswering, () => false)
                 await update($, view, () => 'work-item')
               }}
-              onToggle={(group: WorkGroup) => update($, workHidden, list => (list.includes(group) ? list.filter(other => other !== group) : [...list, group]))}
+              onToggle={(what: WorkShown) => update($, workShown, list => (list.includes(what) ? list.filter(other => other !== what) : [...list, what]))}
             />
             {actions}
-            {hint('Up and Down select, Enter: details  v: read report  e: report in editor  u: open PR  a: answer (fills the prompt)  y: copy  g: go to worker  r: re-read  1-6 filters  b back')}
           </Box>
         ) : at === 'work-report' && row !== undefined ? (
           <Box key="content" flexDirection="column">
-            {reportHead(row, now).map((line, i) => (
+            {reportHead(row, now, item === undefined ? undefined : { label: shown(item), mark: markOf(item.status) }, callRow === undefined ? undefined : (row.summary?.ask ?? callRow.call?.question)).map((line, i) => (
               <Text key={`work-head:${i}`} bold={i === 0} dimColor={i === 1}>
                 {line}
               </Text>
@@ -1735,7 +1761,6 @@ export const register: Register = on => {
               )}
             </Box>
             {actions}
-            {hint('y: copy the report path  e: report in editor  u: open PR  a: answer (fills the prompt)  b back to the details')}
           </Box>
         ) : row === undefined ? (
           <Box key="content" flexDirection="column">
@@ -1744,7 +1769,7 @@ export const register: Register = on => {
           </Box>
         ) : (
           <Box key="content" flexDirection="column">
-            {details(row, nameOf(row, labels), now, item === undefined ? undefined : shown(item), crewRead?.task === row.task ? crewRead.text : undefined).map((line, i) => (
+            {details(row, nameOf(row, labels), now, item === undefined ? undefined : shown(item)).map((line, i) => (
               <Text key={`work-line:${i}`}>{line}</Text>
             ))}
             {item === undefined ? null : (
@@ -1760,7 +1785,6 @@ export const register: Register = on => {
               />
             )}
             {actions}
-            {hint('v: read report  e: report in editor  u: open PR  a: answer (fills the prompt)  y: copy  g: go to worker  r: re-read crew state  d: todo item  b back')}
           </Box>
         )
     } else if (at === 'history') {
@@ -1991,6 +2015,34 @@ export const register: Register = on => {
       const openId = await read($, todoOpen)
       const item = s === undefined ? undefined : items(s.todo).find(one => keyOf(one.text) === openId)
       const from = s === undefined || item === undefined ? undefined : sourceOf(s, item)
+      const now = await $.clock.now()
+      const linkedRows = work === null || item?.id === undefined ? [] : work.rows.filter(row => !row.gone && row.todos.includes(item.id ?? ''))
+      const callRows = linkedRows.filter(row => row.call)
+      const firstOpen = callRows.find(row => row.call?.state === 'open')
+      const answering = await read($, callAnswering)
+      const replying = Input === undefined ? undefined : callRows.find(row => row.task === answering)
+      const history = item?.id === undefined ? [] : historyOf(s?.logs ?? '', item.id, actorLabel)
+      const itemReport = work === null || item?.id === undefined ? undefined : reportRowOf(work.rows, item.id)
+      const withPr = linkedRows.find(row => row.pr !== null)
+      const withWindow = linkedRows.find(row => row.live && row.window !== null)
+      const shownItems = s === undefined ? [] : items(s.todo).filter(one => one.id !== undefined && !hide.includes(one.status))
+      const atShown = shownItems.findIndex(one => keyOf(one.text) === openId)
+      const openNext = (by: 1 | -1) => async () => {
+        const to = shownItems[atShown + by]
+        if (atShown === -1 || to === undefined) return
+        await update($, todoOpen, () => keyOf(to.text))
+        await update($, todoCursor, () => keyOf(to.text))
+        await update($, callAnswering, () => null)
+      }
+      const ask = async (row: FleetRow) => {
+        await update($, callAnswering, () => row.task)
+        // The engine answers {} or { deny }; `claude plugin test` has no ring and rejects.
+        await $.ui.focus({ requestId: PANE, key: 'call:reply' }).catch(() => undefined)
+      }
+      const fill = async (row: FleetRow, text: string) => {
+        const filled = await $.prompt.fill({ text: answerText(row, text), mode: 'insert' })
+        if (!filled.isFilled) $.ui.toast('The prompt box cannot take the answer now.')
+      }
       content =
         item === undefined ? (
           <Box key="content" flexDirection="column">
@@ -2007,7 +2059,80 @@ export const register: Register = on => {
             ) : (
               body(from.section === 'objectives' ? 'From the objectives' : 'From an update', from.text)
             )}
-            {hint('Read-only. b goes back')}
+            {callRows.map(row => (
+              <Box key={`call:${row.task}`} flexDirection="column" marginTop={1}>
+                <Text bold>{row.call ? callHead(row.call, now) : ''}</Text>
+                <Text>{`  ${row.call?.question ?? ''}`}</Text>
+                {row.call?.state === 'answered' ? trailLines(row.trail ?? []).map((line, i) => <Text key={`trail:${row.task}:${i}`}>{line}</Text>) : null}
+                {row.call?.state !== 'open'
+                  ? null
+                  : row.call.options.slice(0, 9).map((option, i) => (
+                      <Button
+                        key={`call:${row.task}:${i + 1}`}
+                        plain
+                        hotkey={row === firstOpen ? String(i + 1) : undefined}
+                        label={option}
+                        onPress={() => fill(row, `${i + 1} ${option}`)}
+                      />
+                    ))}
+                {row.call?.state === 'open' && row !== firstOpen ? <Button key={`call:${row.task}:answer`} plain label="write an answer" onPress={() => ask(row)} /> : null}
+              </Box>
+            ))}
+            {replying === undefined || Input === undefined ? null : (
+              <Input
+                key="call:reply"
+                label={replying.answer ?? replying.task}
+                placeholder="your answer; Enter puts it in the prompt, you send it"
+                submitLabel="fill"
+                autoFocus
+                onSubmit={async (value: string) => {
+                  if (value.trim() === '') return
+                  await fill(replying, value.trim())
+                  await update($, callAnswering, () => null)
+                }}
+              />
+            )}
+            {linkedRows.filter(row => !row.call).map(row => (
+              <Box key={`worker:${row.task}`} flexDirection="column" marginTop={1}>
+                {workerBlock(row, now).map((line, i) => (
+                  <Text key={`worker:${row.task}:${i}`} bold={i === 0}>
+                    {line}
+                  </Text>
+                ))}
+              </Box>
+            ))}
+            {history.length === 0 ? null : (
+              <Box key="history" flexDirection="column" marginTop={1}>
+                <Text bold>History</Text>
+                {history.map((line, i) => (
+                  <Text key={`history:${i}`}>{line}</Text>
+                ))}
+              </Box>
+            )}
+            <Box key="item-keys" flexDirection="row" flexWrap="wrap" columnGap={2}>
+              {firstOpen === undefined ? null : <Button key="call:answer" plain hotkey="a" label="write an answer" onPress={() => ask(firstOpen)} />}
+              {itemReport === undefined ? null : (
+                <Button
+                  key="item:report"
+                  plain
+                  hotkey="v"
+                  label="report"
+                  onPress={async () => {
+                    await update($, workOpen, () => itemReport.task)
+                    await update($, workAnswering, () => false)
+                    await update($, reportFrom, () => 'item')
+                    await update($, view, () => 'work-report')
+                  }}
+                />
+              )}
+              {itemReport === undefined ? null : <Button key="item:edit" plain hotkey="e" label="editor" onPress={() => editReport($, itemReport.report ?? '')} />}
+              {withPr === undefined ? null : <Button key="item:pr" plain hotkey="u" label="PR" onPress={() => $.process.run(['open', withPr.pr ?? ''], { timeoutMs: GIT_MS })} />}
+              {withWindow === undefined ? null : <Button key="item:go" plain hotkey="g" label="go to worker" onPress={() => $.process.run(['tmux', 'switch-client', '-t', withWindow.window ?? ''], { timeoutMs: GIT_MS })} />}
+              <Button key="item:next" plain hotkey="f" label="next status" onPress={() => change(keyOf(item.text), status => stepStatus(status, 1))} />
+              <Button key="item:prev" plain hotkey="p" label="previous status" onPress={() => change(keyOf(item.text), status => stepStatus(status, -1))} />
+              {shownItems[atShown + 1] === undefined ? null : <Button key="item:down" plain hotkey="j" label="next to-do" onPress={openNext(1)} />}
+              {atShown < 1 ? null : <Button key="item:up" plain hotkey="k" label="previous to-do" onPress={openNext(-1)} />}
+            </Box>
           </Box>
         )
     } else if (at === 'note') {
@@ -2031,6 +2156,12 @@ export const register: Register = on => {
       content = (
         <Box key="content" flexDirection="column">
           {slot}
+          {unlinked === undefined ? null : (
+            <Box key="unlinked" flexDirection="row" columnGap={2}>
+              <Text dimColor>{unlinked}</Text>
+              <Button key="view:work" plain hotkey="w" label="show" onPress={go('work')} />
+            </Box>
+          )}
           {current === null ? <Text dimColor>No notes for this session yet; the first write starts them.</Text> : <Text dimColor wrap="truncate-start">{current.path}</Text>}
           {hint('t todos, n paste, o objectives (u adds an update there), i important, c chat, q queue, h history, l logs, s send queue, Esc closes')}
         </Box>

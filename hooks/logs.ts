@@ -33,6 +33,14 @@ export function logRow(entry: Entry): string {
   return `- ${utc(entry.at)} | ${entry.actor} | ${entry.action} | ${itemCell(entry.item)} | ${change}${note}`
 }
 
+// The last n status changes of item `id` in a # Logs section, oldest first: `  HH:MM  from -> to, <actor>` (UTC).
+export function historyOf(logs: string, id: string, label: (actor: string) => string, n = 3): string[] {
+  return readRows(logs)
+    .filter(row => row.action === 'status' && row.change !== '-' && row.item.startsWith(`id:${id} `))
+    .slice(-n)
+    .map(row => `  ${row.time.slice(11, 16)}  ${row.change}, ${label(row.actor)}`)
+}
+
 export function readRows(logs: string): Row[] {
   return logs.split('\n').flatMap(line => {
     const m = ROW.exec(line.trim())

@@ -54,15 +54,33 @@ export type FleetRow = {
   report: string | null
   // null when the row names no report or it could not be read.
   summary: ReportSummary | null
-  todo: string | null
+  // The open todo items, by id, a link ties to the row's task or a hold's origin task, in file order.
+  todos: string[]
   answer: string | null
+  // On a live captain hold: its Question: line (else its title), one option per Options: line, and when it was set.
+  call?: Call | null
+  // On an answered call: what happened to the answer, from records only, oldest first.
+  trail?: TrailStep[]
 }
 
-// at: when the plugin read it, in clock milliseconds. calls: live captain holds tied to no row, counted only.
-export type Fleet = { rows: FleetRow[]; calls: number; at: number }
+// One step of an answer's trail; at is null when the record carries no time.
+export type TrailStep = { at: number | null; who: 'you' | 'firstmate' | 'worker'; text: string }
 
-// The Work view's filters, keys 1 to 6.
-export type WorkGroup = 'you' | 'firstmate' | 'running' | 'idle' | 'done' | 'gone'
+// A captain call closed today by a resolution not in the captain's words.
+export type ClosedCall = { task: string; title: string; evidence: string | null }
+
+export type Call = { question: string; options: string[]; at: number | null; state: 'open' | 'answered' }
+
+// One line under a to-do in the Todos view; right is drawn at the row's right edge, isCall lines are never dim.
+export type SubLine = { text: string; right?: string; isCall?: true }
+
+// at: when the plugin read it, in clock milliseconds. calls: live captain holds tied to no row, counted only.
+// gone: worker records whose window is gone and no open item links, counted only.
+// closedToday: captain calls closed today without the captain, listed in closed.
+export type Fleet = { rows: FleetRow[]; calls: number; gone?: number; closedToday?: number; closed?: ClosedCall[]; at: number }
+
+// What the Work view lists beside the work without a to-do: gone workers (6), calls closed without the captain (x).
+export type WorkShown = 'gone' | 'closed'
 
 export type Todo = { id: string; text: string; status: 'todo' | 'in-progress' | 'done' | 'declined' | 'blocked' | 'paused' }
 
@@ -86,11 +104,12 @@ declare module 'claude-code' {
       noteOpen: string | null
       hidden: Todo['status'][]
       fleet: Fleet | null
-      workHidden: WorkGroup[]
+      workShown: WorkShown[]
       workCursor: string | null
       workOpen: string | null
       workAnswering: boolean
-      crew: { task: string; text: string } | null
+      callAnswering: string | null
+      reportFrom: View
     }
   }
 }

@@ -1,6 +1,7 @@
 import { expect, mock, test } from 'claude-code/testing'
 import type { On, RenderElement } from 'claude-code'
 import type { Engine } from 'claude-code/testing'
+import { actorLabel } from '../hooks/actors'
 import { nextStatus } from '../hooks/todos'
 import { context, idFor, items, pausedContext, withoutIds } from '../hooks/todo'
 import { sections, stamp } from '../hooks/notes'
@@ -2915,12 +2916,10 @@ test('a todo row is its marker, which cycles the status, and its text, which ope
   await pane.unmount()
 })
 
-test('d opens the selected item, the ring on the text of a row selects it, and the help names the keys', async ($, on) => {
+test('d opens the selected item, the ring on the text of a row selects it; the key row is the only help, no dim hint repeats it', async ($, on) => {
   const { pane } = await keynav($, on, { [BOUND]: SOURCED })
   expect((await pane.find({ key: 'item:open' }))?.props).toMatchObject({ hotkey: 'd' })
-  expect(
-    await pane.find({ type: 'Text', text: 'j and k select the next and previous item (Up and Down walk every marker and text), Enter or a click on its marker cycles its status, d or a click on its text opens it, f and p step it forward and back, z pauses it with a reason, 1 to 6 show or hide a status' }),
-  ).toBeDefined()
+  expect(await pane.find({ type: 'Text', text: /^j and k select/ })).toBeUndefined()
   await pane.press({ key: 'item:open' })
   expect(await pane.find({ type: 'Text', text: '1. Ship the bridge\n   See the notes\n   - https://example.com/spec' })).toBeDefined()
   await pane.press({ key: 'view:back' })
@@ -3118,7 +3117,7 @@ test('a reply moved into the prompt with s keeps its anchor in # Chat', async ($
 
 // A fleet row as `bridge fleet` prints it.
 function fleetRow(task: string, extra: Record<string, unknown> = {}): Record<string, unknown> {
-  return { task, kind: 'ship', title: null, word: 'working', at: null, flag: '', waiting: '', window: `s:fm-${task}`, live: true, gone: false, pr: null, report: null, summary: null, todo: null, answer: null, ...extra }
+  return { task, kind: 'ship', title: null, word: 'working', at: null, flag: '', waiting: '', window: `s:fm-${task}`, live: true, gone: false, pr: null, report: null, summary: null, todos: [], answer: null, ...extra }
 }
 // The fake clock's time in seconds, as the bridge stamps rows.
 const SECONDS = Math.floor(new Date(2026, 9, 26, 10, 58).getTime() / 1000)
@@ -3126,7 +3125,7 @@ const FLEET = {
   rows: [
     fleetRow('decide-x', { kind: 'captain', title: 'Harness decisions', word: 'call', at: SECONDS - 7200, flag: '!', waiting: 'you: D1 learned facts', window: null, live: false, answer: 'origin-x decide-x', origin: 'origin-x' }),
     fleetRow('ask', { title: 'Sentry injected filter', word: 'decision', at: SECONDS - 120, flag: '?', waiting: 'firstmate: new PR body', pr: 'https://x/pull/27970', answer: 'ask pr-body' }),
-    fleetRow('run-a', { title: 'OpenUI POC', at: SECONDS - 60, waiting: 'worker: implementing', todo: 'ab12cd3' }),
+    fleetRow('run-a', { title: 'OpenUI POC', at: SECONDS - 60, waiting: 'worker: implementing', todos: ['ab12cd3'] }),
     fleetRow('old', { word: 'done', at: SECONDS - 900000, waiting: 'PR https://x/pull/1', live: false, gone: true }),
   ],
   calls: 2,
@@ -3145,10 +3144,231 @@ async function work($: Engine, on: On, selection: () => string | undefined = () 
   return { clock, git, ui }
 }
 
+const LINKED_CALL = fleetRow('decide-x', {
+  kind: 'captain', title: 'Harness decisions', word: 'call', at: SECONDS - 7200, flag: '!', waiting: 'you: D1 learned facts', window: null, live: false,
+  answer: 'origin-x decide-x', origin: 'origin-x', todos: ['ab12cd3'], call: { question: 'Post the reply as drafted?', options: [], at: SECONDS - 7200, state: 'open' },
+})
+const LINKED_WORKER = fleetRow('run-a', {
+  title: 'OpenUI POC', at: SECONDS - 60, waiting: 'worker: implementing', todos: ['ab12cd3'], report: '/fm/data/run-a/report.md', pr: 'https://github.com/acme/webapp/pull/28276',
+  summary: { title: 'OpenUI POC', outcome: 'table built, PR open', ask: null, at: SECONDS - 60 },
+})
+
+async function linkedWith($: Engine, on: On, rows: Record<string, unknown>[], extra: Fs = {}) {
+  const { clock, ui } = await work($, on, undefined, extra)
+  bridge.fleet = { rows, calls: 0, gone: 0 }
+  await clock.advance(5_000)
+  await flush()
+  await run($, 'show')
+  return { pane: await $.ui.mount({ ...NOTES_PANE, surface: 'terminal' }), ui }
+}
+
+async function linked($: Engine, on: On, rows: Record<string, unknown>[]) {
+  return (await linkedWith($, on, rows)).pane
+}
+
+test('a to-do carries its work: a worker line per linked worker, then "! your call: ..." per open call linked to it, with its age at the right edge', async ($, on) => {
+  const pane = await linked($, on, [LINKED_CALL, LINKED_WORKER])
+  const texts = (await pane.findAll({ type: 'Text' })).map(found => found.text)
+  const worker = texts.indexOf('      worker working 1m · table built, PR open · PR webapp#28276')
+  const call = texts.indexOf(`${'    ! your call: post the reply as drafted?'.padEnd(89 - 'open · 2h'.length)}open · 2h`)
+  expect(worker).toBeGreaterThan(-1)
+  expect(call).toBeGreaterThan(worker)
+  await pane.unmount()
+})
+
+test('a to-do whose every linked worker finished, still open, says so with f: mark done at the right edge; the plugin changes no status', async ($, on) => {
+  const pane = await linked($, on, [{ ...LINKED_WORKER, word: 'finished', live: false, window: null, at: SECONDS - 7200, pr: null }])
+  const texts = (await pane.findAll({ type: 'Text' })).map(found => found.text)
+  expect(texts).toContain('      worker finished 2h ago · table built, PR open')
+  expect(texts).toContain(`${'      worker finished, to-do still todo'.padEnd(89 - 'f: mark done'.length)}f: mark done`)
+  expect(bridge.calls.filter(verb => !['fleet', 'status', 'pending', 'notify'].includes(verb))).toEqual([])
+  await pane.unmount()
+})
+
+async function openItem(pane: Awaited<ReturnType<typeof linked>>) {
+  const open = (await pane.findAll({ type: 'Button' })).find(button => String(button.key).startsWith('open:'))
+  await pane.press({ key: String(open?.key) })
+}
+
+const OPTIONS = { ...LINKED_CALL, call: { question: 'Send the proposal to the client?', options: ['Store-only batch 1 (recommended)', 'Measure first only'], at: SECONDS - 7200, state: 'open' } }
+
+test('the Item view of a to-do carries its call card, numbered options on 1-9, and its worker block; 1 fills "<answer>: 1 <option>"', async ($, on) => {
+  const { pane, ui } = await linkedWith($, on, [OPTIONS, LINKED_WORKER])
+  await openItem(pane)
+  const texts = (await pane.findAll({ type: 'Text' })).map(found => found.text)
+  const card = texts.indexOf('! Your call · open · asked 2h ago')
+  expect(texts.slice(card, card + 2)).toEqual(['! Your call · open · asked 2h ago', '  Send the proposal to the client?'])
+  expect((await pane.find({ key: 'call:decide-x:1' }))?.props).toMatchObject({ hotkey: '1', label: 'Store-only batch 1 (recommended)' })
+  expect((await pane.find({ key: 'call:decide-x:2' }))?.props).toMatchObject({ hotkey: '2', label: 'Measure first only' })
+  const worker = texts.indexOf('Worker · working 1m')
+  expect(texts.slice(worker, worker + 3)).toEqual(['Worker · working 1m', '  OpenUI POC', '  Outcome: table built, PR open'])
+  expect(texts.some(text => /run-a|report\.md|PR none|no linked todo/.test(text ?? ''))).toBe(false)
+  await pane.press({ key: 'call:decide-x:1' })
+  expect(ui.fills).toEqual([{ text: 'origin-x decide-x: 1 Store-only batch 1 (recommended)', mode: 'insert' }])
+  await pane.unmount()
+})
+
+test('a on the Item view opens the answer field for its call and fills "<answer>: <text>"', async ($, on) => {
+  const { pane, ui } = await linkedWith($, on, [LINKED_CALL])
+  await openItem(pane)
+  expect((await pane.find({ key: 'call:answer' }))?.props).toMatchObject({ hotkey: 'a' })
+  await pane.press({ key: 'call:answer' })
+  expect((await pane.find({ key: 'call:reply' }))?.type).toBe('Input')
+  await pane.input({ key: 'call:reply', text: 'post it' })
+  expect(ui.fills).toEqual([{ text: 'origin-x decide-x: post it', mode: 'insert' }])
+  await pane.unmount()
+})
+
+test('the Item view shows the last three status changes of the item from # Logs, time, change and who', async ($, on) => {
+  const rows = [
+    '- 2026-10-26T01:40:00Z | laya | status | id:ab12cd3 Build the table | todo -> in-progress',
+    '- 2026-10-26T01:41:00Z | firstmate | status | id:ab12cd3 Build the table | in-progress -> todo | run-a',
+    '- 2026-10-26T01:42:00Z | firstmate | status | id:zz99zz9 Other | todo -> done',
+    '- 2026-10-26T01:43:00Z | captain | status | id:ab12cd3 Build the table | todo -> in-progress',
+    '- 2026-10-26T01:44:00Z | firstmate | status | id:ab12cd3 Build the table | in-progress -> done',
+  ]
+  const file = `${setTodoFile('- [ ] **Build the table**: build the fleet table <!-- id:ab12cd3 -->')}\n# Logs\n\n${rows.join('\n')}\n`
+  const { pane } = await linkedWith($, on, [LINKED_WORKER], { [BOUND]: file })
+  await openItem(pane)
+  const texts = (await pane.findAll({ type: 'Text' })).map(found => found.text)
+  const at = texts.indexOf('History')
+  expect(at).toBeGreaterThan(-1)
+  expect(texts.slice(at + 1, at + 4)).toEqual([
+    `  01:41  in-progress -> todo, ${actorLabel('firstmate')}`,
+    `  01:43  todo -> in-progress, ${actorLabel('captain')}`,
+    `  01:44  in-progress -> done, ${actorLabel('firstmate')}`,
+  ])
+  await pane.unmount()
+})
+
+test('v on a to-do reads its worker report: no line starts with a path, the head names the kind and the to-do, Needs is pinned while its call is open, b goes back to the list', async ($, on) => {
+  const report = '/fm/data/run-a/report.md'
+  const worker = { ...LINKED_WORKER, kind: 'scout', summary: { title: 'OpenUI POC', outcome: 'table built, PR open', ask: 'Pick the table layout.', at: SECONDS - 60 } }
+  const { pane, ui } = await linkedWith($, on, [LINKED_CALL, worker], { [report]: '# OpenUI POC\n\nOutcome: table built, PR open\n' })
+  expect((await pane.find({ key: 'todo:report' }))?.props).toMatchObject({ hotkey: 'v' })
+  await pane.press({ key: 'todo:report' })
+  const texts = (await pane.findAll({ type: 'Text' })).map(found => found.text ?? '')
+  expect(texts.filter(text => text.startsWith('/'))).toEqual([])
+  expect(texts).toContain(`${'OpenUI POC'.padEnd(89 - '1m ago · b: back'.length)}1m ago · b: back`)
+  expect(texts).toContain('scout · to-do: Build the table [ ]')
+  expect(texts).toContain(`${'! Needs you: Pick the table layout.'.padEnd(89 - 'a: answer'.length)}a: answer`)
+  expect((await pane.find({ key: 'work:report-text' }))?.props).toMatchObject({ text: '# OpenUI POC\n\nOutcome: table built, PR open\n' })
+  await pane.press({ key: 'work:answer' })
+  await pane.input({ key: 'work:reply', text: 'the wide one' })
+  expect(ui.fills).toEqual([{ text: 'origin-x decide-x: the wide one', mode: 'insert' }])
+  await pane.press({ key: 'view:back' })
+  expect(await pane.find({ key: 'todo:report' })).toBeDefined()
+  await pane.unmount()
+})
+
+// A key drawn in the pane: a Button with that hotkey, or a Text that names it as "<key>:" or "<key> ".
+async function drawsKey(pane: Awaited<ReturnType<typeof linked>>, key: string): Promise<boolean> {
+  const buttons = (await pane.findAll({ type: 'Button' })).filter(button => button.props.hotkey === key)
+  const named = new RegExp(`(^|\\s)${key}(:|\\s)`)
+  const texts = (await pane.findAll({ type: 'Text' })).filter(found => named.test(found.text ?? ''))
+  return buttons.length + texts.length > 0
+}
+
+test('a row without a PR draws no u anywhere: Todos, the Item view, the reader, the Work view; no view draws a dim hint naming keys', async ($, on) => {
+  const report = '/fm/data/run-a/report.md'
+  const worker = { ...LINKED_WORKER, pr: null }
+  const { pane } = await linkedWith($, on, [LINKED_CALL, worker, FLEET.rows[1] as Record<string, unknown>], { [report]: '# OpenUI POC\n' })
+  expect(await drawsKey(pane, 'u')).toBe(false)
+  expect(await pane.find({ type: 'Text', text: /^j and k select/ })).toBeUndefined()
+  await openItem(pane)
+  expect(await drawsKey(pane, 'u')).toBe(false)
+  expect(await pane.find({ type: 'Text', text: /^Read-only/ })).toBeUndefined()
+  await pane.press({ key: 'item:report' })
+  expect(await drawsKey(pane, 'u')).toBe(false)
+  expect(await pane.find({ type: 'Text', text: /^y: copy the report path/ })).toBeUndefined()
+  await pane.press({ key: 'view:back' })
+  await pane.press({ key: 'view:back' })
+  await pane.press({ key: 'view:work' })
+  await ring($, 'work:ask')
+  expect(await drawsKey(pane, 'u')).toBe(false)
+  expect(await pane.find({ type: 'Text', text: /^Up and Down select/ })).toBeUndefined()
+  expect(await drawsKey(pane, 'r')).toBe(false)
+  expect(await drawsKey(pane, 'y')).toBe(false)
+  await pane.unmount()
+})
+
+test('the Item view keys act on the to-do: v reads the report, e opens it in the editor, u the PR, g the worker window, f and p step the status', async ($, on) => {
+  const report = '/fm/data/run-a/report.md'
+  const { pane } = await linkedWith($, on, [LINKED_WORKER], { [report]: '# OpenUI POC\n' })
+  await openItem(pane)
+  for (const [key, hotkey] of [['item:report', 'v'], ['item:edit', 'e'], ['item:pr', 'u'], ['item:go', 'g'], ['item:next', 'f'], ['item:prev', 'p']]) {
+    expect((await pane.find({ key }))?.props).toMatchObject({ hotkey })
+  }
+  expect(await drawsKey(pane, 'a')).toBe(false)
+  await pane.press({ key: 'item:next' })
+  expect(await pane.find({ type: 'Text', text: '[~] in-progress' })).toBeDefined()
+  await pane.unmount()
+})
+
+test('a on a to-do with an open call opens its card with the answer field', async ($, on) => {
+  const { pane, ui } = await linkedWith($, on, [LINKED_CALL])
+  expect((await pane.find({ key: 'todo:answer' }))?.props).toMatchObject({ hotkey: 'a' })
+  await pane.press({ key: 'todo:answer' })
+  expect(await pane.find({ type: 'Text', text: '! Your call · open · asked 2h ago' })).toBeDefined()
+  await pane.input({ key: 'call:reply', text: 'post it' })
+  expect(ui.fills).toEqual([{ text: 'origin-x decide-x: post it', mode: 'insert' }])
+  await pane.unmount()
+})
+
+const ANSWERED = fleetRow('ans-a', {
+  kind: 'captain', title: 'Send the proposal?', word: 'call', at: null, flag: '', window: null, live: false, answer: 't ans-a', origin: 't', todos: ['ab12cd3'],
+  call: { question: 'Send the cut-scope proposal to the client?', options: ['Store-only batch 1'], at: null, state: 'answered' },
+  trail: [
+    { at: null, who: 'you', text: '1, but measure for 1 week, not 2' },
+    { at: null, who: 'firstmate', text: 'recorded it' },
+    { at: SECONDS - 420, who: 'firstmate', text: 'sent it to the worker (message 002)' },
+    { at: SECONDS - 360, who: 'worker', text: 'read it' },
+  ],
+})
+const hhmm = (at: number) => new Date(at * 1000).toISOString().slice(11, 16)
+
+test('an answered call draws, in place of its call line, that you answered, when it reached the worker and that it read it', async ($, on) => {
+  const pane = await linked($, on, [ANSWERED])
+  const texts = (await pane.findAll({ type: 'Text' })).map(found => found.text ?? '')
+  expect(texts).toContain('      you answered · reached the worker 7m ago · it read it')
+  expect(texts.filter(text => text.includes('your call'))).toEqual([])
+  expect((await pane.find({ key: 'view:todos' }))?.props).toMatchObject({ label: 'Todos' })
+  await pane.unmount()
+})
+
+test('the card of an answered call shows your words and the trail, time first; no option keys and no a', async ($, on) => {
+  const pane = await linked($, on, [ANSWERED])
+  await openItem(pane)
+  const texts = (await pane.findAll({ type: 'Text' })).map(found => found.text ?? '')
+  const at = texts.indexOf('! Your call · answered')
+  expect(texts.slice(at, at + 6)).toEqual([
+    '! Your call · answered',
+    '  Send the cut-scope proposal to the client?',
+    '  You: "1, but measure for 1 week, not 2"',
+    '         firstmate recorded it',
+    `  ${hhmm(SECONDS - 420)}  firstmate sent it to the worker (message 002)`,
+    `  ${hhmm(SECONDS - 360)}  worker read it`,
+  ])
+  expect(await pane.find({ key: 'call:ans-a:1' })).toBeUndefined()
+  expect(await pane.find({ key: 'call:answer' })).toBeUndefined()
+  await pane.unmount()
+})
+
+test('calls closed today without you are counted under the list', async ($, on) => {
+  const { clock } = await work($, on)
+  bridge.fleet = { rows: [LINKED_WORKER], calls: 0, gone: 0, closedToday: 3, closed: [] }
+  await clock.advance(5_000)
+  await flush()
+  await run($, 'show')
+  const pane = await $.ui.mount({ ...NOTES_PANE, surface: 'terminal' })
+  expect(await pane.find({ type: 'Text', text: 'Not on a to-do: nothing live · 3 calls closed without you today' })).toBeDefined()
+  await pane.unmount()
+})
+
 test('the refresh tick reads bridge fleet with the notes file; a live call that needs the captain pins the status line and notifies once', async ($, on) => {
   const { clock, ui } = await work($, on)
   expect(bridge.argv.filter(call => call[1] === 'fleet')).toEqual([[BRIDGE, 'fleet', BOUND]])
-  expect(ui.status.at(-1)).toBe('work: 1 needs you · w')
+  expect(ui.status.at(-1)).toBe('calls: 1 needs you · ctrl+q')
   expect(ui.notices).toEqual([{ text: 'Harness decisions: D1 learned facts', title: 'Firstmate' }])
   await clock.advance(5_000)
   await flush()
@@ -3172,15 +3392,27 @@ test("a ? row raises no notification and no status line: it is firstmate's move"
 test('a queued reply and a call that needs the captain share the one status line', async ($, on) => {
   const { ui } = await work($, on, () => 'brown fox')
   await run($, 'reply Too slow')
-  expect(ui.status.at(-1)).toBe('notes: 1 reply queued, sent with your next message. Ctrl+q: edit, remove, send · work: 1 needs you · w')
+  expect(ui.status.at(-1)).toBe('notes: 1 reply queued, sent with your next message. Ctrl+q: edit, remove, send · calls: 1 needs you · ctrl+q')
 })
 
-test('the Work tab carries the count of rows that need the captain; Todos stays the view the panel opens on', async ($, on) => {
+test('the Todos tab carries the count of open calls, linked to a shown to-do or to none; Work is no tab, w under the list reaches the work without a to-do', async ($, on) => {
   await work($, on)
   await run($, 'show')
   const pane = await $.ui.mount({ ...NOTES_PANE, surface: 'terminal' })
-  expect((await pane.find({ key: 'view:work' }))?.props).toMatchObject({ hotkey: 'w', label: 'Work (1!)' })
+  expect((await pane.find({ key: 'view:todos' }))?.props).toMatchObject({ hotkey: 't', label: 'Todos (1!)' })
+  expect(await pane.find({ type: 'Text', text: 'Not on a to-do: 1 call, 1 worker' })).toBeDefined()
+  expect((await pane.find({ key: 'view:work' }))?.props).toMatchObject({ hotkey: 'w', label: 'show' })
   expect(await pane.find({ key: 'show:todo' })).toBeDefined()
+  await pane.press({ key: 'view:work' })
+  expect(await pane.find({ key: 'view:work' })).toBeUndefined()
+  await pane.unmount()
+})
+
+test('with every call and live worker on a to-do, the Todos view draws no footer and no w', async ($, on) => {
+  const pane = await linked($, on, [LINKED_CALL, LINKED_WORKER])
+  expect((await pane.find({ key: 'view:todos' }))?.props).toMatchObject({ label: 'Todos (1!)' })
+  expect(await pane.find({ type: 'Text', text: /^Not on a to-do/ })).toBeUndefined()
+  expect(await pane.find({ key: 'view:work' })).toBeUndefined()
   await pane.unmount()
 })
 
@@ -3198,25 +3430,42 @@ test('without a bridge the panel has no Work tab and runs no fleet read', async 
   await pane.unmount()
 })
 
-test('the Work view lists ! rows, then ? rows, then the rest; a row is named by its linked todo label, else its title; gone records are hidden and counted, 6 shows them', async ($, on) => {
-  await work($, on)
+test('the Work view lists only the work no open to-do links, its calls and live workers; gone workers and calls closed without you are counted, 6 and x list them', async ($, on) => {
+  const { clock } = await work($, on)
+  bridge.fleet = { ...FLEET, gone: 1, closedToday: 1, closed: [{ task: 'moot-a', title: 'Moot A', evidence: 'fix-b shipped the change' }] }
+  await clock.advance(5_000)
+  await flush()
   await run($, 'show')
   const pane = await $.ui.mount({ ...NOTES_PANE, surface: 'terminal' })
   await pane.press({ key: 'view:work' })
   const rows = async () => (await pane.findAll({ type: 'Button' })).filter(button => FLEET.rows.some(row => `work:${row.task}` === button.key))
-  expect((await rows()).map(button => button.key)).toEqual(['work:decide-x', 'work:ask', 'work:run-a'])
+  expect((await rows()).map(button => button.key)).toEqual(['work:decide-x', 'work:ask'])
   const labels = (await rows()).map(button => String(button.props.label))
   expect(labels[0]).toMatch(/^! Harness decisions +call +2h  you: D1 learned facts$/)
   expect(labels[1]).toMatch(/^\? Sentry injected filter +decision +2m  firstmate: new PR body$/)
-  expect(labels[2]).toMatch(/^ {2}Build the table +working +1m  worker: implementing$/)
-  expect(await pane.find({ type: 'Text', text: /^Work {2}3 rows · 1 needs you · 1 firstmate · read \d\d:\d\d:\d\d UTC \(\d+[smhd] ago\)$/ })).toBeDefined()
-  expect(await pane.find({ type: 'Text', text: '+1 gone task records hidden (worktree or window gone)  6: show' })).toBeDefined()
-  expect(await pane.find({ type: 'Text', text: '+2 other calls · /bearings' })).toBeDefined()
-  await pane.press({ key: 'work-show:gone' })
-  expect((await rows()).map(button => button.key)).toEqual(['work:decide-x', 'work:ask', 'work:run-a', 'work:old'])
-  expect(await pane.find({ type: 'Text', text: /gone task records hidden/ })).toBeUndefined()
-  await pane.press({ key: 'work-show:firstmate' })
-  expect((await rows()).map(button => button.key)).toEqual(['work:decide-x', 'work:run-a', 'work:old'])
+  expect(await pane.find({ type: 'Text', text: /^Work without a to-do +read \d\d:\d\d UTC · b: back$/ })).toBeDefined()
+  expect(await pane.find({ type: 'Text', text: '1 worker gone without finishing · 1 call closed without you today' })).toBeDefined()
+  expect(await pane.find({ key: 'work-show:you' })).toBeUndefined()
+  expect(await pane.find({ type: 'Text', text: /State +Age +Waiting on/ })).toBeUndefined()
+  expect((await pane.find({ key: 'work:gone' }))?.props).toMatchObject({ hotkey: '6' })
+  await pane.press({ key: 'work:gone' })
+  expect((await rows()).map(button => button.key)).toEqual(['work:decide-x', 'work:ask', 'work:old'])
+  expect((await pane.find({ key: 'work:closed' }))?.props).toMatchObject({ hotkey: 'x' })
+  await pane.press({ key: 'work:closed' })
+  expect(await pane.find({ type: 'Text', text: '  Moot A · fix-b shipped the change' })).toBeDefined()
+  await pane.unmount()
+})
+
+test('with every call and live worker on a to-do, the Work view says so', async ($, on) => {
+  const { clock } = await work($, on)
+  bridge.fleet = { rows: [LINKED_CALL, LINKED_WORKER], calls: 0, gone: 0, closedToday: 1, closed: [] }
+  await clock.advance(5_000)
+  await flush()
+  await run($, 'show')
+  const pane = await $.ui.mount({ ...NOTES_PANE, surface: 'terminal' })
+  await pane.press({ key: 'view:work' })
+  expect(await pane.find({ type: 'Text', text: 'Every live worker and open call is on a to-do.' })).toBeDefined()
+  expect(await pane.find({ key: 'work:gone' })).toBeUndefined()
   await pane.unmount()
 })
 
@@ -3237,18 +3486,20 @@ test('a on a ? row fills the prompt with "<task> <key>: <text>" for the captain 
 })
 
 test('a is not offered on a row that waits on nobody but its worker', async ($, on) => {
-  await work($, on)
+  const { clock } = await work($, on)
+  bridge.fleet = { rows: [fleetRow('run-b', { at: SECONDS - 60, waiting: 'worker: implementing' })], calls: 0 }
+  await clock.advance(5_000)
+  await flush()
   await run($, 'show')
   const pane = await $.ui.mount({ ...NOTES_PANE, surface: 'terminal' })
   await pane.press({ key: 'view:work' })
-  await ring($, 'work:run-a')
+  await ring($, 'work:run-b')
   expect(await pane.find({ key: 'work:answer' })).toBeUndefined()
   await pane.unmount()
 })
 
-test('Enter on a row opens its details; y copies the PR link, r reads the crew state for that one task, g goes to its window', async ($, on) => {
+test('Enter on a row opens its details; y copies the PR link, g goes to its window; no r re-reads the crew state', async ($, on) => {
   const { git, ui } = await work($, on)
-  bridge.crew = 'state: done · source: run-step · checks green\n'
   await run($, 'show')
   const pane = await $.ui.mount({ ...NOTES_PANE, surface: 'terminal' })
   await pane.press({ key: 'view:work' })
@@ -3257,9 +3508,7 @@ test('Enter on a row opens its details; y copies the PR link, r reads the crew s
   expect(await pane.find({ type: 'Text', text: 'last    decision 2m ago: firstmate: new PR body' })).toBeDefined()
   await pane.press({ key: 'work:copy' })
   expect(ui.copied).toEqual(['https://x/pull/27970'])
-  await pane.press({ key: 'work:crew' })
-  expect(bridge.argv.filter(call => call[1] === 'crew')).toEqual([[BRIDGE, 'crew', 'ask']])
-  expect(await pane.find({ type: 'Text', text: 'crew    state: done · source: run-step · checks green' })).toBeDefined()
+  expect(await pane.find({ key: 'work:crew' })).toBeUndefined()
   await pane.press({ key: 'work:go' })
   expect(git.calls).toContainEqual(['tmux', 'switch-client', '-t', 's:fm-ask'])
   await pane.unmount()
@@ -3272,18 +3521,17 @@ const REPORTED = fleetRow('cleanroom-poc', {
   summary: { title: 'Cleanroom POC', outcome: 'BLOCKED at step 1.', ask: 'Start the app.', at: SECONDS - 86400 }, answer: 'cleanroom-poc',
 })
 
-test('the Work view puts rows under a header per group, and a row with a report carries its title, outcome and ask beneath it', async ($, on) => {
+test('a row in the Work view with a report carries its title, outcome and ask beneath it', async ($, on) => {
   const { clock } = await work($, on)
-  bridge.fleet = { rows: [...FLEET.rows, REPORTED], calls: 0 }
+  bridge.fleet = { rows: [...FLEET.rows, { ...REPORTED, live: true }], calls: 0 }
   await clock.advance(5_000)
   await flush()
   await run($, 'show')
   const pane = await $.ui.mount({ ...NOTES_PANE, surface: 'terminal' })
   await pane.press({ key: 'view:work' })
   const texts = (await pane.findAll({ type: 'Text' })).map(found => found.text)
-  expect(texts.filter(text => /^(Needs you|Firstmate|Running|Idle|Done|Gone) · \d+$/.test(text ?? ''))).toEqual(['Needs you · 1', 'Firstmate · 2', 'Running · 1'])
-  const at = texts.indexOf('Firstmate · 2')
-  expect(texts.slice(at + 1, at + 3)).toEqual(['    report 1d  Cleanroom POC: BLOCKED at step 1.', '    needs  Start the app.'])
+  const at = texts.indexOf('    report 1d  Cleanroom POC: BLOCKED at step 1.')
+  expect(texts.slice(at, at + 2)).toEqual(['    report 1d  Cleanroom POC: BLOCKED at step 1.', '    needs  Start the app.'])
   const label = String((await pane.find({ key: 'work:cleanroom-poc' }))?.props.label)
   expect(label).toMatch(/blocked +10m  gone: app down$/)
   await pane.unmount()
@@ -3292,7 +3540,7 @@ test('the Work view puts rows under a header per group, and a row with a report 
 test('v reads the report in the pane, even on a row with a PR; y there copies its path, u opens the PR, e opens the report in the editor, b goes back', async ($, on) => {
   shell.vars = { EDITOR: 'hx', TMUX: '/tmp/tmux-1/default,1,0' }
   const { clock, git, ui } = await work($, on, undefined, { [REPORT]: REPORT_TEXT })
-  bridge.fleet = { rows: [REPORTED], calls: 0 }
+  bridge.fleet = { rows: [{ ...REPORTED, live: true }], calls: 0 }
   await clock.advance(5_000)
   await flush()
   await run($, 'show')
@@ -3300,11 +3548,11 @@ test('v reads the report in the pane, even on a row with a PR; y there copies it
   await pane.press({ key: 'view:work' })
   await ring($, 'work:cleanroom-poc')
   expect((await pane.find({ key: 'work:view' }))?.props).toMatchObject({ hotkey: 'v', label: 'read report' })
-  expect((await pane.find({ key: 'work:pr' }))?.props).toMatchObject({ hotkey: 'u', label: 'open PR' })
+  expect(await pane.find({ key: 'work:pr' })).toBeUndefined()
   await pane.press({ key: 'work:view' })
-  expect(await pane.find({ type: 'Text', text: 'Cleanroom POC' })).toBeDefined()
-  expect(await pane.find({ type: 'Text', text: `${REPORT} · written 1d ago` })).toBeDefined()
-  expect(await pane.find({ type: 'Text', text: 'needs    Start the app.' })).toBeDefined()
+  expect(await pane.find({ type: 'Text', text: `${'Cleanroom POC'.padEnd(89 - '1d ago · b: back'.length)}1d ago · b: back` })).toBeDefined()
+  expect(await pane.find({ type: 'Text', text: 'scout' })).toBeDefined()
+  expect(await pane.find({ type: 'Text', text: /Needs you/ })).toBeUndefined()
   expect((await pane.find({ key: 'work:report-text' }))?.props).toMatchObject({ text: REPORT_TEXT })
   await pane.press({ key: 'work:copy' })
   expect(ui.copied).toEqual([REPORT])
@@ -3314,13 +3562,13 @@ test('v reads the report in the pane, even on a row with a PR; y there copies it
   await flush()
   expect(shell.spawned).toEqual([['tmux', 'display-popup', '-E', '-w', '90%', '-h', '90%', `hx '${REPORT}'`]])
   await pane.press({ key: 'view:back' })
-  expect(await pane.find({ type: 'Text', text: /^cleanroom-poc {2}· {2}cleanroom-poc/ })).toBeDefined()
+  expect(await pane.find({ key: 'work:cleanroom-poc' })).toBeDefined()
   await pane.unmount()
 })
 
 test('a report the pane cannot read says so and keeps e and y', async ($, on) => {
   const { clock } = await work($, on)
-  bridge.fleet = { rows: [{ ...REPORTED, summary: null }], calls: 0 }
+  bridge.fleet = { rows: [{ ...REPORTED, live: true, summary: null }], calls: 0 }
   await clock.advance(5_000)
   await flush()
   await run($, 'show')
@@ -3331,5 +3579,22 @@ test('a report the pane cannot read says so and keeps e and y', async ($, on) =>
   expect(await pane.find({ type: 'Text', text: /^Cannot read .*cleanroom-poc\/report\.md/ })).toBeDefined()
   expect(await pane.find({ key: 'work:edit' })).toBeDefined()
   expect(await pane.find({ key: 'work:copy' })).toBeDefined()
+  await pane.unmount()
+})
+
+test('j and k in the Item view open the next and previous shown to-do', async ($, on) => {
+  const { pane } = await linkedWith($, on, [LINKED_CALL], {
+    [BOUND]: setTodoFile('- [ ] **Build the table**: build the fleet table <!-- id:ab12cd3 -->\n- [x] **Old one**: done already <!-- id:cd34ef5 -->\n- [~] **Ship it**: ship the table <!-- id:ef56ab7 -->'),
+  })
+  await pane.press({ key: 'show:done' })
+  await openItem(pane)
+  expect(await pane.find({ type: 'Text', text: 'Build the table' })).toBeDefined()
+  expect((await pane.find({ key: 'item:down' }))?.props).toMatchObject({ hotkey: 'j' })
+  await pane.press({ key: 'item:down' })
+  expect(await pane.find({ type: 'Text', text: 'Ship it' })).toBeDefined()
+  expect(await pane.find({ type: 'Text', text: 'Build the table' })).toBeUndefined()
+  expect((await pane.find({ key: 'item:up' }))?.props).toMatchObject({ hotkey: 'k' })
+  await pane.press({ key: 'item:up' })
+  expect(await pane.find({ type: 'Text', text: 'Build the table' })).toBeDefined()
   await pane.unmount()
 })

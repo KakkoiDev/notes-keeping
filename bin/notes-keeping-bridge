@@ -46,17 +46,31 @@ home opted in). Four verbs are the plugin's; six are firstmate's.
                              carries its "reason". Exits 1 when the file cannot be read.
   active                     print the notes file a session asked for pending updates within the last 15 seconds, the
                              latest when several did; exits 1 when none did.
-  fleet <notes-file>         read-only: print {"rows": [...], "calls": <n>} for the Work view. A row per state/<task>.meta
-                             and per live captain hold, from the metas, the last state line of each state/<task>.status,
-                             one `tmux list-windows -a` and the backlog's tasks (bin/fm-tasks-axi.sh list, read at most
-                             once per 30 seconds). A meta row is gone (gone: true) when its window is not live and its
-                             last state line is done. flag "!": a live captain hold (hold_kind captain, not done, no
-                             unresolved blocker, no future hold_until, set under 14 days ago) whose origin or own id is a
-                             shown meta row, or whose id or origin is linked to an item in <notes-file>; other live holds
-                             are only counted in calls. flag "?": a last state line of needs-decision, blocked or failed,
-                             or a worker gone without a done line. No prose sets a flag. A row's report is the .md path
-                             its last state line or hold reason names, else data/<task>/report.md when it exists; its
-                             summary is {"title", "outcome", "ask", "at"} read from the report's head, or null.
+  fleet <notes-file>         read-only: print {"rows": [...], "calls": <n>, "gone": <n>, "closedToday": <n>, "closed": [...]}
+                             for the notes panel. A row per
+                             state/<task>.meta, per live captain hold, and per task linked to an open item of <notes-file>
+                             that has neither (from the backlog or data/done-archive.md: word finished when done or
+                             archived, else stopped; at its report's mtime, else its done date). Read from the metas, the
+                             last state line of each state/<task>.status, one `tmux list-windows -a` and the backlog's
+                             tasks (bin/fm-tasks-axi.sh list, read at most once per 30 seconds). todos: the open items, by
+                             id and in file order, whose latest link names the row's task or a hold's origin (and a meta's
+                             todo=id:). A meta row whose window is not live is gone (gone: true, no flag, counted in
+                             "gone") unless an item links it; a linked one is word finished after a done line, else gone.
+                             flag "!": a live captain hold (hold_kind captain, not done, no unresolved blocker, no future
+                             hold_until, set under 14 days ago) whose origin or own id is a shown meta row, or whose id or
+                             origin is linked to an item in <notes-file>; other live holds are only counted in calls.
+                             flag "?": a last state line of needs-decision, blocked or failed, or a linked worker gone
+                             without a done line. No prose sets a flag. A row's report is the .md path its last state line
+                             or hold reason names, else data/<task>/report.md when it exists; its summary is {"title",
+                             "outcome", "ask", "at"}: the # title and the Outcome: and Needs: lines of the report's first
+                             15 lines, or null. A hold row carries its call {"question", "options", "at", "state"}: the
+                             Question: line (else the title) and one option per Options: line. A captain task with a
+                             recorded Captain decision, not done, whose id or origin an open item links, is a call row
+                             with state answered, no flag, and a trail of {"at", "who", "text"} from records only: the
+                             decision, its Resolution recorded stamp, the inbox message its Routed to: <task> <NNN> line
+                             names, that message in handled/, and the routed task's next state line. closed: the captain
+                             tasks closed today (UTC) by a Resolution mode other than answered or released, each
+                             {"task", "title", "evidence"}.
   waiting <task-id> <text>   firstmate's Waiting-on cell for the task's row, until state/<task>.status gets another state line.
   crew <task-id>             print bin/fm-crew-state.sh <task-id> for this home.
 
@@ -94,17 +108,23 @@ ACTIVE_S = 15
 POLL_S = 0.2
 REQUEST = re.compile(r'^[0-9a-f]{16}$')
 STATES = ('working', 'needs-decision', 'blocked', 'paused', 'done', 'failed')
-STATE_LINE = re.compile(r'^(%s)(?: \[[^\]]*\])?:' % '|'.join(re.escape(s) for s in STATES))
+STATE_LINE = re.compile(r'^(%s)(?: \[[^\]]*\])*:' % '|'.join(re.escape(s) for s in STATES))
 ADDED = re.compile(r'^\+ \[.\] ')
 ID_TAG = re.compile(r' \[id:[a-z0-9]+\]$')
 ITEM_ID = re.compile(r'^id:([a-z0-9]+)$')
 TASK_ID = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]*$')
 WAITING = os.path.join(STATE, 'notes-fleet-waiting.jsonl')
+ARCHIVE = os.path.join(HOME, 'data', 'done-archive.md')
+ARCHIVED = re.compile(r'^- \[x\] ([A-Za-z0-9][A-Za-z0-9._-]*) - (.*)$')
+# Where a backlog line's title ends: its first annotation, PR link or report path.
+TITLE_END = re.compile(r' (?:\((?:repo|kind|done|reported|since|note|hold)\b|PR https?://|data/\S+\.md)')
+KIND_NOTE = re.compile(r'\(kind: ([^)]+)\)')
+DONE_NOTE = re.compile(r'\((?:done|reported) (\d{4}-\d{2}-\d{2})\)')
 TASKS_AXI = os.path.join(ROOT, 'bin', 'fm-tasks-axi.sh')
 CREW_STATE = os.path.join(ROOT, 'bin', 'fm-crew-state.sh')
 CACHE = os.environ.get('NOTES_KEEPING_FLEET_CACHE') or os.path.join(tempfile.gettempdir(), 'notes-keeping-fleet')
 TASKS_S = 30
-TASKS_FIELDS = 'created,hold_kind,hold_until,hold_reason,blocked_by,body'
+TASKS_FIELDS = 'created,closed,hold_kind,hold_until,hold_reason,blocked_by,body'
 # The age at which an undated captain hold stops being live, as fm-fleet-snapshot.sh's FM_SNAPSHOT_UNDATED_HOLD_AGE_DAYS default.
 AGED_DAYS = 14
 # A state line with any bracketed stamps ([at=], [key=]) before its colon.
@@ -113,16 +133,24 @@ STAMP = re.compile(r'\[(at|key)=([^\]]*)\]')
 PR_URL = re.compile(r'https://\S+/pull/\d+')
 REPORT = re.compile(r'(?<![^\s(\'"`<])(/\S+\.md)\b')
 REPORT_IN_HOME = re.compile(r'(?<![^\s(\'"`<])([^\s/(\'"`<~]\S*/\S*\.md)\b')
-# How much of a report its summary reads.
+# How much of a report its summary reads, and the lines its Outcome: and Needs: heads are looked for in.
 SUMMARY_BYTES = 65536
+HEAD_LINES = 15
 TITLE = re.compile(r'^# \S')
-HEADING = re.compile(r'^#{2,4} ')
 LIST_MARK = re.compile(r'^(?:[-*+]|\d+[.)])\s+')
-OUTCOME_LINE = re.compile(r'^\s*(?:[-*]\s+)?(\*\*)?(?:Status|Outcome|Verdict|Result|Conclusion|TL;DR|Bottom line)(?:\*\*)?\s*:\s*(?:\*\*\s*)?(.+)$', re.I)
-OUTCOME_HEADING = re.compile(r'\b(?:summary|outcome|verdict|result|conclusion|tl;dr|bottom line)\b', re.I)
+OUTCOME_LINE = re.compile(r'^\s*(?:[-*]\s+)?(\*\*)?(?:Outcome|Status|Verdict)(?:\*\*)?\s*:\s*(?:\*\*\s*)?(.+)$', re.I)
 ASK_LINE = re.compile(r'^\s*(?:[-*]\s+)?(\*\*)?(?:Needs|Decision needed|Captain (?:decision|call|action)|Question for the captain)(?:\*\*)?\s*:\s*(?:\*\*\s*)?(.+)$', re.I)
-ASK_HEADING = re.compile(r"\b(?:(?:for|from|by|to) (?:the )?captain|captain'?s? (?:call|decision|question|action)s?|needs? you|decisions? (?:needed|to make|pending|open|for)|open (?:questions|decisions)|questions? for)\b", re.I)
 HOLD_SET = re.compile(r'Captain hold set: (\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)')
+# The newest resolution record of a captain call (fm-captain-hold.sh resolution_block): its mode, and the label and first
+# line of what follows it.
+RECORDED = re.compile(r'^\s*Resolution recorded by ', re.M)
+MODE = re.compile(r'^\s*Resolution mode: (\S+)', re.M)
+DECISION = re.compile(r'^\s*(Captain decision|Reconciliation evidence):[ \t]*\n[ \t]*(\S.*)$', re.M)
+ROUTED = re.compile(r'^\s*Routed to: ([A-Za-z0-9][A-Za-z0-9._-]*) (\d+)\s*$', re.M)
+# Resolution modes in which the captain's own words closed the call.
+BY_CAPTAIN = ('answered', 'released')
+QUESTION = re.compile(r'^\s*Question: (.+)$', re.M)
+OPTIONS = re.compile(r'^\s*Options: (.+)$', re.M)
 HOLD_ORIGIN = re.compile(r'Captain hold origin: ([A-Za-z0-9][A-Za-z0-9._-]*)')
 NOTE_ID = re.compile(r'<!-- id:([a-z0-9]+) -->')
 TODO_ITEM = re.compile(r'^- \[(.)\] (.*)$')
@@ -540,12 +568,10 @@ def noted(notes_file):
     return {r['task'] for r in links().values() if r.get('id') in ids or (r.get('id') is None and r['key'] in keys)}
 
 
-def open_items(notes_file):
-    try:
-        with open(notes_file, encoding='utf-8', errors='replace') as f:
-            lines = f.read().split('\n')
-    except OSError as e:
-        die(f'cannot read {notes_file}: {e.strerror}', 1)
+def open_list(notes_file):
+    """Every item under the notes file's # Todo that is not done or declined, in file order; OSError when it cannot be read."""
+    with open(notes_file, encoding='utf-8', errors='replace') as f:
+        lines = f.read().split('\n')
     out, inside = [], False
     for line in lines:
         if line.startswith('# '):
@@ -558,20 +584,31 @@ def open_items(notes_file):
             why = PAUSE_REASON.search(rest) if m.group(1) == '/' else None
             text = rest[:why.start()].strip() if why else rest
             out.append({'id': found.group(1) if found else None, 'status': OPEN_MARKS[m.group(1)], 'text': text, **({'reason': why.group(1)} if why else {})})
+    return out
+
+
+def open_items(notes_file):
+    try:
+        out = open_list(notes_file)
+    except OSError as e:
+        die(f'cannot read {notes_file}: {e.strerror}', 1)
     print(json.dumps(out, ensure_ascii=False))
 
 
-def item_of(task):
-    return next((r['id'] for r in links().values() if r['task'] == task and isinstance(r.get('id'), str)), None)
+def items_of(open_ids, linked, tasks, extra=None):
+    """The open item ids, in file order, that a link names one of tasks for, plus extra (the meta's todo id)."""
+    wanted = {r['id'] for r in linked if r['task'] in tasks and isinstance(r.get('id'), str)} | ({extra} if extra else set())
+    return [i for i in open_ids if i in wanted]
 
 
-def meta_row(task, meta, lines, live, cell, title):
+def meta_row(task, meta, lines, live, cell, title, todos):
     last = lines[-1] if lines else None
     state = last['state'] if last else None
     text = last['text'] if last else ''
     is_live = meta.get('window') in live
-    gone = not is_live and state == 'done'
-    is_lost = not is_live and not gone
+    # A worker whose window is gone is a record only, unless an open item links it.
+    gone = not is_live and not todos
+    is_lost = not is_live and state != 'done'
     if is_lost:
         waiting = f'firstmate: worker gone; last: {text}' if last else 'firstmate: worker gone; no state line'
     elif state in ASKS:
@@ -582,15 +619,48 @@ def meta_row(task, meta, lines, live, cell, title):
         waiting = text
     if cell is not None and len(lines) <= cell['lines']:
         waiting = cell['text']
-    flag = '?' if is_lost or state in ASKS else ''
+    flag = '' if gone else '?' if is_lost or state in ASKS else ''
+    word = 'idle' if state == 'paused' and meta.get('kind') == 'scout' else WORD.get(state, state or 'none')
+    if not is_live and not gone:
+        word = 'gone' if is_lost else 'finished'
     pr = meta.get('pr') or next(iter(PR_URL.findall(text)), None)
     report = report_of(task, text)
-    todo = meta.get('todo', '')
     return {
-        'task': task, 'kind': meta.get('kind'), 'title': title, 'word': 'idle' if state == 'paused' and meta.get('kind') == 'scout' else WORD.get(state, state or 'none'),
+        'task': task, 'kind': meta.get('kind'), 'title': title, 'word': word,
         'at': last['at'] if last else None, 'flag': flag, 'waiting': waiting, 'window': meta.get('window'), 'live': is_live, 'gone': gone,
-        'pr': pr, 'report': report, 'summary': summary_of(report), 'todo': todo[3:] if todo.startswith('id:') else None,
+        'pr': pr, 'report': report, 'summary': summary_of(report), 'todos': todos,
         'answer': (f"{task} {last['key']}" if last and last['key'] else task) if flag else None,
+    }
+
+
+def archived(tasks):
+    """The done archive's line text for each of tasks, read-only."""
+    out = {}
+    try:
+        with open(ARCHIVE, encoding='utf-8', errors='replace') as f:
+            for line in f:
+                m = ARCHIVED.match(line.rstrip('\n'))
+                if m and m.group(1) in tasks:
+                    out[m.group(1)] = m.group(2)
+    except OSError:
+        pass
+    return out
+
+
+def ended_row(task, record, line, todos):
+    """A row for a linked task with no meta: its backlog record or done-archive line, and its report.
+    finished when the backlog has it done or the archive holds it, else stopped; at is the report's mtime, else the done date."""
+    text = line if line is not None else ((record or {}).get('title') or '').split('\n')[0]
+    report = report_of(task, text)
+    summary = summary_of(report)
+    m = DONE_NOTE.search(text)
+    done = epoch(f"{(record or {}).get('closed') or (m.group(1) if m else '')}T00:00:00Z")
+    kind = (record or {}).get('kind') or next(iter(KIND_NOTE.findall(text)), None)
+    return {
+        'task': task, 'kind': kind, 'title': TITLE_END.split(text)[0].strip() or None,
+        'word': 'finished' if line is not None or (record or {}).get('state') == 'done' else 'stopped',
+        'at': summary['at'] if summary else done, 'flag': '', 'waiting': '', 'window': None, 'live': False, 'gone': False,
+        'pr': next(iter(PR_URL.findall(text)), None), 'report': report, 'summary': summary, 'todos': todos, 'answer': None,
     }
 
 
@@ -614,22 +684,11 @@ def plain(line):
     return LIST_MARK.sub('', line.strip().lstrip('#').strip()).replace('**', '').strip()
 
 
-def is_prose(line):
-    s = line.strip()
-    return s != '' and not s.startswith(('#', '|', '```', '<!--', '---'))
-
-
-# A line under a heading that can stand for what the section says: prose, or a sub-heading.
-def is_said(line):
-    return is_prose(line) or HEADING.match(line) is not None
-
-
 def summary_of(path):
     """{title, outcome, ask, at} from the head of the report at path, or None when it cannot be read.
-    title: the first # heading, else the first line. outcome: a Status/Outcome/Verdict/Result/Conclusion line before the
-    first section, else the first prose line under a Summary/Outcome/Verdict/Result/Conclusion/TL;DR heading, else the
-    first prose line after the title. ask: a Needs/Decision needed/Captain decision line, else the first prose line or
-    sub-heading under a heading such as "for the captain", "open questions" or "decisions needed". at: the file's mtime."""
+    title: the first # heading, else the first line. outcome: an Outcome: line (or Status:, Verdict:) among the first
+    HEAD_LINES lines; ask: a Needs: line (or Decision needed:, Captain decision:) there. Nothing else is read as either:
+    a report without them shows its title alone. at: the file's mtime."""
     if path is None:
         return None
     try:
@@ -642,27 +701,64 @@ def summary_of(path):
     first = next((i for i, line in enumerate(lines) if line.strip() != ''), None)
     title_at = titled if titled is not None else first
     title = plain(lines[title_at]) if title_at is not None else ''
-    rest = lines[title_at + 1:] if title_at is not None else []
-
-    def under(heading):
-        for i, line in enumerate(rest):
-            if HEADING.match(line) and heading.search(line):
-                body = rest[i + 1:]
-                fenced, said = False, None
-                for other in body:
-                    if other.strip().startswith('```'):
-                        fenced = not fenced
-                    elif not fenced and is_said(other):
-                        said = plain(other)
-                        break
-                return said
-        return None
-
-    lead = next((rest[:i] for i, line in enumerate(rest) if HEADING.match(line)), rest)
-    labeled = next((m.group(2) for m in map(OUTCOME_LINE.match, lead) if m), None)
-    outcome = labeled or under(OUTCOME_HEADING) or next((plain(line) for line in rest if is_prose(line)), None)
-    ask = next((m.group(2) for m in map(ASK_LINE.match, rest) if m), None) or under(ASK_HEADING)
+    head = lines[:HEAD_LINES]
+    outcome = next((m.group(2) for m in map(OUTCOME_LINE.match, head) if m), None)
+    ask = next((m.group(2) for m in map(ASK_LINE.match, head) if m), None)
     return {'title': title, 'outcome': plain(outcome) if outcome else None, 'ask': plain(ask) if ask else None, 'at': at}
+
+
+def trail_of(body):
+    """What happened to a captain's answer, from records only, each step {at, who, text}: the Captain decision: line,
+    the Resolution recorded stamp, the inbox message its Routed to: line names (at its mtime), the same message in
+    handled/ (at its ctime, when it was moved there), and the routed task's first state line stamped after that. The
+    first missing record ends it."""
+    said = DECISION.search(body)
+    if said is None or said.group(1) != 'Captain decision':
+        return []
+    out = [{'at': None, 'who': 'you', 'text': said.group(2).strip()}]
+    if not RECORDED.search(body):
+        return out
+    out.append({'at': None, 'who': 'firstmate', 'text': 'recorded it'})
+    routed = ROUTED.search(body)
+    if routed is None:
+        return out
+    task, n = routed.groups()
+    sent = os.path.join(STATE, f'{task}.inbox', f'{n}.msg')
+    read = os.path.join(STATE, f'{task}.inbox', 'handled', f'{n}.msg')
+    path = read if os.path.exists(read) else sent if os.path.exists(sent) else None
+    if path is None:
+        return out
+    out.append({'at': int(os.path.getmtime(path)), 'who': 'firstmate', 'text': f'sent it to the worker (message {n})'})
+    if path != read:
+        return out
+    read_at = int(os.stat(read).st_ctime)
+    out.append({'at': read_at, 'who': 'worker', 'text': 'read it'})
+    after = next((line for line in fleet_lines(task) if line['at'] is not None and line['at'] >= read_at), None)
+    if after is not None:
+        out.append({'at': after['at'], 'who': 'worker', 'text': f"{after['state']}: {after['text']}"})
+    return out
+
+
+def call_of(task, state):
+    """A captain call's card: the Question: line (else the title), one option per Options: line, when it was set."""
+    body = task.get('body') or ''
+    question = QUESTION.search(body)
+    title = (task.get('title') or '').split('\n')[0] or None
+    return {'question': question.group(1).strip() if question else title or task['id'], 'options': [o.strip() for o in OPTIONS.findall(body)], 'at': hold_set(task) if state == 'open' else None, 'state': state}
+
+
+def closed_today(tasks, now):
+    """The captain calls closed today (UTC) by a resolution not in the captain's words: {task, title, evidence}."""
+    today = datetime.fromtimestamp(now, timezone.utc).strftime('%Y-%m-%d')
+    out = []
+    for task in tasks.values():
+        body = task.get('body') or ''
+        mode = MODE.search(body)
+        if task.get('kind') != 'captain' or task.get('closed') != today or mode is None or mode.group(1) in BY_CAPTAIN:
+            continue
+        said = DECISION.search(body)
+        out.append({'task': task['id'], 'title': (task.get('title') or '').split('\n')[0], 'evidence': said.group(2).strip() if said else None})
+    return out
 
 
 def fleet(notes_file):
@@ -670,12 +766,45 @@ def fleet(notes_file):
     tasks = backlog()
     live = windows()
     cells = waitings()
+    try:
+        open_ids = [i['id'] for i in open_list(notes_file) if i['id'] is not None]
+    except OSError:
+        open_ids = []
+    linked = list(links().values())
     rows = []
     for name in sorted(os.listdir(STATE)) if os.path.isdir(STATE) else []:
         task = name[:-len('.meta')]
         if name.endswith('.meta') and TASK_ID.match(task):
             title = (tasks.get(task) or {}).get('title')
-            rows.append(meta_row(task, read_meta(task), fleet_lines(task), live, cells.get(task), title.split('\n')[0] if title else None))
+            meta = read_meta(task)
+            todo = meta.get('todo', '')
+            todos = items_of(open_ids, linked, {task}, todo[3:] if todo.startswith('id:') else None)
+            rows.append(meta_row(task, meta, fleet_lines(task), live, cells.get(task), title.split('\n')[0] if title else None, todos))
+    have = {r['task'] for r in rows}
+    for task in tasks.values():
+        body = task.get('body') or ''
+        if task.get('kind') != 'captain' or task.get('state') == 'done' or task['id'] in have or is_live_hold(task, tasks, now) or not trail_of(body):
+            continue
+        m = HOLD_ORIGIN.search(body)
+        origin = m.group(1) if m else None
+        todos = items_of(open_ids, linked, {task['id'], origin})
+        if todos:
+            title = (task.get('title') or '').split('\n')[0] or None
+            rows.append({
+                'task': task['id'], 'kind': task.get('kind'), 'title': title, 'word': 'call', 'at': None, 'flag': '', 'waiting': '',
+                'window': None, 'live': False, 'gone': False, 'pr': None, 'report': None, 'summary': None, 'todos': todos,
+                'answer': f"{origin} {task['id']}" if origin else task['id'], 'origin': origin, 'call': call_of(task, 'answered'), 'trail': trail_of(body),
+            })
+            have.add(task['id'])
+    lost = {r['task'] for r in linked if r['task'] not in have and r['task'] not in tasks and TASK_ID.match(r['task'])}
+    lines = archived(lost)
+    for task in sorted({r['task'] for r in linked} - have):
+        todos = items_of(open_ids, linked, {task})
+        if not todos or not TASK_ID.match(task) or is_live_hold(tasks.get(task) or {}, tasks, now):
+            continue
+        row = ended_row(task, tasks.get(task), lines.get(task), todos)
+        if task in tasks or task in lines or row['report'] is not None:
+            rows.append(row)
     shown = {r['task'] for r in rows if not r['gone']}
     tied = noted(notes_file)
     calls = 0
@@ -688,13 +817,16 @@ def fleet(notes_file):
             calls += 1
             continue
         report = report_in(task['hold_reason'])
+        title = (task.get('title') or '').split('\n')[0] or None
         rows.append({
-            'task': task['id'], 'kind': task.get('kind'), 'title': (task.get('title') or '').split('\n')[0] or None, 'word': 'call', 'at': hold_set(task), 'flag': '!',
+            'task': task['id'], 'kind': task.get('kind'), 'title': title, 'word': 'call', 'at': hold_set(task), 'flag': '!',
             'waiting': f"you: {task['hold_reason']}", 'window': None, 'live': False, 'gone': False, 'pr': next(iter(PR_URL.findall(task['hold_reason'])), None),
-            'report': report, 'summary': summary_of(report), 'todo': item_of(task['id']), 'answer': f"{origin} {task['id']}" if origin else task['id'], 'origin': origin,
+            'report': report, 'summary': summary_of(report), 'todos': items_of(open_ids, linked, {task['id'], origin}), 'answer': f"{origin} {task['id']}" if origin else task['id'], 'origin': origin,
+            'call': call_of(task, 'open'), 'trail': [],
         })
     rows.sort(key=lambda r: ({'!': 0, '?': 1}.get(r['flag'], 2), -(r['at'] or 0)))
-    print(json.dumps({'rows': rows, 'calls': calls}, ensure_ascii=False))
+    closed = closed_today(tasks, now)
+    print(json.dumps({'rows': rows, 'calls': calls, 'gone': sum(1 for r in rows if r['gone']), 'closedToday': len(closed), 'closed': closed}, ensure_ascii=False))
 
 
 def crew(task):

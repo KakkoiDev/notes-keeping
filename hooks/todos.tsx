@@ -1,4 +1,4 @@
-import type { Todo } from '../types'
+import type { SubLine, Todo } from '../types'
 import { legend, markOf } from './todo'
 
 export const STATUSES: readonly Todo['status'][] = ['todo', 'in-progress', 'done', 'declined', 'blocked', 'paused']
@@ -62,8 +62,12 @@ export function TodoSlot(props: {
   onToggle: (status: Todo['status']) => unknown
   onPause: (id: string) => unknown
   pause?: unknown
+  // The lines drawn under each item, by item id.
+  lines?: Readonly<Record<string, readonly SubLine[]>>
+  // Keys drawn at the end of the key row, each only when it acts on the selected item.
+  keys?: unknown
 }) {
-  const { Box, Button, Text, todos, hidden, selected, landing, onCycle, onOpen, onStep, onSelect, onToggle, onPause, pause } = props
+  const { Box, Button, Text, todos, hidden, selected, landing, onCycle, onOpen, onStep, onSelect, onToggle, onPause, pause, lines, keys } = props
   const shown = todos.filter(item => !hidden.includes(item.status))
   const step = (by: 1 | -1) => () => (selected === undefined ? undefined : onStep(selected, by))
   const at = shown.findIndex(item => item.id === selected)
@@ -91,7 +95,7 @@ export function TodoSlot(props: {
       ) : shown.length === 0 ? (
         <Text dimColor>{`(${todos.length} items, every status hidden)`}</Text>
       ) : (
-        shown.map(item => (
+        shown.flatMap(item => [
           <Box key={`row:${item.id}`} flexDirection="row" gap={1}>
             <Button
               key={rowKey(item.id, landing)}
@@ -102,8 +106,13 @@ export function TodoSlot(props: {
               onPress={() => onCycle(item.id)}
             />
             <Button key={`open:${item.id}`} plain dimColor={item.id !== selected} label={item.text} onPress={() => onOpen(item.id)} />
-          </Box>
-        ))
+          </Box>,
+          ...(lines?.[item.id] ?? []).map((line, i) => (
+            <Text key={`sub:${item.id}:${i}`} dimColor={!line.isCall && item.id !== selected}>
+              {line.text}
+            </Text>
+          )),
+        ])
       )}
       <Box flexDirection="row" flexWrap="wrap" columnGap={2}>
         <Button key="select:down" plain hotkey="j" label="next item" onPress={move(1)} />
@@ -112,9 +121,9 @@ export function TodoSlot(props: {
         <Button key="status:prev" plain hotkey="p" label="previous status" onPress={step(-1)} />
         <Button key="item:open" plain hotkey="d" label="open item" onPress={() => (selected === undefined ? undefined : onOpen(selected))} />
         <Button key="item:pause" plain hotkey="z" label="pause it" onPress={() => (selected === undefined ? undefined : onPause(selected))} />
+        {keys ?? null}
       </Box>
       {pause ?? null}
-      <Text dimColor>j and k select the next and previous item (Up and Down walk every marker and text), Enter or a click on its marker cycles its status, d or a click on its text opens it, f and p step it forward and back, z pauses it with a reason, 1 to 6 show or hide a status</Text>
     </Box>
   )
 }
