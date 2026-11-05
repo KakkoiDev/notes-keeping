@@ -357,6 +357,18 @@ check 'the same hold is not tied to a notes file without that item' '1' "$(f fle
 fleet_home
 meta origin-x 's:fm-origin-x'
 live 's:fm-origin-x'
+tasks "plan-calls,queued,captain,-,\"Plan calls\",$TODAY,captain,\"-\",\"Five calls in data/sprint6-plan/report.md\",none,\"Captain hold set: $SET\\nCaptain hold origin: origin-x\"" \
+  "abs-calls,queued,captain,-,\"Abs calls\",$TODAY,captain,\"-\",\"Read /d/plan/report.md\",none,\"Captain hold set: $SET\\nCaptain hold origin: origin-x\""
+check 'a hold naming a home-relative report shows its absolute path under the home' "$H/data/sprint6-plan/report.md" "$(field plan-calls 'r["report"]')"
+check 'a hold naming an absolute report shows it as written' '/d/plan/report.md' "$(field abs-calls 'r["report"]')"
+echo "done [at=$NOW]: report at data/scout/r.md" > "$H/state/origin-x.status"
+check 'a worker line naming a home-relative report shows its absolute path under the home' "$H/data/scout/r.md" "$(field origin-x 'r["report"]')"
+echo "done [at=$NOW]: Exact text in report.md, see the PR" > "$H/state/origin-x.status"
+check 'a bare file name with no folder is not a report path' 'None' "$(field origin-x 'r["report"]')"
+
+fleet_home
+meta origin-x 's:fm-origin-x'
+live 's:fm-origin-x'
 FUTURE=$(python3 -c 'import datetime; print((datetime.date.today() + datetime.timedelta(days=3)).isoformat())')
 OLD=$(python3 -c 'import datetime; print((datetime.datetime.utcnow() - datetime.timedelta(days=20)).strftime("%Y-%m-%dT%H:%M:%SZ"))')
 tasks "dated,queued,captain,-,\"Later\",$TODAY,captain,$FUTURE,\"after the release\",none,\"Captain hold origin: origin-x\"" \

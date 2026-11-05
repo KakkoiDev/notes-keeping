@@ -98,7 +98,8 @@ AGED_DAYS = 14
 FLEET_LINE = re.compile(r'^(%s)((?: \[[^\]]*\])*):\s?(.*)$' % '|'.join(re.escape(s) for s in STATES))
 STAMP = re.compile(r'\[(at|key)=([^\]]*)\]')
 PR_URL = re.compile(r'https://\S+/pull/\d+')
-REPORT = re.compile(r'(/\S+\.md)\b')
+REPORT = re.compile(r'(?<![^\s(\'"`<])(/\S+\.md)\b')
+REPORT_IN_HOME = re.compile(r'(?<![^\s(\'"`<])([^\s/(\'"`<~]\S*/\S*\.md)\b')
 HOLD_SET = re.compile(r'Captain hold set: (\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)')
 HOLD_ORIGIN = re.compile(r'Captain hold origin: ([A-Za-z0-9][A-Za-z0-9._-]*)')
 NOTE_ID = re.compile(r'<!-- id:([a-z0-9]+) -->')
@@ -526,14 +527,19 @@ def meta_row(task, meta, lines, live, cell, title):
         waiting = cell['text']
     flag = '?' if is_lost or state in ASKS else ''
     pr = meta.get('pr') or next(iter(PR_URL.findall(text)), None)
-    report = REPORT.search(text)
     todo = meta.get('todo', '')
     return {
         'task': task, 'kind': meta.get('kind'), 'title': title, 'word': 'idle' if state == 'paused' and meta.get('kind') == 'scout' else WORD.get(state, state or 'none'),
         'at': last['at'] if last else None, 'flag': flag, 'waiting': waiting, 'window': meta.get('window'), 'live': is_live, 'gone': gone,
-        'pr': pr, 'report': report.group(1) if report else None, 'todo': todo[3:] if todo.startswith('id:') else None,
+        'pr': pr, 'report': report_in(text), 'todo': todo[3:] if todo.startswith('id:') else None,
         'answer': (f"{task} {last['key']}" if last and last['key'] else task) if flag else None,
     }
+
+
+# The first .md path in text: an absolute one as written, else one relative to the home with a folder in it, joined to the home.
+def report_in(text):
+    absolute, in_home = REPORT.search(text), REPORT_IN_HOME.search(text)
+    return absolute.group(1) if absolute else os.path.join(HOME, in_home.group(1)) if in_home else None
 
 
 def fleet(notes_file):
@@ -558,11 +564,10 @@ def fleet(notes_file):
         if not ({task['id'], origin} & (shown | tied)):
             calls += 1
             continue
-        report = REPORT.search(task['hold_reason']) or re.search(r'(\S+\.md)\b', task['hold_reason'])
         rows.append({
             'task': task['id'], 'kind': task.get('kind'), 'title': (task.get('title') or '').split('\n')[0] or None, 'word': 'call', 'at': hold_set(task), 'flag': '!',
             'waiting': f"you: {task['hold_reason']}", 'window': None, 'live': False, 'gone': False, 'pr': next(iter(PR_URL.findall(task['hold_reason'])), None),
-            'report': report.group(1) if report else None, 'todo': item_of(task['id']), 'answer': f"{origin} {task['id']}" if origin else task['id'], 'origin': origin,
+            'report': report_in(task['hold_reason']), 'todo': item_of(task['id']), 'answer': f"{origin} {task['id']}" if origin else task['id'], 'origin': origin,
         })
     rows.sort(key=lambda r: ({'!': 0, '?': 1}.get(r['flag'], 2), -(r['at'] or 0)))
     print(json.dumps({'rows': rows, 'calls': calls}, ensure_ascii=False))
