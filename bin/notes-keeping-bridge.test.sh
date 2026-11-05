@@ -148,6 +148,10 @@ home
 printf '+ [ ] A\n+ [x] B\nC: todo -> declined (captain)\n' | b notify /notes/a.md
 check 'three changes count two more' 'A (+2 more)' "$(first)"
 home
+printf '+ [ ] Pasted filter row [id:ab12cd3]\n    Pasted filter row\n    - [ ] Review the plan\n    [~] Link todos ||||| the ask after the paste\nC: todo -> declined (captain)\n' | b notify /notes/a.md
+check 'the indented lines of an update block are not counted as changes' 'Pasted filter row (+1 more)' "$(first)"
+check 'the note carries the update block whole' '1' "$(grep -c '    \[~\] Link todos ||||| the ask after the paste' "$H"/state/inbox/*.note)"
+home
 b active >/dev/null 2>&1
 check 'active with no session draining fails' '1' "$?"
 check 'pending with nothing queued prints an empty list' '[]' "$(b pending /notes/a.md)"

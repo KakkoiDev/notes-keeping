@@ -1886,20 +1886,21 @@ test('at the end of a turn Laya reads the reply: a reply that names an item and 
   const fs: Fs = { [BOUND]: setTodoFile('- [ ] Add a ctrl+q toggle\n- [ ] Write the docs\n- [ ] Rename the pane'), [PYTHON]: '' }
   const { git } = engine(on, fs, { ...SESSION_BOUND })
   fakeLaya({
-    'add a ctrl+q toggle': { label: 'finished', p: 0.9 },
+    'add a ctrl+q toggle': { label: 'started', p: 0.9 },
     'write the docs': { label: 'rejected', p: 0.95 },
     'rename the pane': { label: 'started', p: 0.5 },
   })
   await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: false })
   await flush()
   laya.asks.length = 0
-  await complete($, 'The ctrl+q toggle works and tests pass. Pushed the branch.')
+  await complete($, 'Started on the ctrl+q toggle; tests pass. Pushed the branch.')
   await flush()
-  expect(laya.asks.at(-1)?.answer).toBe('The ctrl+q toggle works and tests pass. Pushed the branch.')
-  expect(bare(fs[BOUND])).toContain('- [x] Add a ctrl+q toggle\n- [ ] Write the docs\n- [ ] Rename the pane')
+  expect(laya.asks.at(-1)?.answer).toBe('Started on the ctrl+q toggle; tests pass. Pushed the branch.')
+  expect(bare(fs[BOUND])).toContain('- [~] Add a ctrl+q toggle\n- [ ] Write the docs\n- [ ] Rename the pane')
   expect(commits(git).at(-1)).toBe(`todo: ${BOUND.split('/').pop()}`)
 
   // A done item is not asked about again.
+  fs[BOUND] = (fs[BOUND] ?? '').replace('- [~] Add a ctrl+q toggle', '- [x] Add a ctrl+q toggle')
   await complete($, 'Nothing else.')
   await flush()
   expect(laya.asks.at(-1)?.statuses.map(status => status.id)).toEqual(expect.arrayContaining(['write the docs', 'rename the pane']))
@@ -1912,7 +1913,7 @@ test('Laya leaves a status set by a hand edit of the file however sure; the edit
   const fs: Fs = { [BOUND]: setTodoFile('- [ ] Add a ctrl+q toggle\n- [ ] Write the docs\n- [ ] Rename the pane\n- [x] Fix the flicker'), [PYTHON]: '' }
   const { git } = engine(on, fs, { ...SESSION_BOUND })
   fakeLaya({
-    'add a ctrl+q toggle': { label: 'finished', p: 0.96 },
+    'add a ctrl+q toggle': { label: 'started', p: 0.96 },
     'write the docs': { label: 'finished', p: 0.97 },
     'rename the pane': { label: 'finished', p: 0.89 },
     'fix the flicker': { label: 'rejected', p: 0.95 },
@@ -1926,13 +1927,13 @@ test('Laya leaves a status set by a hand edit of the file however sure; the edit
   fs[BOUND] = (fs[BOUND] ?? '').replace('- [ ] Write the docs', '- [~] Write the docs').replace('- [ ] Rename the pane', '- [~] Rename the pane')
   await complete($, 'The ctrl+q toggle, the docs, the pane rename and the flicker fix were reworked.')
   await flush()
-  expect(bare(fs[BOUND])).toContain('- [x] Add a ctrl+q toggle\n- [~] Write the docs\n- [~] Rename the pane\n- [x] Fix the flicker')
+  expect(bare(fs[BOUND])).toContain('- [~] Add a ctrl+q toggle\n- [~] Write the docs\n- [~] Rename the pane\n- [x] Fix the flicker')
   expect(laya.asks.at(-1)?.statuses.map(status => status.id)).toEqual(expect.arrayContaining(['add a ctrl+q toggle', 'write the docs', 'rename the pane']))
   expect(laya.asks.at(-1)?.statuses.map(status => status.id)).not.toContain('fix the flicker')
   expect(logsOf(fs[BOUND])).toEqual([
     `- ${UTC} | unknown | status | ${cell('Write the docs')} | todo -> in-progress`,
     `- ${UTC} | unknown | status | ${cell('Rename the pane')} | todo -> in-progress`,
-    `- ${UTC} | laya | status | ${cell('Add a ctrl+q toggle')} | todo -> done | finished 0.96`,
+    `- ${UTC} | laya | status | ${cell('Add a ctrl+q toggle')} | todo -> in-progress | started 0.96`,
   ])
   // todo-changes.log is no longer written.
   expect(fs[LOG]).toBeUndefined()
@@ -2137,21 +2138,21 @@ test('a linked item with no task state is left alone and still kept from Laya', 
 test('the bridge is told of new items and of every status change with who made it: Laya, firstmate, the captain', async ($, on) => {
   const fs: Fs = { [BOUND]: setTodoFile('- [ ] Add a ctrl+q toggle\n- [ ] Review this pr'), [PYTHON]: '', [BRIDGE]: '' }
   engine(on, fs, { ...SESSION_BOUND })
-  fakeLaya({ 'add a ctrl+q toggle': { label: 'finished', p: 0.9 } })
+  fakeLaya({ 'add a ctrl+q toggle': { label: 'started', p: 0.9 } })
   // The first run takes the list as it is: nothing is new yet.
   await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: false })
   await flush()
   const seeded = bridge.notified.length
 
-  await complete($, 'The ctrl+q toggle works.')
+  await complete($, 'Started on the ctrl+q toggle.')
   await flush()
-  expect(bare(fs[BOUND])).toContain('- [x] Add a ctrl+q toggle')
+  expect(bare(fs[BOUND])).toContain('- [~] Add a ctrl+q toggle')
   bridge.links = { 'review this pr': { status: 'in-progress', task: 'pr-review' } }
   await complete($, 'Nothing.')
   await flush()
   expect(bare(fs[BOUND])).toContain('- [~] Review this pr')
   expect(bridge.notified.slice(seeded)).toEqual([
-    `Add a ctrl+q toggle: todo -> done (laya) [id:${idFor('Add a ctrl+q toggle', new Set())}]\n`,
+    `Add a ctrl+q toggle: todo -> in-progress (laya) [id:${idFor('Add a ctrl+q toggle', new Set())}]\n`,
     `Review this pr: todo -> in-progress (firstmate pr-review) [id:${idFor('Review this pr', new Set())}]\n`,
   ])
 
@@ -2165,6 +2166,53 @@ test('the bridge is told of new items and of every status change with who made i
   await flush()
   expect(bridge.notified.at(-1)).toBe(`Ship the bridge: todo -> in-progress (captain) [id:${idFor('Ship the bridge', new Set())}]\n`)
   await pane.unmount()
+})
+
+// Audit todo-drop-audit 2026-11-05, M1 and M4: the captain pasted the panel's list into an update and wrote the ask after
+// a ||||| separator; the item, the inbox note and the per-prompt context carried only the first line, and Laya closed the
+// item on a finish cue in firstmate's reply with no task done.
+const PASTED_HEAD = '4: [-] declined: hidden 5: [!] blocked: shown'
+const PASTED_ASK = "[~] Link all todos to correct tasks ||||| I'm seeing that we have many ongoing tasks. maybe we should add a new todo item state: paused [|] and the reason has to be recorded somewhere."
+const PASTED_UPDATE = ['[UPDATE] 2026-11-05-13-31', PASTED_HEAD, '- [ ] Review the sprint plan', '- [x] Ship the bridge', PASTED_ASK].join('\n')
+
+async function pastedUpdate($: Engine, on: On): Promise<{ fs: Fs; sent: ReturnType<typeof submitting> }> {
+  const fs: Fs = { [BOUND]: setTodoFile('- [ ] Add a ctrl+q toggle'), [PYTHON]: '', [BRIDGE]: '' }
+  const sent = submitting(on)
+  engine(on, fs, { ...SESSION_BOUND })
+  fakeLaya()
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: false })
+  await flush()
+  fs[BOUND] = (fs[BOUND] ?? '').replace('\n\n# Todo', `\n\n${PASTED_UPDATE}\n\n# Todo`)
+  await complete($, '')
+  await flush()
+  expect(bare(fs[BOUND])).toContain(`- [ ] ${PASTED_HEAD}`)
+  return { fs, sent }
+}
+
+test('an update whose ask follows a pasted list and a ||||| separator reaches the bridge note whole', async ($, on) => {
+  await pastedUpdate($, on)
+  const note = bridge.notified.at(-1) ?? ''
+  expect(note).toContain(`+ [ ] ${PASTED_HEAD} [id:${idFor(PASTED_HEAD, new Set())}]`)
+  expect(note).toContain(PASTED_ASK)
+  expect(note).toContain('- [ ] Review the sprint plan')
+})
+
+test('the per-prompt context carries the ask that follows a paste in an update, in the captain\'s words', async ($, on) => {
+  const { sent } = await pastedUpdate($, on)
+  await submit($, 'carry on')
+  const context = (sent.at(-1)?.context ?? []).join('\n')
+  expect(context).toContain('Todo list kept by notes-keeping')
+  expect(context).toContain(PASTED_ASK)
+})
+
+test('a finish cue in a reply does not close an item no linked task finished: Laya leaves it open', async ($, on) => {
+  const { fs } = await pastedUpdate($, on)
+  fakeLaya(Object.fromEntries(items(sections(fs[BOUND] ?? '').todo).map(item => [item.text.toLowerCase(), { label: 'finished', p: 0.95 }])))
+  const seeded = bridge.notified.length
+  await complete($, 'The declined hidden and blocked shown filter is done and merged.')
+  await flush()
+  expect(bare(fs[BOUND])).toContain(`- [ ] ${PASTED_HEAD}`)
+  expect(bridge.notified.slice(seeded).join('')).not.toContain('-> done')
 })
 
 test('a hand edit made between turns reaches the bridge within one refresh', async ($, on) => {
@@ -2301,16 +2349,16 @@ test('without the bridge file the plugin runs no bridge, and still logs a todo c
   const fs: Fs = { [BOUND]: setTodoFile('- [ ] Add a ctrl+q toggle'), [PYTHON]: '' }
   const store: Record<string, unknown> = { ...SESSION_BOUND }
   const { clock } = engine(on, fs, store)
-  fakeLaya({ 'add a ctrl+q toggle': { label: 'finished', p: 0.9 } })
+  fakeLaya({ 'add a ctrl+q toggle': { label: 'started', p: 0.9 } })
   await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
   await flush()
-  await complete($, 'The ctrl+q toggle works.')
+  await complete($, 'Started on the ctrl+q toggle.')
   await run($, 'update Ship the bridge')
   await flush()
   fs[BOUND] = (fs[BOUND] ?? '').replace('- [ ] Ship the bridge', '- [~] Ship the bridge')
   await clock.advance(5_000)
   await flush()
-  expect(bare(fs[BOUND])).toContain('- [x] Add a ctrl+q toggle')
+  expect(bare(fs[BOUND])).toContain('- [~] Add a ctrl+q toggle')
   expect(bridge.calls).toEqual([])
   expect(logsOf(fs[BOUND]).at(-1)).toBe(`- ${TICK} | unknown | status | ${cell('Ship the bridge')} | todo -> in-progress`)
 })
@@ -2446,17 +2494,17 @@ test('the todo run after a turn over 100 items and a long reply never holds the 
   const texts = Array.from({ length: 100 }, (_, i) =>
     [0, 1, 2, 3].map(j => word(i * 4 + j)).concat(Array.from({ length: 10 }, (_, j) => shared[(i + j * 3) % shared.length] ?? '')).join(' '),
   )
-  const answer = Array.from({ length: 150 }, (_, s) => `The ${texts[s % texts.length]?.split(' ').slice(0, 12).join(' ')} part is done and merged.`).join(' ')
+  const answer = Array.from({ length: 150 }, (_, s) => `The ${texts[s % texts.length]?.split(' ').slice(0, 12).join(' ')} part is under way.`).join(' ')
   const fs: Fs = { [BOUND]: setTodoFile(texts.map(text => `- [ ] ${text}`).join('\n')), [PYTHON]: '' }
   const marks: number[] = []
   engine(marking(on, marks), fs, { ...SESSION_BOUND })
-  laya.answer = ask => ({ lines: {}, statuses: Object.fromEntries(ask.statuses.map(status => [status.id, verdict({ label: 'finished', p: 0.9 })])) })
+  laya.answer = ask => ({ lines: {}, statuses: Object.fromEntries(ask.statuses.map(status => [status.id, verdict({ label: 'started', p: 0.9 })])) })
   await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: false })
   await flush()
   marks.length = 0
   await complete($, answer)
-  for (let i = 0; i < 20 && !fs[BOUND]?.includes(`- [x] ${texts[99]}`); i++) await flush()
-  expect(bare(fs[BOUND])).toContain(`- [x] ${texts[99]}`)
+  for (let i = 0; i < 20 && !fs[BOUND]?.includes(`- [~] ${texts[99]}`); i++) await flush()
+  expect(bare(fs[BOUND])).toContain(`- [~] ${texts[99]}`)
   const held = Math.max(...marks.slice(1).map((at, i) => at - (marks[i] ?? at)))
   expect(held).toBeLessThan(1000)
 })
@@ -2465,7 +2513,7 @@ const SENTRY = 'Investigate the Sentry production alert'
 
 // Audit 2026-10-29, sections 3.1 and 3.5: Laya, leaning "started" with rejected at 0.05, declined the Sentry item on one
 // refusal cue in Claude's reply, firstmate never heard of it, and the captain's four clicks reached firstmate as "(captain)".
-test('the Sentry decline: a refusal cue leaves the item, so does Laya however sure; a finish reaches firstmate as Laya, the clicks as the captain', async ($, on) => {
+test('the Sentry decline: a refusal cue leaves the item, so does Laya however sure, and so does a finish cue; the clicks reach firstmate as the captain', async ($, on) => {
   const fs: Fs = { [BOUND]: setTodoFile(`- [ ] ${SENTRY}`), [PYTHON]: '', [BRIDGE]: '' }
   engine(on, fs, { ...SESSION_BOUND })
   let probs = { 'not-mentioned': 0, started: 0.85, finished: 0.1, rejected: 0.05 }
@@ -2489,15 +2537,15 @@ test('the Sentry decline: a refusal cue leaves the item, so does Laya however su
   expect(bare(fs[BOUND])).toContain(`- [ ] ${SENTRY}`)
   expect(bridge.notified.slice(seeded)).toEqual([])
 
-  // A finish cue with Laya leaning started closes it, and firstmate hears it was Laya.
+  // A finish cue with Laya leaning started does not close it: only a linked task that is done does.
   probs = { 'not-mentioned': 0, started: 0.6, finished: 0.3, rejected: 0.1 }
   laya.answer = ask => ({ lines: {}, statuses: Object.fromEntries(ask.statuses.map(status => [status.id, { label: 'started', p: 0.6, probs }])), predictMs: 1 })
   await complete($, 'The Sentry alert is fixed.')
   await flush()
   const id = idFor(SENTRY, new Set())
-  expect(bare(fs[BOUND])).toContain(`- [x] ${SENTRY}`)
-  expect(bridge.notified.at(-1)).toBe(`${SENTRY}: todo -> done (laya) [id:${id}]\n`)
-  expect(logsOf(fs[BOUND])).toEqual([`- ${UTC} | laya | status | ${cell(SENTRY)} | todo -> done | finished 0.30, 1.00 with the finish cue`])
+  expect(bare(fs[BOUND])).toContain(`- [ ] ${SENTRY}`)
+  expect(bridge.notified.slice(seeded)).toEqual([])
+  expect(logsOf(fs[BOUND])).toEqual([])
 
   // Four clicks go once around the cycle: each is the captain's.
   await run($, 'show')
@@ -2505,9 +2553,9 @@ test('the Sentry decline: a refusal cue leaves the item, so does Laya however su
   for (let i = 0; i < 4; i++) await pane.press({ key: `todo:${SENTRY.toLowerCase()}` })
   await flush()
   expect(bridge.notified.slice(-4)).toEqual(
-    ['done -> declined', 'declined -> todo', 'todo -> in-progress', 'in-progress -> done'].map(change => `${SENTRY}: ${change} (captain) [id:${id}]\n`),
+    ['todo -> in-progress', 'in-progress -> done', 'done -> declined', 'declined -> todo'].map(change => `${SENTRY}: ${change} (captain) [id:${id}]\n`),
   )
-  expect(logsOf(fs[BOUND]).slice(1).map(row => row.split(' | ')[1])).toEqual(['captain', 'captain', 'captain', 'captain'])
+  expect(logsOf(fs[BOUND]).map(row => row.split(' | ')[1])).toEqual(['captain', 'captain', 'captain', 'captain'])
   await pane.unmount()
 })
 

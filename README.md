@@ -160,13 +160,14 @@ an item marked `[/]` by hand with no reason reads `(paused: no reason recorded)`
   unless Laya is at least 0.8 sure it is background. Lines ending in `:`, headings and single-word lines are skipped.
   A line already judged is never asked twice, so an item you delete stays deleted.
 - At the end of every turn: Laya reads Claude's last reply against every open item (todo or in-progress) and may move
-  it forward (todo to in-progress, either to done), except an item whose status you set by click or by hand: Laya never
-  moves that one. A move needs the
+  it forward from todo to in-progress, except an item whose status you set by click or by hand: Laya never
+  moves that one. Laya never moves an item to done, finish cue or not: only you, or a linked firstmate task the bridge
+  reports done, close an item. A move needs the
   reply to share a word only that item has (two-character runs for Japanese); a link in the reply counts only for the
   item holding that same link. A start cue ("started", "partway", "still", "but not", "spawned", "running", "PR is
   open", "waiting on your merge word", "not merged") or a finish cue ("done", "merged", "fixed") outside quotes in the
-  reply plus Laya at 0.5 on that option moves it; a start cue wins over a finish cue, so a worker reported spawned or
-  running, or work ready but not merged, does not close its item. With no cue Laya needs 0.9 (see How accurate it is).
+  reply plus Laya at 0.5 on that option decides it; a start cue wins over a finish cue. A finish decided this way is
+  dropped, not applied. With no cue Laya needs 0.9 (see How accurate it is).
   Laya never declines an item, on a refusal
   cue ("skipped", "won't", "dropped") or on its own however sure: only you or firstmate decline. A refusal cue also
   keeps the other cues from counting. Done and declined items are never moved by the plugin. A move is dropped if you
@@ -202,11 +203,13 @@ an item marked `[/]` by hand with no reason reads `(paused: no reason recorded)`
     task's latest block and latest pause, the later one is reported.
   - After every todo write, every click, and every five seconds, the plugin runs `bridge notify <notes file>` with the
     changes since its last write on stdin: `+ [ ] <item>` for a new item, `<item>: <from> -> <to> (<who>)` for every
-    status change, each followed by ` [id:<id>]` when the item has an id. `<who>` is `captain` for a click, `laya`
+    status change, each followed by ` [id:<id>]` when the item has an id. A new item made from an `[UPDATE]` block
+    that holds more than the item's text (a pasted list, an ask after a `|||||` separator) is followed by that whole
+    block, each line indented four spaces, so firstmate reads every word of it. `<who>` is `captain` for a click, `laya`
     for a Laya move, `firstmate <task>` for a bridge move, and `unknown` for a change found in the file that the plugin
     did not make (a hand edit, another program). The bridge files them as one inbox note whose first line, the part
     firstmate's notification shows, is the first change (`<item>` or `<item>: <from> -> <to> (<who>)`), with
-    `(+N more)` when there are several.
+    `(+N more)` when there are several; the indented block lines are not counted.
   - Every five seconds an interactive session with a notes file runs `bridge pending <notes file>`, which hands out
     the updates firstmate queued for that file with `bridge update <notes file> <text> --by <name> --task <task-id>`.
     The plugin adds each one as an `[UPDATE]` under `## Updates`, logged as `firstmate` with `<task-id>, by <name>`,
@@ -277,7 +280,9 @@ Every prompt carries every item that is not done or declined, in file order with
 and declined items it leaves out, which points to the notes file's `# Todo` section (each item with its marker, `[~]` for in-progress, and an instruction to start every
 open item now, in parallel, not waiting on one answer before starting another independent one; when an item is `[!]`
 blocked, an instruction to open the reply by telling the captain which items are blocked and why), each item as `label: text` with the text cut to 120 characters, or the cut text alone when it has no
-label, a paused item followed by `(paused: <reason>)`. A prompt that already
+label, a paused item followed by `(paused: <reason>)`. An item made from an `[UPDATE]` block that holds more than the
+item's text is shown as that block instead, whole and uncut, its first line on the item's line and the rest indented
+under it. A prompt that already
 carries the whole notes file, after a compaction or a resume, does not repeat it.
 
 When an item is `[/]` paused, every prompt also carries a paused block: each paused item with its reason, and an

@@ -17,7 +17,9 @@ home opted in). Four verbs are the plugin's; six are firstmate's.
                              null: anything else; the plugin leaves the item where it is.
   notify <notes-file>        change lines on stdin become one captain inbox note (bin/fm-inbox.sh note), one wake.
                              The note's first line is the first change, with who made it, and "(+N more)" when there are
-                             several. A change line ends in [id:<id>] when the item has one.
+                             several. A change line ends in [id:<id>] when the item has one. An added item's line is
+                             followed by the whole [UPDATE] block it came from, each line indented four spaces, when
+                             that block holds more than the item's text.
   link <task-id> <item> [--by <name>]
                              link the item to the task; the latest link for an item wins. <item> is id:<id> (the id a
                              change line names; it survives edits to the item's text) or the item text. --by names who
@@ -263,9 +265,11 @@ def status():
 
 
 def headline(lines):
-    """The first change without its add marker or id tag, plus the count of the rest."""
-    first = ID_TAG.sub('', ADDED.sub('', lines[0], count=1))
-    return first if len(lines) == 1 else f'{first} (+{len(lines) - 1} more)'
+    """The first change without its add marker or id tag, plus the count of the rest. An indented line is a line of the
+    update block the change above it came from, not a change."""
+    changes = [line for line in lines if not line.startswith(' ')]
+    first = ID_TAG.sub('', ADDED.sub('', changes[0], count=1))
+    return first if len(changes) == 1 else f'{first} (+{len(changes) - 1} more)'
 
 
 def notify(notes_file):

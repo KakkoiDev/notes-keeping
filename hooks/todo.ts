@@ -52,6 +52,7 @@ const IDS = /[ \t]*<!-- id:[a-z0-9]+ -->/g
 // A trailing <!-- paused:reason --> on an item line, before its id.
 const REASON = /\s*<!-- paused:(.*?) -->\s*$/
 const MAX_TEXT = 120
+const UPDATE_INDENT = '    '
 const MAX_LABEL = 48
 const MAX_LABEL_WORDS = 6
 const RANK: Record<Status, number> = { todo: 0, 'in-progress': 1, done: 2, declined: 2, blocked: 1, paused: 1 }
@@ -344,6 +345,15 @@ export function sourceOf(s: Pick<Sections, 'objectives' | 'updates'>, item: Item
   return found === undefined ? undefined : { section: found.section, text: withoutIds(found.whole) }
 }
 
+// The [UPDATE] block an item came from, its lines without the header and ids, when it holds more than the item's text: the
+// captain's words after a pasted list or a separator live only there.
+export function updateOf(s: Pick<Sections, 'objectives' | 'updates'>, item: Item): string[] | undefined {
+  const source = sourceOf(s, item)
+  if (source === undefined || source.section !== 'updates') return undefined
+  const lines = source.text.split('\n').filter(line => line.trim() !== '' && !UPDATE_TAG.test(line.trim()))
+  return keyOf(lines.join(' ')) === keyOf(item.text) ? undefined : lines
+}
+
 // Puts an item's id on the objective or update line it came from, matched by text, when that line carries none yet.
 export function stamped(s: Pick<Sections, 'objectives' | 'updates'>, list: readonly Item[]): Pick<Sections, 'objectives' | 'updates'> {
   const ids = new Map(list.flatMap(item => (item.id === undefined ? [] : [[keyOf(item.text), item.id] as const])))
@@ -590,11 +600,13 @@ export function snapshotOf(list: readonly Item[]): Record<string, Status> {
 // A status change, or an added item when from is undefined. isFound: found in the file, so made outside the plugin.
 export type Change = { item: Item; from?: Status; to: Status; isFound?: boolean }
 
-// A line the bridge sends on: the actor in parentheses after a status change, the item's id when it has one.
-export function changeLine(change: Change, actor: string): string {
+// A line the bridge sends on: the actor in parentheses after a status change, the item's id when it has one. update: the
+// whole [UPDATE] block the item came from, sent under the line, each of its lines indented.
+export function changeLine(change: Change, actor: string, update: readonly string[] = []): string {
   const { item } = change
   const line = change.from === undefined ? `+ [${MARKS[change.to]}] ${item.text}` : `${item.text}: ${change.from} -> ${change.to} (${actor})`
-  return item.id === undefined ? line : `${line} [id:${item.id}]`
+  const tagged = item.id === undefined ? line : `${line} [id:${item.id}]`
+  return [tagged, ...update.map(one => `${UPDATE_INDENT}${one}`)].join('\n')
 }
 
 // What changed since the plugin last wrote the snapshot. `before` is the list as found, so a status that differs there,
@@ -633,8 +645,15 @@ export function pausedContext(body: string): string | undefined {
   ].join('\n')
 }
 
-// What Claude reads each turn: the list, and to work every open item at once.
-export function context(body: string): string | undefined {
+// An item from an [UPDATE] block holding more than its text is shown as the block, whole and in the captain's words.
+function entry(item: Item, s: Pick<Sections, 'objectives' | 'updates'> | undefined): string {
+  const update = s === undefined ? undefined : updateOf(s, item)
+  if (update === undefined) return `- [${MARKS[item.status]}] ${brief(item)}`
+  return [`- [${MARKS[item.status]}] ${update[0] ?? ''}${why(item)}`, ...update.slice(1).map(one => `${UPDATE_INDENT}${one}`)].join('\n')
+}
+
+// What Claude reads each turn: the list, and to work every open item at once. s: the objectives and updates the items came from.
+export function context(body: string, s?: Pick<Sections, 'objectives' | 'updates'>): string | undefined {
   const list = items(body)
   if (list.length === 0) return undefined
   const isOpen = list.some(item => item.status === 'todo' || item.status === 'in-progress')
@@ -642,7 +661,7 @@ export function context(body: string): string | undefined {
     ? 'Start every open item ([ ] and [~]) now, in parallel: do not wait on one answer before starting another independent item.'
     : 'Nothing is open.'
   const isClosed = (item: Item) => item.status === 'done' || item.status === 'declined'
-  const shown = list.filter(item => !isClosed(item)).map(item => `- [${MARKS[item.status]}] ${brief(item)}`)
+  const shown = list.filter(item => !isClosed(item)).map(item => entry(item, s))
   const closed = list.filter(isClosed).length
   const more = closed > 0 ? [`${closed} done/declined items are not listed; read the notes file's # Todo section if you need them.`] : []
   const blocked = list.some(item => item.status === 'blocked')

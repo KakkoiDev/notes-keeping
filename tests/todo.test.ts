@@ -546,6 +546,12 @@ describe('memory and reconcile', () => {
 })
 
 describe('context for Claude', () => {
+  test('an item from an update holding more than its text is the whole block, a paused one with its reason', () => {
+    const s = { objectives: '', updates: '[UPDATE] t\nPasted filter row\n- [ ] Review the plan\n[~] Link todos ||||| the ask after the paste' }
+    const text = context('- [/] Pasted filter row <!-- paused:waiting on the captain -->\n- [ ] Plain item', s) ?? ''
+    expect(text).toContain('- [/] Pasted filter row (paused: waiting on the captain)\n    - [ ] Review the plan\n    [~] Link todos ||||| the ask after the paste\n- [ ] Plain item')
+  })
+
   test('lists every open item under the legend', () => {
     const text = context('- [ ] a\n- [~] b\n- [x] c')
     expect(text).toContain('([ ] todo, [~] in-progress, [x] done, [-] declined, [!] blocked, [/] paused)')

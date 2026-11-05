@@ -37,7 +37,7 @@ import {
   updateLine,
   withoutLogs,
 } from './notes'
-import { EMPTY, bridgeMoves, candidateKeys, candidates, changeLine, cleanLabel, context, cycle, cycleItem, diffSnapshot, emptyUpdates, format, idFor, idOf, isBackground, items, keyOf, labelPrompt, legend, moved, parse, pausedContext, pin, reconcile, row, settle, shown, snapshotOf, sourceOf, why, withIds, withoutIds } from './todo'
+import { EMPTY, bridgeMoves, candidateKeys, candidates, changeLine, cleanLabel, context, cycle, cycleItem, diffSnapshot, emptyUpdates, format, idFor, idOf, isBackground, items, keyOf, labelPrompt, legend, moved, parse, pausedContext, pin, reconcile, row, settle, shown, snapshotOf, sourceOf, updateOf, why, withIds, withoutIds } from './todo'
 import type { Applied, Candidate, Change, Item, Memory, Move, Status, Verdict } from './todo'
 import { TodoSlot, nextShown, rowId, rowKey, selectedOf, stepStatus } from './todos'
 import type { Landing } from './todos'
@@ -508,7 +508,8 @@ async function runTodo($: EngineInterface, answer: string): Promise<void> {
     const key = idOf(item)
     const verdict = laya?.statuses[keyOf(item.text)]
     const next = moved(item, answer, verdict, siblings, memory.pins.includes(key))
-    if (next === undefined || verdict === undefined) continue
+    // Only a linked task that is done closes an item: a finish cue in a reply is not work done.
+    if (next === undefined || verdict === undefined || next.status === 'done') continue
     set[key] = { from: item.status, to: next.status }
     decided[key] = { ...verdict, label: next.label, p: next.p }
   }
@@ -547,7 +548,7 @@ async function runTodo($: EngineInterface, answer: string): Promise<void> {
     for (const change of found.filter(change => change.isFound !== true)) {
       const key = keyOf(change.item.text)
       entries.push({ at, actor: adders[key] ?? 'plugin', action: 'added', item: change.item, to: change.to, note: addNotes[key] })
-      lines.push(changeLine(change, adders[key] ?? 'plugin'))
+      lines.push(changeLine(change, adders[key] ?? 'plugin', updateOf(sections(latest), change.item)))
     }
     for (const move of out.applied) {
       const item = written.find(one => idOf(one) === move.key || keyOf(one.text) === keyOf(move.text)) ?? { status: move.to, text: move.text }
@@ -1341,7 +1342,7 @@ export const register: Register = on => {
     const md = await readText($, path)
     // The whole file carries the todo list; every other prompt carries the list alone.
     const isWhole = isResumed || isCompacted || (typeof seen === 'string' && seen !== head)
-    const todo = isWhole || e.isMeta === true ? undefined : context(sections(md).todo)
+    const todo = isWhole || e.isMeta === true ? undefined : context(sections(md).todo, sections(md))
     // The whole file carries the todo list, not what to do with the paused items: that goes with it.
     const paused = isWhole ? pausedContext(sections(md).todo) : undefined
     const added = isWhole ? [inject(md, path), ...(paused === undefined ? [] : [paused])] : todo === undefined ? [] : [`${todo}\n${logsHint(path)}`]
