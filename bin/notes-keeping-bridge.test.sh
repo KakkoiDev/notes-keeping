@@ -440,5 +440,10 @@ check 'crew prints fm-crew-state.sh for the task, run against this home' "run-a|
 f crew ../x 2>/dev/null
 check 'crew with a task id holding a path is refused' '2' "$?"
 
+home
+printf '# Objectives\n\n- [ ] not a todo item\n\n# Todo\n\n- [ ] Ship the bridge <!-- id:ab12cd3 -->\n- [x] Done one <!-- id:dd00000 -->\n- [-] Declined one\nnot an item\n- [~] **Short**: Started one <!-- id:cc11111 -->\n- [!] Blocked one\n\n# Important\n\n- [ ] not a todo item either\n' > "$H/n.md"
+check 'open prints every item under # Todo that is not done or declined, in file order, with its id' '[{"id": "ab12cd3", "status": "todo", "text": "Ship the bridge"}, {"id": "cc11111", "status": "in-progress", "text": "**Short**: Started one"}, {"id": null, "status": "blocked", "text": "Blocked one"}]' "$(b open "$H/n.md")"
+check 'open on a missing notes file exits 1' '1' "$(b open "$H/none.md" 2>/dev/null; echo $?)"
+
 printf '\n' "" ; printf '%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

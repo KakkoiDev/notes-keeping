@@ -574,8 +574,6 @@ export function diffSnapshot(snapshot: Readonly<Record<string, Status>> | undefi
   return out
 }
 
-const SECTION_CAP = 40
-
 function brief(item: Item): string {
   return item.label === undefined ? clip(item.text) : `${item.label}: ${clip(item.text)}`
 }
@@ -588,8 +586,10 @@ export function context(body: string): string | undefined {
   const head = isOpen
     ? 'Start every open item ([ ] and [~]) now, in parallel: do not wait on one answer before starting another independent item.'
     : 'Nothing is open.'
-  const shown = list.slice(0, SECTION_CAP).map(item => `- [${MARKS[item.status]}] ${brief(item)}`)
-  const more = list.length > SECTION_CAP ? [`(${list.length - SECTION_CAP} more in the notes file)`] : []
+  const isClosed = (item: Item) => item.status === 'done' || item.status === 'declined'
+  const shown = list.filter(item => !isClosed(item)).map(item => `- [${MARKS[item.status]}] ${brief(item)}`)
+  const closed = list.filter(isClosed).length
+  const more = closed > 0 ? [`${closed} done/declined items are not listed; read the notes file's # Todo section if you need them.`] : []
   const blocked = list.some(item => item.status === 'blocked')
     ? ['Blocked ([!]): could not be started. Open your reply by telling the captain which items are blocked and why.']
     : []

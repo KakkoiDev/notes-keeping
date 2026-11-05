@@ -525,10 +525,10 @@ describe('memory and reconcile', () => {
 })
 
 describe('context for Claude', () => {
-  test('lists every item under the legend', () => {
+  test('lists every open item under the legend', () => {
     const text = context('- [ ] a\n- [~] b\n- [x] c')
     expect(text).toContain('([ ] todo, [~] in-progress, [x] done, [-] declined, [!] blocked)')
-    expect(text).toContain('- [ ] a\n- [~] b\n- [x] c')
+    expect(text).toContain('- [ ] a\n- [~] b\n1 done/declined items are not listed')
     expect(context('- [x] a')).toContain('Nothing is open.')
     expect(context('')).toBeUndefined()
   })
@@ -547,6 +547,20 @@ describe('context for Claude', () => {
     expect(text).toContain('Blocked ([!]): could not be started. Open your reply by telling the captain which items are blocked and why.')
     expect(text).toContain('Nothing is open.')
     expect(context('- [ ] a')).not.toContain('Blocked ([!])')
+  })
+
+  test('every open item is listed past 40 items; done and declined items are counted with a pointer, not listed', () => {
+    const closed = Array.from({ length: 45 }, (_, i) => `- [${i % 2 === 0 ? 'x' : '-'}] closed ${i}`)
+    const body = ['- [ ] first open', ...closed, '- [~] late started', '- [!] late blocked', '- [ ] late open'].join('\n')
+    const text = context(body) ?? ''
+    expect(text).toContain('- [ ] first open\n- [~] late started\n- [!] late blocked\n- [ ] late open')
+    expect(text).not.toContain('closed ')
+    expect(text).toContain("45 done/declined items are not listed; read the notes file's # Todo section if you need them.")
+    expect(text).not.toContain('more in the notes file')
+  })
+
+  test('with no done or declined item there is no not-listed line', () => {
+    expect(context('- [ ] a\n- [~] b')).not.toContain('not listed')
   })
 
   test('a labeled item is named by its label, with its text cut short after it', () => {

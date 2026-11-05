@@ -35,6 +35,9 @@ home opted in). Four verbs are the plugin's; five are firstmate's.
                              id. Exits 1 with the reason when the plugin answers an error, or when no session takes the
                              update within NOTES_KEEPING_BRIDGE_WAIT seconds (default 20); an update not taken is withdrawn, and pending
                              drops one whose caller was killed before then.
+  open <notes-file>          read-only: print [{"id", "status", "text"}] for every item under the notes file's # Todo that is
+                             not done or declined, in file order; id is null for an item without one. Exits 1 when the
+                             file cannot be read.
   active                     print the notes file a session asked for pending updates within the last 15 seconds, the
                              latest when several did; exits 1 when none did.
   fleet <notes-file>         read-only: print {"rows": [...], "calls": <n>} for the Work view. A row per state/<task>.meta
@@ -114,10 +117,12 @@ ASK_HEADING = re.compile(r"\b(?:(?:for|from|by|to) (?:the )?captain|captain'?s? 
 HOLD_SET = re.compile(r'Captain hold set: (\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)')
 HOLD_ORIGIN = re.compile(r'Captain hold origin: ([A-Za-z0-9][A-Za-z0-9._-]*)')
 NOTE_ID = re.compile(r'<!-- id:([a-z0-9]+) -->')
+TODO_ITEM = re.compile(r'^- \[(.)\] (.*)$')
+OPEN_MARKS = {' ': 'todo', '~': 'in-progress', '!': 'blocked'}
 WORD = {'needs-decision': 'decision'}
 ASKS = ('needs-decision', 'blocked', 'failed')
 USAGE = ('usage: notes-keeping-bridge status <notes-file> | notify <notes-file> | link <task-id> <item> [--by <name>] | unlink <item>'
-         ' | block <task-id> --reason <text> [--by <name>] | pending <notes-file> | answer <request> | update <notes-file> <text> --by <name> --task <task-id> | active'
+         ' | block <task-id> --reason <text> [--by <name>] | pending <notes-file> | answer <request> | update <notes-file> <text> --by <name> --task <task-id> | open <notes-file> | active'
          ' | fleet <notes-file> | waiting <task-id> <text> | crew <task-id>')
 
 
@@ -515,6 +520,24 @@ def noted(notes_file):
     return {r['task'] for r in links().values() if r.get('id') in ids or (r.get('id') is None and r['key'] in keys)}
 
 
+def open_items(notes_file):
+    try:
+        with open(notes_file, encoding='utf-8', errors='replace') as f:
+            lines = f.read().split('\n')
+    except OSError as e:
+        die(f'cannot read {notes_file}: {e.strerror}', 1)
+    out, inside = [], False
+    for line in lines:
+        if line.startswith('# '):
+            inside = line.rstrip() == '# Todo'
+            continue
+        m = TODO_ITEM.match(line) if inside else None
+        if m and m.group(1) in OPEN_MARKS:
+            found = NOTE_ID.search(m.group(2))
+            out.append({'id': found.group(1) if found else None, 'status': OPEN_MARKS[m.group(1)], 'text': NOTE_ID.sub('', m.group(2)).strip()})
+    print(json.dumps(out, ensure_ascii=False))
+
+
 def item_of(task):
     return next((r['id'] for r in links().values() if r['task'] == task and isinstance(r.get('id'), str)), None)
 
@@ -702,6 +725,8 @@ def main(argv):
         if text == '':
             die('empty update text')
         update(args[0], text, by, task)
+    elif verb == 'open' and len(args) == 1:
+        open_items(args[0])
     elif verb == 'active' and not args:
         active()
     elif verb == 'fleet' and len(args) == 1:

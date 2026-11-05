@@ -160,6 +160,8 @@ out.
     makes no second one; an update the todo run would make no item from (a `Name: value` label alone, a text it has
     seen before) is answered with why and not written. `bridge active` prints the notes file the latest session asked
     for, within the last 15 seconds, so firstmate needs no notes file of its own.
+  - `bridge open <notes file>`, read-only, prints `[{"id", "status", "text"}]` for every item under `# Todo` that is not
+    done or declined, in file order, so firstmate can `link` the captain's existing item instead of queuing a duplicate.
   - Every five seconds an interactive session runs `bridge fleet <notes file>` for the [Work view](#work-view).
     `bridge waiting <task> <text>` sets the Waiting-on cell of a task's row, held until the task writes its next state
     line; `bridge crew <task>` prints `fm-crew-state.sh` for one task.
@@ -215,7 +217,8 @@ reads the current state.
 
 ### In Claude's context
 
-Every prompt carries the list (each item with its marker, `[~]` for in-progress, and an instruction to start every
+Every prompt carries every item that is not done or declined, in file order with no cap, and one line counting the done
+and declined items it leaves out, which points to the notes file's `# Todo` section (each item with its marker, `[~]` for in-progress, and an instruction to start every
 open item now, in parallel, not waiting on one answer before starting another independent one; when an item is `[!]`
 blocked, an instruction to open the reply by telling the captain which items are blocked and why), each item as `label: text` with the text cut to 120 characters, or the cut text alone when it has no
 label. A prompt that already
