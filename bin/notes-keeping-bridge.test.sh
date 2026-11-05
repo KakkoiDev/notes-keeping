@@ -395,6 +395,46 @@ tasks "h,queued,captain,-,\"H\",$TODAY,captain,\"-\",\"call\",none,\"Captain hol
 check 'rows order ! first, then ?, then newest first' 'h c b a' "$(ids)"
 
 fleet_home
+meta scout-r 's:fm-scout-r'
+echo "done [at=$NOW]: finished, see the PR" > "$H/state/scout-r.status"
+check 'a task with no report named and none on disk has no report and no summary' 'None|None' "$(field scout-r 'str(r["report"]) + "|" + str(r["summary"])')"
+mkdir -p "$H/data/scout-r"
+printf '# Cleanroom POC - report (step 1 blocked)\n\nStatus: **BLOCKED** at spec step 1. App not running.\nChecked: 2026-10-26.\n\n## What was checked\n\n1. ports\n\n## What is needed from the captain\n\n1. Start the API and web locally.\n2. Tell firstmate the URL.\n' > "$H/data/scout-r/report.md"
+touch -t 202610260640.00 "$H/data/scout-r/report.md"
+MTIME=$(python3 -c "import os; print(int(os.path.getmtime('$H/data/scout-r/report.md')))")
+check 'a task whose state line names no report takes data/<task>/report.md' "$H/data/scout-r/report.md" "$(field scout-r 'r["report"]')"
+check 'the summary has the title, the Status line as outcome, the first line under the captain heading as ask, and the mtime' \
+  "Cleanroom POC - report (step 1 blocked)|BLOCKED at spec step 1. App not running.|Start the API and web locally.|$MTIME" \
+  "$(field scout-r '"|".join(str(r["summary"][k]) for k in ["title", "outcome", "ask", "at"])')"
+printf '# Four tools\n\n30 October 2026. A study.\n\n## 1. Summary\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\nNone of the four should be installed.\n\n- Needs: the captain picks one of A or B.\n' > "$H/data/scout-r/report.md"
+check 'without a Status line the outcome is the first prose line under a Summary heading, past a table; a Needs: line is the ask' \
+  'Four tools|None of the four should be installed.|the captain picks one of A or B.' \
+  "$(field scout-r '"|".join(str(r["summary"][k]) for k in ["title", "outcome", "ask"])')"
+printf '# jev-decider report\n\nBranch `fm/jev-decider`, four commits.\n\n## Commits\n\n1. one\n' > "$H/data/scout-r/report.md"
+check 'else the outcome is the first prose line after the title, and a report that asks nothing has no ask' \
+  'jev-decider report|Branch `fm/jev-decider`, four commits.|None' \
+  "$(field scout-r '"|".join(str(r["summary"][k]) for k in ["title", "outcome", "ask"])')"
+printf '# Sweep\n\nScout sweep, read-only.\n\n## Decisions made\n\n- kept A\n\n## Detail\n\nResult: one flake.\n\n## Questions for the captain\n\n```\ncode\n```\n\n---\n\nQ1. Close the 30 records?\n' > "$H/data/scout-r/report.md"
+check 'a Result: line past the first section is not the outcome; a heading that only mentions decisions is not an ask; fences and rules under the ask heading are skipped' \
+  'Scout sweep, read-only.|Q1. Close the 30 records?' \
+  "$(field scout-r '"|".join(str(r["summary"][k]) for k in ["outcome", "ask"])')"
+printf 'Plain notes with no heading.\n\nSecond paragraph.\n' > "$H/data/scout-r/report.md"
+check 'a report with no heading takes its first line as title and the next prose line as outcome' \
+  'Plain notes with no heading.|Second paragraph.' \
+  "$(field scout-r '"|".join(str(r["summary"][k]) for k in ["title", "outcome"])')"
+echo "done [at=$NOW]: report at /nowhere/gone.md" > "$H/state/scout-r.status"
+check 'a named report that is not on disk keeps its path and has no summary' '/nowhere/gone.md|None' "$(field scout-r 'str(r["report"]) + "|" + str(r["summary"])')"
+
+# The backlog is cached for 30 seconds per home, so a hold needs a fresh home.
+fleet_home
+mkdir -p "$H/data/plan"
+printf '# Plan calls\n\n## Hard questions (for the captain)\n\n### H1. Ship now, or wait?\n\n- Options: A, B\n' > "$H/data/plan/report.md"
+meta origin-x 's:fm-origin-x'
+live 's:fm-origin-x'
+tasks "plan-calls,queued,captain,-,\"Plan calls\",$TODAY,captain,\"-\",\"Five calls in data/plan/report.md\",none,\"Captain hold set: $SET\\nCaptain hold origin: origin-x\""
+check 'a captain hold naming a report carries its summary; a heading under the captain heading is the ask' 'Plan calls|H1. Ship now, or wait?' "$(field plan-calls 'r["summary"]["title"] + "|" + r["summary"]["ask"]')"
+
+fleet_home
 f crew run-a > "$H/crew.out"
 check 'crew prints fm-crew-state.sh for the task, run against this home' "run-a|FM_HOME=$H|state: done · source: run-step · checks green" "$(printf '%s|%s' "$(cat "$H/crew.args")" "$(tr '\n' '|' < "$H/crew.out" | sed 's/|$//')")"
 f crew ../x 2>/dev/null

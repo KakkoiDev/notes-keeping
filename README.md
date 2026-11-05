@@ -34,7 +34,7 @@ Toggle with ctrl+q (see below), `/notes-keeping show` / `hide`, or the `Notes` b
 | `l` | Logs view: the `# Logs` section of the notes file, newest first, read-only: time (UTC), who, item, `from -> to` (or the text of an objective or update) |
 | `s` | Send queue: put every queued reply into the prompt box, clear the queue, record them in `# Chat`; you press Enter |
 | `w` | Work view: firstmate's fleet, one row per task and per live captain call (see [Work view](#work-view)); shown only with a bridge, labelled `Work (N!)` while N rows need you |
-| `b` | Back to the Todos view (shown in every view but Todos); from a Work row's details, back to the Work view |
+| `b` | Back to the Todos view (shown in every view but Todos); from a Work row's details, back to the Work view; from its report, back to its details |
 | `u` | in the Objectives view: opens an input; Enter appends the text as a new `[UPDATE]` under `## Updates` (while the objectives are still empty it sets them instead) |
 | `e` | in the Objectives view: opens the notes file in `$VISUAL`, else `$EDITOR`, in a tmux popup (`tmux display-popup -E`; the session must run inside tmux), then shows and commits what the editor saved and runs the todo list over it, so an `[UPDATE]` written there becomes an item as one from `u` does; an `[UPDATE]` header the editor left with no text under it makes no item, and a toast names it. Todo runs keep writing the file while the editor is open. From the update box (after `u`, once the objectives are set), where `e` is typed into the field, ctrl+e does it instead (bind `{ "context": "PaneField", "bindings": { "ctrl+e": "app:toggleDiffNoiseFilter" } }` in `~/.claude/keybindings.json`), or a click on Open in editor: it first appends `[UPDATE] <time>` under `## Updates` holding the box's text, opens the editor on the line after it (`file:line` for hx, `+line` for vi, vim, nvim, nano, emacs and kak, the top of the file otherwise), and drops that header again if the editor leaves it empty |
 
@@ -174,10 +174,21 @@ out.
   counted: `+N other calls · /bearings`;
 - a gone task record (window gone, last state line `done`) is hidden and counted, `6` shows them.
 
+Rows sit under a header per group, in the filter order: `Needs you · N`, `Firstmate`, `Running`, `Idle`, `Done`,
+`Gone`; a group with no shown row has no header.
+
+A row's report is the `.md` path its last state line (or hold reason) names, else `data/<task>/report.md` when that
+file exists. `bridge fleet` reads the report's head into a summary: the title (first `# ` heading), the outcome (a
+`Status:`/`Outcome:`/`Verdict:`/`Result:`/`Conclusion:` line before the first section, else the first line under a
+Summary/Outcome/Verdict/Result/Conclusion/TL;DR heading, else the first prose line), what it asks the captain (a
+`Needs:`/`Decision needed:` line, else the first line under a heading such as "for the captain", "open questions" or
+"decisions needed") and the file's mtime. Under the row: `report <age>  <title>: <outcome>`, and on a `!` or `?` row
+`needs  <ask>`.
+
 Columns: the linked todo item's label, else the backlog title, else the task id; the state (`call` for a hold,
 `decision`, `idle` for a paused scout); the age of that state line; Waiting on. Waiting on is firstmate's text from
 `bridge waiting` while it holds, else `you: <hold reason>`, `firstmate: <text>` for a decision, block or failure,
-`firstmate: worker gone; last: <text>`, `worker: <text>` while working, or the paused worker's own text.
+`gone: <text>` for a worker whose window is gone, `worker: <text>` while working, or the paused worker's own text.
 
 Flags, from structured records only, never from a worker's words:
 
@@ -190,10 +201,12 @@ reads the current state.
 
 | Key | Does |
 | --- | --- |
-| Up, Down, Enter | select a row; Enter opens its details: the last line and its age, PR, report, linked todo item (`d` opens it) |
+| Up, Down, Enter | select a row; Enter opens its details: the report summary, the last line and its age, PR, report path, linked todo item (`d` opens it) |
 | `a` | on a `!` or `?` row: an input; Enter fills the prompt with `<task> <key>: <text>`, and you press Enter to send it to firstmate. The plugin closes nothing itself |
+| `v` | read the report in the panel: its summary, then the whole file as markdown (cut at 60,000 characters); `y` there copies its path |
+| `e` | open the report in `$VISUAL` / `$EDITOR` in a tmux popup |
+| `u` | open the PR in the browser |
 | `y` | copy the PR link, else the report path, else the task id |
-| `v` | open the PR, else the report in `$VISUAL` / `$EDITOR` in a tmux popup |
 | `g` | `tmux switch-client` to the worker's window, while it is live |
 | `r` | read `fm-crew-state.sh` for that one task (up to a few seconds) into its details |
 | `1` to `6` | show or hide: `[!] you`, `[?] firstmate`, running, idle, done, gone |

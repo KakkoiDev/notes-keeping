@@ -24,11 +24,15 @@ export type Pair = { agent: string; user: string; note?: Note }
 export type ChatNote = Note & { agent: string; user: string }
 
 // item: one todo item whole, opened from the Todos view; note: one reply, opened from its mark in the transcript; work:
-// the firstmate fleet, and work-item one row of it whole.
-export type View = 'todos' | 'objectives' | 'important' | 'chat' | 'queue' | 'history' | 'logs' | 'item' | 'note' | 'work' | 'work-item'
+// the firstmate fleet, work-item one row of it whole, and work-report that row's report read in the pane.
+export type View = 'todos' | 'objectives' | 'important' | 'chat' | 'queue' | 'history' | 'logs' | 'item' | 'note' | 'work' | 'work-item' | 'work-report'
 
 // The note the History view shows whole (preview) or is about to attach (confirm).
 export type Opened = { name: string; step: 'preview' | 'confirm' }
+
+// What `bridge fleet` reads from the head of a row's report: its title, its outcome line, what it asks the captain, and
+// the file's mtime in epoch seconds.
+export type ReportSummary = { title: string; outcome: string | null; ask: string | null; at: number }
 
 // One row of `bridge fleet`: a task with a meta, or a live captain hold (word "call"). at: the epoch second of its last
 // state line, or of the hold. flag: "!" waits on the captain, "?" on firstmate. answer: what a reply to it starts with.
@@ -45,6 +49,8 @@ export type FleetRow = {
   gone: boolean
   pr: string | null
   report: string | null
+  // null when the row names no report or it could not be read.
+  summary: ReportSummary | null
   todo: string | null
   answer: string | null
 }

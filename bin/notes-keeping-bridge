@@ -45,7 +45,9 @@ home opted in). Four verbs are the plugin's; five are firstmate's.
                              unresolved blocker, no future hold_until, set under 14 days ago) whose origin or own id is a
                              shown meta row, or whose id or origin is linked to an item in <notes-file>; other live holds
                              are only counted in calls. flag "?": a last state line of needs-decision, blocked or failed,
-                             or a worker gone without a done line. No prose sets a flag.
+                             or a worker gone without a done line. No prose sets a flag. A row's report is the .md path
+                             its last state line or hold reason names, else data/<task>/report.md when it exists; its
+                             summary is {"title", "outcome", "ask", "at"} read from the report's head, or null.
   waiting <task-id> <text>   firstmate's Waiting-on cell for the task's row, until state/<task>.status gets another state line.
   crew <task-id>             print bin/fm-crew-state.sh <task-id> for this home.
 
@@ -100,6 +102,15 @@ STAMP = re.compile(r'\[(at|key)=([^\]]*)\]')
 PR_URL = re.compile(r'https://\S+/pull/\d+')
 REPORT = re.compile(r'(?<![^\s(\'"`<])(/\S+\.md)\b')
 REPORT_IN_HOME = re.compile(r'(?<![^\s(\'"`<])([^\s/(\'"`<~]\S*/\S*\.md)\b')
+# How much of a report its summary reads.
+SUMMARY_BYTES = 65536
+TITLE = re.compile(r'^# \S')
+HEADING = re.compile(r'^#{2,4} ')
+LIST_MARK = re.compile(r'^(?:[-*+]|\d+[.)])\s+')
+OUTCOME_LINE = re.compile(r'^\s*(?:[-*]\s+)?(\*\*)?(?:Status|Outcome|Verdict|Result|Conclusion|TL;DR|Bottom line)(?:\*\*)?\s*:\s*(?:\*\*\s*)?(.+)$', re.I)
+OUTCOME_HEADING = re.compile(r'\b(?:summary|outcome|verdict|result|conclusion|tl;dr|bottom line)\b', re.I)
+ASK_LINE = re.compile(r'^\s*(?:[-*]\s+)?(\*\*)?(?:Needs|Decision needed|Captain (?:decision|call|action)|Question for the captain)(?:\*\*)?\s*:\s*(?:\*\*\s*)?(.+)$', re.I)
+ASK_HEADING = re.compile(r"\b(?:(?:for|from|by|to) (?:the )?captain|captain'?s? (?:call|decision|question|action)s?|needs? you|decisions? (?:needed|to make|pending|open|for)|open (?:questions|decisions)|questions? for)\b", re.I)
 HOLD_SET = re.compile(r'Captain hold set: (\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)')
 HOLD_ORIGIN = re.compile(r'Captain hold origin: ([A-Za-z0-9][A-Za-z0-9._-]*)')
 NOTE_ID = re.compile(r'<!-- id:([a-z0-9]+) -->')
@@ -527,11 +538,12 @@ def meta_row(task, meta, lines, live, cell, title):
         waiting = cell['text']
     flag = '?' if is_lost or state in ASKS else ''
     pr = meta.get('pr') or next(iter(PR_URL.findall(text)), None)
+    report = report_of(task, text)
     todo = meta.get('todo', '')
     return {
         'task': task, 'kind': meta.get('kind'), 'title': title, 'word': 'idle' if state == 'paused' and meta.get('kind') == 'scout' else WORD.get(state, state or 'none'),
         'at': last['at'] if last else None, 'flag': flag, 'waiting': waiting, 'window': meta.get('window'), 'live': is_live, 'gone': gone,
-        'pr': pr, 'report': report_in(text), 'todo': todo[3:] if todo.startswith('id:') else None,
+        'pr': pr, 'report': report, 'summary': summary_of(report), 'todo': todo[3:] if todo.startswith('id:') else None,
         'answer': (f"{task} {last['key']}" if last and last['key'] else task) if flag else None,
     }
 
@@ -540,6 +552,71 @@ def meta_row(task, meta, lines, live, cell, title):
 def report_in(text):
     absolute, in_home = REPORT.search(text), REPORT_IN_HOME.search(text)
     return absolute.group(1) if absolute else os.path.join(HOME, in_home.group(1)) if in_home else None
+
+
+# A task's report: the path its text names, else data/<task>/report.md when that file exists.
+def report_of(task, text):
+    named = report_in(text)
+    if named is not None:
+        return named
+    default = os.path.join(HOME, 'data', task, 'report.md')
+    return default if os.path.isfile(default) else None
+
+
+def plain(line):
+    """A markdown line as one line of text: list marker, heading marks and bold marks dropped."""
+    return LIST_MARK.sub('', line.strip().lstrip('#').strip()).replace('**', '').strip()
+
+
+def is_prose(line):
+    s = line.strip()
+    return s != '' and not s.startswith(('#', '|', '```', '<!--', '---'))
+
+
+# A line under a heading that can stand for what the section says: prose, or a sub-heading.
+def is_said(line):
+    return is_prose(line) or HEADING.match(line) is not None
+
+
+def summary_of(path):
+    """{title, outcome, ask, at} from the head of the report at path, or None when it cannot be read.
+    title: the first # heading, else the first line. outcome: a Status/Outcome/Verdict/Result/Conclusion line before the
+    first section, else the first prose line under a Summary/Outcome/Verdict/Result/Conclusion/TL;DR heading, else the
+    first prose line after the title. ask: a Needs/Decision needed/Captain decision line, else the first prose line or
+    sub-heading under a heading such as "for the captain", "open questions" or "decisions needed". at: the file's mtime."""
+    if path is None:
+        return None
+    try:
+        at = int(os.path.getmtime(path))
+        with open(path, encoding='utf-8', errors='replace') as f:
+            lines = f.read(SUMMARY_BYTES).split('\n')
+    except OSError:
+        return None
+    titled = next((i for i, line in enumerate(lines) if TITLE.match(line)), None)
+    first = next((i for i, line in enumerate(lines) if line.strip() != ''), None)
+    title_at = titled if titled is not None else first
+    title = plain(lines[title_at]) if title_at is not None else ''
+    rest = lines[title_at + 1:] if title_at is not None else []
+
+    def under(heading):
+        for i, line in enumerate(rest):
+            if HEADING.match(line) and heading.search(line):
+                body = rest[i + 1:]
+                fenced, said = False, None
+                for other in body:
+                    if other.strip().startswith('```'):
+                        fenced = not fenced
+                    elif not fenced and is_said(other):
+                        said = plain(other)
+                        break
+                return said
+        return None
+
+    lead = next((rest[:i] for i, line in enumerate(rest) if HEADING.match(line)), rest)
+    labeled = next((m.group(2) for m in map(OUTCOME_LINE.match, lead) if m), None)
+    outcome = labeled or under(OUTCOME_HEADING) or next((plain(line) for line in rest if is_prose(line)), None)
+    ask = next((m.group(2) for m in map(ASK_LINE.match, rest) if m), None) or under(ASK_HEADING)
+    return {'title': title, 'outcome': plain(outcome) if outcome else None, 'ask': plain(ask) if ask else None, 'at': at}
 
 
 def fleet(notes_file):
@@ -564,10 +641,11 @@ def fleet(notes_file):
         if not ({task['id'], origin} & (shown | tied)):
             calls += 1
             continue
+        report = report_in(task['hold_reason'])
         rows.append({
             'task': task['id'], 'kind': task.get('kind'), 'title': (task.get('title') or '').split('\n')[0] or None, 'word': 'call', 'at': hold_set(task), 'flag': '!',
             'waiting': f"you: {task['hold_reason']}", 'window': None, 'live': False, 'gone': False, 'pr': next(iter(PR_URL.findall(task['hold_reason'])), None),
-            'report': report_in(task['hold_reason']), 'todo': item_of(task['id']), 'answer': f"{origin} {task['id']}" if origin else task['id'], 'origin': origin,
+            'report': report, 'summary': summary_of(report), 'todo': item_of(task['id']), 'answer': f"{origin} {task['id']}" if origin else task['id'], 'origin': origin,
         })
     rows.sort(key=lambda r: ({'!': 0, '?': 1}.get(r['flag'], 2), -(r['at'] or 0)))
     print(json.dumps({'rows': rows, 'calls': calls}, ensure_ascii=False))

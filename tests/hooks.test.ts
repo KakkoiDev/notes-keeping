@@ -2912,7 +2912,7 @@ test('a reply moved into the prompt with s keeps its anchor in # Chat', async ($
 
 // A fleet row as `bridge fleet` prints it.
 function fleetRow(task: string, extra: Record<string, unknown> = {}): Record<string, unknown> {
-  return { task, kind: 'ship', title: null, word: 'working', at: null, flag: '', waiting: '', window: `s:fm-${task}`, live: true, gone: false, pr: null, report: null, todo: null, answer: null, ...extra }
+  return { task, kind: 'ship', title: null, word: 'working', at: null, flag: '', waiting: '', window: `s:fm-${task}`, live: true, gone: false, pr: null, report: null, summary: null, todo: null, answer: null, ...extra }
 }
 // The fake clock's time in seconds, as the bridge stamps rows.
 const SECONDS = Math.floor(new Date(2026, 9, 26, 10, 58).getTime() / 1000)
@@ -2926,8 +2926,8 @@ const FLEET = {
   calls: 2,
 }
 
-async function work($: Engine, on: On, selection: () => string | undefined = () => undefined) {
-  const fs: Fs = { [BOUND]: setTodoFile('- [ ] **Build the table**: build the fleet table <!-- id:ab12cd3 -->'), [PYTHON]: '', [BRIDGE]: '' }
+async function work($: Engine, on: On, selection: () => string | undefined = () => undefined, extra: Fs = {}) {
+  const fs: Fs = { [BOUND]: setTodoFile('- [ ] **Build the table**: build the fleet table <!-- id:ab12cd3 -->'), [PYTHON]: '', [BRIDGE]: '', ...extra }
   const { clock, git, ui } = engine(on, fs, { ...SESSION_BOUND }, selection)
   on('ui.focus', () => ({ value: {} }) as never)
   fakeLaya()
@@ -3048,13 +3048,82 @@ test('Enter on a row opens its details; y copies the PR link, r reads the crew s
   await pane.press({ key: 'view:work' })
   await pane.press({ key: 'work:ask' })
   expect(await pane.find({ type: 'Text', text: /^Sentry injected filter {2}· {2}ask {2}· {2}ship/ })).toBeDefined()
-  expect(await pane.find({ type: 'Text', text: 'last   decision 2m ago: firstmate: new PR body' })).toBeDefined()
+  expect(await pane.find({ type: 'Text', text: 'last    decision 2m ago: firstmate: new PR body' })).toBeDefined()
   await pane.press({ key: 'work:copy' })
   expect(ui.copied).toEqual(['https://x/pull/27970'])
   await pane.press({ key: 'work:crew' })
   expect(bridge.argv.filter(call => call[1] === 'crew')).toEqual([[BRIDGE, 'crew', 'ask']])
-  expect(await pane.find({ type: 'Text', text: 'crew   state: done · source: run-step · checks green' })).toBeDefined()
+  expect(await pane.find({ type: 'Text', text: 'crew    state: done · source: run-step · checks green' })).toBeDefined()
   await pane.press({ key: 'work:go' })
   expect(git.calls).toContainEqual(['tmux', 'switch-client', '-t', 's:fm-ask'])
+  await pane.unmount()
+})
+
+const REPORT = '/fm/data/cleanroom-poc/report.md'
+const REPORT_TEXT = '# Cleanroom POC\n\nStatus: BLOCKED at step 1.\n\n## What is needed from the captain\n\n1. Start the app.\n'
+const REPORTED = fleetRow('cleanroom-poc', {
+  kind: 'scout', word: 'blocked', at: SECONDS - 600, flag: '?', waiting: 'firstmate: worker gone; last: app down', live: false, pr: 'https://x/pull/9', report: REPORT,
+  summary: { title: 'Cleanroom POC', outcome: 'BLOCKED at step 1.', ask: 'Start the app.', at: SECONDS - 86400 }, answer: 'cleanroom-poc',
+})
+
+test('the Work view puts rows under a header per group, and a row with a report carries its title, outcome and ask beneath it', async ($, on) => {
+  const { clock } = await work($, on)
+  bridge.fleet = { rows: [...FLEET.rows, REPORTED], calls: 0 }
+  await clock.advance(5_000)
+  await flush()
+  await run($, 'show')
+  const pane = await $.ui.mount({ ...NOTES_PANE, surface: 'terminal' })
+  await pane.press({ key: 'view:work' })
+  const texts = (await pane.findAll({ type: 'Text' })).map(found => found.text)
+  expect(texts.filter(text => /^(Needs you|Firstmate|Running|Idle|Done|Gone) · \d+$/.test(text ?? ''))).toEqual(['Needs you · 1', 'Firstmate · 2', 'Running · 1'])
+  const at = texts.indexOf('Firstmate · 2')
+  expect(texts.slice(at + 1, at + 3)).toEqual(['    report 1d  Cleanroom POC: BLOCKED at step 1.', '    needs  Start the app.'])
+  const label = String((await pane.find({ key: 'work:cleanroom-poc' }))?.props.label)
+  expect(label).toMatch(/blocked +10m  gone: app down$/)
+  await pane.unmount()
+})
+
+test('v reads the report in the pane, even on a row with a PR; y there copies its path, u opens the PR, e opens the report in the editor, b goes back', async ($, on) => {
+  shell.vars = { EDITOR: 'hx', TMUX: '/tmp/tmux-1/default,1,0' }
+  const { clock, git, ui } = await work($, on, undefined, { [REPORT]: REPORT_TEXT })
+  bridge.fleet = { rows: [REPORTED], calls: 0 }
+  await clock.advance(5_000)
+  await flush()
+  await run($, 'show')
+  const pane = await $.ui.mount({ ...NOTES_PANE, surface: 'terminal' })
+  await pane.press({ key: 'view:work' })
+  await ring($, 'work:cleanroom-poc')
+  expect((await pane.find({ key: 'work:view' }))?.props).toMatchObject({ hotkey: 'v', label: 'read report' })
+  expect((await pane.find({ key: 'work:pr' }))?.props).toMatchObject({ hotkey: 'u', label: 'open PR' })
+  await pane.press({ key: 'work:view' })
+  expect(await pane.find({ type: 'Text', text: 'Cleanroom POC' })).toBeDefined()
+  expect(await pane.find({ type: 'Text', text: `${REPORT} · written 1d ago` })).toBeDefined()
+  expect(await pane.find({ type: 'Text', text: 'needs    Start the app.' })).toBeDefined()
+  expect((await pane.find({ key: 'work:report-text' }))?.props).toMatchObject({ text: REPORT_TEXT })
+  await pane.press({ key: 'work:copy' })
+  expect(ui.copied).toEqual([REPORT])
+  await pane.press({ key: 'work:pr' })
+  expect(git.calls).toContainEqual(['open', 'https://x/pull/9'])
+  await pane.press({ key: 'work:edit' })
+  await flush()
+  expect(shell.spawned).toEqual([['tmux', 'display-popup', '-E', '-w', '90%', '-h', '90%', `hx '${REPORT}'`]])
+  await pane.press({ key: 'view:back' })
+  expect(await pane.find({ type: 'Text', text: /^cleanroom-poc {2}· {2}cleanroom-poc/ })).toBeDefined()
+  await pane.unmount()
+})
+
+test('a report the pane cannot read says so and keeps e and y', async ($, on) => {
+  const { clock } = await work($, on)
+  bridge.fleet = { rows: [{ ...REPORTED, summary: null }], calls: 0 }
+  await clock.advance(5_000)
+  await flush()
+  await run($, 'show')
+  const pane = await $.ui.mount({ ...NOTES_PANE, surface: 'terminal' })
+  await pane.press({ key: 'view:work' })
+  await ring($, 'work:cleanroom-poc')
+  await pane.press({ key: 'work:view' })
+  expect(await pane.find({ type: 'Text', text: /^Cannot read .*cleanroom-poc\/report\.md/ })).toBeDefined()
+  expect(await pane.find({ key: 'work:edit' })).toBeDefined()
+  expect(await pane.find({ key: 'work:copy' })).toBeDefined()
   await pane.unmount()
 })

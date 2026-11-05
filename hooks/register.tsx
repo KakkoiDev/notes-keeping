@@ -41,7 +41,7 @@ import { EMPTY, bridgeMoves, candidateKeys, candidates, changeLine, cleanLabel, 
 import type { Applied, Candidate, Change, Item, Memory, Move, Status, Verdict } from './todo'
 import { TodoSlot, nextShown, rowId, rowKey, selectedOf, stepStatus } from './todos'
 import type { Landing } from './todos'
-import { WorkSlot, answerText, copyText, details, groupOf, nameOf, needsYou, selectedRow, workStatus } from './work'
+import { WorkSlot, answerText, copyText, details, groupOf, nameOf, needsYou, reportHead, selectedRow, workStatus } from './work'
 
 const NAME = 'notes-keeping'
 const PANE = 'notes-keeping'
@@ -62,6 +62,8 @@ const HOLD_MS = 3_000
 const PASTE_MS = 2_000
 const PREVIEW = 60
 const HISTORY_CAP = 20
+// The most of a report the Work report view draws.
+const REPORT_CHARS = 60_000
 const NOTE = 'note:'
 // The engine's mark opening a reply on macOS, as Claude Code 2.1.314 draws it.
 const BULLET = '⏺ '
@@ -748,15 +750,14 @@ async function isReleased($: EngineInterface, text: string): Promise<boolean> {
   }
 }
 
-// v on a fleet row: its PR in the browser, else its report in the editor popup the notes file opens in (a path relative
-// to the session root, the firstmate home, read from there).
-async function viewRow($: EngineInterface, row: FleetRow): Promise<void> {
-  if (row.pr !== null) {
-    await $.process.run(['open', row.pr], { timeoutMs: GIT_MS })
-    return
-  }
-  if (row.report === null) return
-  const path = row.report.startsWith('/') ? row.report : `${await $.session.root()}/${row.report}`
+// A fleet row's report path: as the bridge names it, or relative to the session root, the firstmate home.
+async function reportPath($: EngineInterface, report: string): Promise<string> {
+  return report.startsWith('/') ? report : `${await $.session.root()}/${report}`
+}
+
+// e on a fleet row: its report in the editor popup the notes file opens in.
+async function editReport($: EngineInterface, report: string): Promise<void> {
+  const path = await reportPath($, report)
   const editor = (await $.env.get('VISUAL')) || (await $.env.get('EDITOR'))
   if (!editor || !(await $.env.get('TMUX'))) {
     await $.process.run(['open', path], { timeoutMs: GIT_MS })
@@ -765,6 +766,12 @@ async function viewRow($: EngineInterface, row: FleetRow): Promise<void> {
   const popup = $.process.spawn({ argv: ['tmux', 'display-popup', '-E', '-w', '90%', '-h', '90%', `${editor} ${editorTarget(editor, path, undefined)}`] })
   for await (const _ of popup) continue
   await popup.result
+}
+
+// A report as the pane draws it: cut at REPORT_CHARS with a line saying so; undefined when it could not be read.
+function clipReport(text: string | undefined): string | undefined {
+  if (text === undefined || text === '') return undefined
+  return text.length <= REPORT_CHARS ? text : `${text.slice(0, REPORT_CHARS)}\n\n(cut at ${REPORT_CHARS} characters; e opens the whole file)`
 }
 
 async function selected($: EngineInterface): Promise<string> {
@@ -1403,7 +1410,7 @@ export const register: Register = on => {
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const table = $.ui.resolve(e)
-    const { Box, Button, Text } = table
+    const { Box, Button, Markdown, Text } = table
     // The mobile app draws no field.
     const Input = 'Input' in table ? table.Input : undefined
     const current = await read($, notes)
@@ -1426,7 +1433,7 @@ export const register: Register = on => {
     const calls = needsYou(work).length
     const back = at === 'history' && step !== null ? async () => {
           await update($, picked, () => (step.step === 'confirm' ? { ...step, step: 'preview' } : null))
-        } : at === 'work-item' ? go('work') : go('todos')
+        } : at === 'work-item' ? go('work') : at === 'work-report' ? go('work-item') : go('todos')
     const nav = (
       <Box key="nav" flexDirection="row" flexWrap="wrap" columnGap={2} marginBottom={1}>
         {tab('todos', 't', 'Todos', 'todos')}
@@ -1500,16 +1507,18 @@ export const register: Register = on => {
       </Box>
     )
     let content
-    if ((at === 'work' || at === 'work-item') && work !== null) {
+    if ((at === 'work' || at === 'work-item' || at === 'work-report') && work !== null) {
       const now = await $.clock.now()
       const labels = labelsOf(current)
       const hideWork = await read($, workHidden)
       const shownRows = work.rows.filter(one => !hideWork.includes(groupOf(one)))
-      const task = at === 'work-item' ? await read($, workOpen) : selectedRow(shownRows, await read($, workCursor))
+      const task = at === 'work' ? selectedRow(shownRows, await read($, workCursor)) : await read($, workOpen)
       const row = work.rows.find(one => one.task === task)
       const isAnswering = (await read($, workAnswering)) && row !== undefined && row.flag !== '' && Input !== undefined
       const item = row === undefined || row.todo === null || s === undefined ? undefined : items(s.todo).find(one => one.id === row.todo)
       const crewRead = await read($, crew)
+      const reportText =
+        at !== 'work-report' || row === undefined || row.report === null ? undefined : clipReport(await readText($, await reportPath($, row.report)).catch(() => undefined))
       const actions =
         row === undefined ? null : isAnswering && Input !== undefined ? (
           <Input
@@ -1542,13 +1551,28 @@ export const register: Register = on => {
               key="work:copy"
               plain
               hotkey="y"
-              label={row.pr !== null ? 'copy PR link' : row.report !== null ? 'copy report path' : 'copy task id'}
+              label={at === 'work-report' ? 'copy report path' : row.pr !== null ? 'copy PR link' : row.report !== null ? 'copy report path' : 'copy task id'}
               onPress={async () => {
-                const copied = await $.ui.copy({ text: copyText(row) })
-                $.ui.toast(copied.isCopied ? `Copied ${copyText(row)}` : `notes-keeping: the copy did not take (${copied.reason})`)
+                const text = at === 'work-report' && row.report !== null ? row.report : copyText(row)
+                const copied = await $.ui.copy({ text })
+                $.ui.toast(copied.isCopied ? `Copied ${text}` : `notes-keeping: the copy did not take (${copied.reason})`)
               }}
             />
-            {row.pr === null && row.report === null ? null : <Button key="work:view" plain hotkey="v" label={row.pr !== null ? 'view PR' : 'view report'} onPress={() => viewRow($, row)} />}
+            {row.report === null || at === 'work-report' ? null : (
+              <Button
+                key="work:view"
+                plain
+                hotkey="v"
+                label="read report"
+                onPress={async () => {
+                  await update($, workOpen, () => row.task)
+                  await update($, workAnswering, () => false)
+                  await update($, view, () => 'work-report')
+                }}
+              />
+            )}
+            {row.report === null ? null : <Button key="work:edit" plain hotkey="e" label="report in editor" onPress={() => editReport($, row.report ?? '')} />}
+            {row.pr === null ? null : <Button key="work:pr" plain hotkey="u" label="open PR" onPress={() => $.process.run(['open', row.pr ?? ''], { timeoutMs: GIT_MS })} />}
             {row.live && row.window !== null ? <Button key="work:go" plain hotkey="g" label="go to worker" onPress={() => $.process.run(['tmux', 'switch-client', '-t', row.window ?? ''], { timeoutMs: GIT_MS })} /> : null}
             {row.word === 'call' ? null : (
               <Button
@@ -1588,7 +1612,24 @@ export const register: Register = on => {
               onToggle={(group: WorkGroup) => update($, workHidden, list => (list.includes(group) ? list.filter(other => other !== group) : [...list, group]))}
             />
             {actions}
-            {hint('Up and Down select, Enter: details  a: answer (fills the prompt)  y: copy  v: view PR/report  g: go to worker  r: re-read  1-6 filters  b back')}
+            {hint('Up and Down select, Enter: details  v: read report  e: report in editor  u: open PR  a: answer (fills the prompt)  y: copy  g: go to worker  r: re-read  1-6 filters  b back')}
+          </Box>
+        ) : at === 'work-report' && row !== undefined ? (
+          <Box key="content" flexDirection="column">
+            {reportHead(row, now).map((line, i) => (
+              <Text key={`work-head:${i}`} bold={i === 0} dimColor={i === 1}>
+                {line}
+              </Text>
+            ))}
+            <Box key="work-report-body" flexDirection="column" marginY={1}>
+              {reportText === undefined ? (
+                <Text>{`Cannot read ${row.report ?? 'a report'}: e opens it in the editor, y copies the path`}</Text>
+              ) : (
+                <Markdown key="work:report-text" text={reportText} />
+              )}
+            </Box>
+            {actions}
+            {hint('y: copy the report path  e: report in editor  u: open PR  a: answer (fills the prompt)  b back to the details')}
           </Box>
         ) : row === undefined ? (
           <Box key="content" flexDirection="column">
@@ -1613,7 +1654,7 @@ export const register: Register = on => {
               />
             )}
             {actions}
-            {hint('a: answer (fills the prompt)  y: copy  v: view PR/report  g: go to worker  r: re-read crew state  d: todo item  b back')}
+            {hint('v: read report  e: report in editor  u: open PR  a: answer (fills the prompt)  y: copy  g: go to worker  r: re-read crew state  d: todo item  b back')}
           </Box>
         )
     } else if (at === 'history') {
