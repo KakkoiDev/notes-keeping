@@ -37,7 +37,7 @@ import {
   updateLine,
   withoutLogs,
 } from './notes'
-import { EMPTY, bridgeMoves, candidateKeys, candidates, changeLine, cleanLabel, context, cycle, cycleItem, diffSnapshot, emptyUpdates, format, idFor, idOf, isBackground, items, keyOf, labelPrompt, legend, moved, parse, pin, reconcile, row, settle, shown, snapshotOf, sourceOf, withIds, withoutIds } from './todo'
+import { EMPTY, bridgeMoves, candidateKeys, candidates, changeLine, cleanLabel, context, cycle, cycleItem, diffSnapshot, emptyUpdates, format, idFor, idOf, isBackground, items, keyOf, labelPrompt, legend, moved, parse, pausedContext, pin, reconcile, row, settle, shown, snapshotOf, sourceOf, why, withIds, withoutIds } from './todo'
 import type { Applied, Candidate, Change, Item, Memory, Move, Status, Verdict } from './todo'
 import { TodoSlot, nextShown, rowId, rowKey, selectedOf, stepStatus } from './todos'
 import type { Landing } from './todos'
@@ -123,6 +123,8 @@ const todoCursor = atom({ plugin: 'notes-keeping', key: 'todoCursor' } as const,
 const hidden = atom({ plugin: 'notes-keeping', key: 'hidden' } as const, [] as Status[])
 // The todo item the Item view shows, by its row id.
 const todoOpen = atom({ plugin: 'notes-keeping', key: 'todoOpen' } as const, null as string | null)
+// The row z asked a pause reason for, while its field is open.
+const todoPausing = atom({ plugin: 'notes-keeping', key: 'todoPausing' } as const, null as string | null)
 // The note the Note view shows, by its id.
 const noteOpen = atom({ plugin: 'notes-keeping', key: 'noteOpen' } as const, null as string | null)
 // The last `bridge fleet` read; null while the session root has no bridge.
@@ -302,7 +304,8 @@ async function runBridge($: EngineInterface, bridge: string, verb: 'status' | 'n
   return done.stdout
 }
 
-// by: who firstmate says set up the link, when it says. reason: why the task could not be started, while it is blocked.
+// by: who firstmate says set up the link, when it says. reason: why the task could not be started, while it is blocked,
+// or why firstmate set it aside, while it is paused.
 type Link = { status: Status | undefined; task: string; by?: string; reason?: string }
 
 // Every linked item by id, or by text key for a link made by text; status is undefined when the linked task has no state to report.
@@ -310,13 +313,13 @@ async function linked($: EngineInterface, bridge: string, path: string): Promise
   const raw = JSON.parse(await runBridge($, bridge, 'status', path)) as Record<string, { status?: unknown; task?: unknown; id?: unknown; by?: unknown; reason?: unknown }>
   const links: Record<string, Link> = {}
   for (const [text, link] of Object.entries(raw)) {
-    const status = link.status === 'in-progress' || link.status === 'done' || link.status === 'blocked' ? link.status : undefined
+    const status = link.status === 'in-progress' || link.status === 'done' || link.status === 'blocked' || link.status === 'paused' ? link.status : undefined
     const task = typeof link.task === 'string' ? link.task : ''
     links[typeof link.id === 'string' ? link.id : keyOf(text)] = {
       status,
       task,
       ...(typeof link.by === 'string' && link.by !== '' ? { by: link.by } : {}),
-      ...(status === 'blocked' && typeof link.reason === 'string' && link.reason !== '' ? { reason: link.reason } : {}),
+      ...((status === 'blocked' || status === 'paused') && typeof link.reason === 'string' && link.reason !== '' ? { reason: link.reason } : {}),
     }
   }
   return links
@@ -517,9 +520,11 @@ async function runTodo($: EngineInterface, answer: string): Promise<void> {
     return Math.abs(verdict.p - own) < 0.005 ? `${verdict.label} ${own.toFixed(2)}` : `${verdict.label} ${own.toFixed(2)}, ${verdict.p.toFixed(2)} with the ${verdict.label === 'started' ? 'start' : 'finish'} cue`
   }
   const reported: Record<string, Status> = {}
+  const reasons: Record<string, string> = {}
   for (const item of list) {
-    const status = linkOf(links, item)?.status
-    if (status !== undefined) reported[idOf(item)] = status
+    const link = linkOf(links, item)
+    if (link?.status !== undefined) reported[idOf(item)] = link.status
+    if (link?.status === 'paused' && link.reason !== undefined) reasons[idOf(item)] = link.reason
   }
   Object.assign(set, bridgeMoves(list, reported, memory))
   const unlabeled = [...list.filter(item => item.label === undefined && !memory.labeled.includes(idOf(item))), ...add]
@@ -532,7 +537,7 @@ async function runTodo($: EngineInterface, answer: string): Promise<void> {
   const { warned, changes } = await locked(async () => {
     const latest = await readText($, path)
     const body = sections(latest).todo
-    const out = reconcile(body, await readMemory($, path), { add: added, set, seen, labels, labeled, bridge: reported })
+    const out = reconcile(body, await readMemory($, path), { add: added, set, seen, labels, labeled, bridge: reported, reasons })
     await $.store.set(memoryKey(path), out.memory)
     const written = items(out.body)
     const found = await snapshot($, path, items(body), written)
@@ -548,7 +553,7 @@ async function runTodo($: EngineInterface, answer: string): Promise<void> {
       const item = written.find(one => idOf(one) === move.key || keyOf(one.text) === keyOf(move.text)) ?? { status: move.to, text: move.text }
       const link = links[move.key] ?? links[keyOf(move.text)]
       const task = link === undefined ? '' : link.by === undefined ? link.task : `${link.task}, by ${link.by}`
-      const why = link === undefined ? said(move.key) : move.to === 'blocked' && link.reason !== undefined ? `${task}: ${link.reason}` : task
+      const why = link === undefined ? said(move.key) : (move.to === 'blocked' || move.to === 'paused') && link.reason !== undefined ? `${task}: ${link.reason}` : task
       const note = [why, ...(move.isHandSet ? ['replaced a hand-set status'] : [])].join(', ')
       entries.push({ at, actor: link === undefined ? 'laya' : 'firstmate', action: 'status', item, from: move.from, to: move.to, note })
       lines.push(changeLine({ item, from: move.from, to: move.to }, link === undefined ? 'laya' : `firstmate ${link.task}`))
@@ -581,15 +586,16 @@ async function syncTodo($: EngineInterface, answer: string): Promise<void> {
 }
 
 // A click or Enter sets the next status, f and p the next or previous one: the captain's, logged and sent as theirs.
-// It counts as hand-set: Laya leaves it. A change that leaves the line as it was writes nothing.
-async function clickItem($: EngineInterface, key: string, change: (status: Status) => Status = cycle): Promise<void> {
+// It counts as hand-set: Laya leaves it. A change that leaves the line as it was writes nothing. reason: the pause reason z
+// asked for, written on the item and logged.
+async function clickItem($: EngineInterface, key: string, change: (status: Status) => Status = cycle, reason?: string): Promise<void> {
   const path = await boundPath($)
   if (path === undefined) return
   const bridge = await bridgeOf($)
   const changes = await locked(async () => {
     const md = await readText($, path)
     const before = items(sections(md).todo)
-    const body = cycleItem(sections(md).todo, key, change)
+    const body = cycleItem(sections(md).todo, key, change, reason)
     if (body === cycleItem(sections(md).todo, key, status => status)) return []
     const after = items(body)
     const isIt = (item: Item) => idOf(item) === key || keyOf(item.text) === key
@@ -601,7 +607,7 @@ async function clickItem($: EngineInterface, key: string, change: (status: Statu
     const entries = foundEntries(found, at)
     const lines = foundLines(found)
     if (was !== undefined && now !== undefined) {
-      entries.push({ at, actor: 'captain', action: 'status', item: now, from: was.status, to: now.status })
+      entries.push({ at, actor: 'captain', action: 'status', item: now, from: was.status, to: now.status, ...(now.reason === undefined ? {} : { note: now.reason }) })
       lines.push(changeLine({ item: now, from: was.status, to: now.status }, 'captain'))
     }
     await save($, path, await logged($, path, stampIds(setTodo(md, body), after), entries), 'todo')
@@ -1336,7 +1342,9 @@ export const register: Register = on => {
     // The whole file carries the todo list; every other prompt carries the list alone.
     const isWhole = isResumed || isCompacted || (typeof seen === 'string' && seen !== head)
     const todo = isWhole || e.isMeta === true ? undefined : context(sections(md).todo)
-    const added = isWhole ? [inject(md, path)] : todo === undefined ? [] : [`${todo}\n${logsHint(path)}`]
+    // The whole file carries the todo list, not what to do with the paused items: that goes with it.
+    const paused = isWhole ? pausedContext(sections(md).todo) : undefined
+    const added = isWhole ? [inject(md, path), ...(paused === undefined ? [] : [paused])] : todo === undefined ? [] : [`${todo}\n${logsHint(path)}`]
     // The file the notes continue: once after a panel attach, and again with the whole notes file.
     // Only a notes file of the folder: the line can be edited by hand to name any path.
     const attachedAt = attachedKey(await $.session.id())
@@ -1492,7 +1500,7 @@ export const register: Register = on => {
     const at = await read($, view)
     const list = await read($, queue)
     const s = current?.sections
-    const rows: Todo[] = s === undefined ? [] : items(s.todo).map(item => ({ id: keyOf(item.text), status: item.status, text: shown(item) }))
+    const rows: Todo[] = s === undefined ? [] : items(s.todo).map(item => ({ id: keyOf(item.text), status: item.status, text: `${shown(item)}${why(item)}` }))
     const hasObjectives = s !== undefined && s.objectives !== ''
     const go = (to: View) => async () => {
       await update($, editing, () => false)
@@ -1536,11 +1544,26 @@ export const register: Register = on => {
       // The engine answers {} or { deny }; `claude plugin test` has no ring and rejects.
       if (key !== undefined) await $.ui.focus({ requestId: PANE, key }).catch(() => undefined)
     }
-    const change = async (id: string, to: (status: Status) => Status) => {
+    const change = async (id: string, to: (status: Status) => Status, reason?: string) => {
       const item = rows.find(row => row.id === id)
-      const write = () => clickItem($, id, to)
+      const write = () => clickItem($, id, to, reason)
       await (item !== undefined && hide.includes(to(item.status)) ? handOver(nextShown(rows, id, hide), write) : write())
     }
+    const pausing = await read($, todoPausing)
+    const pauseField =
+      pausing === null || Input === undefined ? undefined : (
+        <Input
+          key="todo:pause-reason"
+          label={`Why pause ${rows.find(row => row.id === pausing)?.text ?? 'it'}?`}
+          placeholder="the reason, kept on the item; Enter pauses it, Enter on an empty field cancels"
+          submitLabel="pause"
+          autoFocus
+          onSubmit={async (value: string) => {
+            await update($, todoPausing, () => null)
+            if (value.trim() !== '') await change(pausing, () => 'paused', value)
+          }}
+        />
+      )
     const slot = (
       <TodoSlot
         key="todos"
@@ -1561,6 +1584,13 @@ export const register: Register = on => {
           await update($, todoCursor, () => id)
           // The engine answers {} or { deny }; `claude plugin test` has no ring and rejects.
           await $.ui.focus({ requestId: PANE, key: rowKey(id, landing) }).catch(() => undefined)
+        }}
+        pause={pauseField}
+        onPause={async id => {
+          if (Input === undefined) return $.ui.toast('Pause from a terminal or desktop: this surface draws no field for the reason.')
+          await update($, todoPausing, () => id)
+          // The engine answers {} or { deny }; `claude plugin test` has no ring and rejects.
+          await $.ui.focus({ requestId: PANE, key: 'todo:pause-reason' }).catch(() => undefined)
         }}
         onToggle={async status => {
           const now = hide.includes(status) ? hide.filter(other => other !== status) : [...hide, status]
@@ -1969,7 +1999,7 @@ export const register: Register = on => {
         ) : (
           <Box key="content" flexDirection="column">
             <Text bold>{item.label ?? 'Item'}</Text>
-            <Text>{legend(item.status)}</Text>
+            <Text>{`${legend(item.status)}${why(item)}`}</Text>
             <Text>{item.text}</Text>
             {from === undefined ? (
               <Text dimColor>No objective or update holds this item: it was written in the todo list.</Text>

@@ -2,12 +2,13 @@
 """notes-keeping-bridge - links the notes-keeping todo list to this firstmate home's tasks.
 
 The notes-keeping plugin runs this file when it exists under the session root (config/ is gitignored, so only this
-home opted in). Four verbs are the plugin's; five are firstmate's.
+home opted in). Four verbs are the plugin's; six are firstmate's.
 
-  status <notes-file>        print {"<item text>": {"status": "blocked" | "in-progress" | "done" | null, "task": "<id>"}}
+  status <notes-file>        print {"<item text>": {"status": "blocked" | "paused" | "in-progress" | "done" | null, "task": "<id>"}}
                              for every linked item; an item linked by id is printed as "id:<id>" with an "id" field, and a
-                             link made with --by carries a "by" field. blocked: the task's latest block came after its last
-                             state line and no outcome record is at or after it, printed with a "reason" field.
+                             link made with --by carries a "by" field. blocked or paused: the task's latest block or pause,
+                             whichever came last, came after its last state line and no outcome record is at or after it,
+                             printed with a "reason" field.
                              done: else state/<task>.pr-poll-merge-notified exists (firstmate saw its PR merge).
                              in-progress: else state/<task>.meta exists, whatever its last state line; a done line
                              (a PR opened, a branch ready to land) lands nothing.
@@ -25,6 +26,9 @@ home opted in). Four verbs are the plugin's; five are firstmate's.
   block <task-id> --reason <text> [--by <name>]
                              mark the task as one that could not be started; its linked items report blocked with the
                              reason until state/<task>.status gets another state line.
+  pause <task-id> --reason <text> [--by <name>]
+                             mark the task as set aside on purpose; its linked items report paused with the reason until
+                             state/<task>.status gets another state line. Pausing it again replaces the reason.
   pending <notes-file>       print the updates queued for the notes file as [{"request", "text", "by", "task"}] and take them
                              off the queue; the session that asks is the notes file's active session.
   answer <request>           the outcome of a taken update on stdin, {"id": "<item id>"} or {"error": "<why>"}, for the
@@ -36,8 +40,8 @@ home opted in). Four verbs are the plugin's; five are firstmate's.
                              update within NOTES_KEEPING_BRIDGE_WAIT seconds (default 20); an update not taken is withdrawn, and pending
                              drops one whose caller was killed before then.
   open <notes-file>          read-only: print [{"id", "status", "text"}] for every item under the notes file's # Todo that is
-                             not done or declined, in file order; id is null for an item without one. Exits 1 when the
-                             file cannot be read.
+                             not done or declined, in file order; id is null for an item without one, and a paused item
+                             carries its "reason". Exits 1 when the file cannot be read.
   active                     print the notes file a session asked for pending updates within the last 15 seconds, the
                              latest when several did; exits 1 when none did.
   fleet <notes-file>         read-only: print {"rows": [...], "calls": <n>} for the Work view. A row per state/<task>.meta
@@ -54,7 +58,8 @@ home opted in). Four verbs are the plugin's; five are firstmate's.
   waiting <task-id> <text>   firstmate's Waiting-on cell for the task's row, until state/<task>.status gets another state line.
   crew <task-id>             print bin/fm-crew-state.sh <task-id> for this home.
 
-Links are appended to state/notes-todo-links.jsonl, blocks to state/notes-todo-blocks.jsonl, waiting cells to
+Links are appended to state/notes-todo-links.jsonl, blocks to state/notes-todo-blocks.jsonl, pauses to
+state/notes-todo-pauses.jsonl, waiting cells to
 state/notes-fleet-waiting.jsonl; queued updates are files in state/notes-keeping-queue/, and the
 active notes file is state/notes-keeping-active.json. An item's key is id:<id>, or its text lowercased with whitespace
 collapsed, the same text key the plugin falls back to for an item without an id. FM_HOME overrides the home whose state/ is used. FM_ROOT names the firstmate checkout whose
@@ -78,6 +83,7 @@ HOME = os.environ.get('FM_HOME') or ROOT
 STATE = os.path.join(HOME, 'state')
 LINKS = os.path.join(STATE, 'notes-todo-links.jsonl')
 BLOCKS = os.path.join(STATE, 'notes-todo-blocks.jsonl')
+PAUSES = os.path.join(STATE, 'notes-todo-pauses.jsonl')
 QUEUE = os.path.join(STATE, 'notes-keeping-queue')
 ACTIVE = os.path.join(STATE, 'notes-keeping-active.json')
 INBOX = os.path.join(ROOT, 'bin', 'fm-inbox.sh')
@@ -118,11 +124,12 @@ HOLD_SET = re.compile(r'Captain hold set: (\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)
 HOLD_ORIGIN = re.compile(r'Captain hold origin: ([A-Za-z0-9][A-Za-z0-9._-]*)')
 NOTE_ID = re.compile(r'<!-- id:([a-z0-9]+) -->')
 TODO_ITEM = re.compile(r'^- \[(.)\] (.*)$')
-OPEN_MARKS = {' ': 'todo', '~': 'in-progress', '!': 'blocked'}
+OPEN_MARKS = {' ': 'todo', '~': 'in-progress', '!': 'blocked', '/': 'paused'}
+PAUSE_REASON = re.compile(r'\s*<!-- paused:(.*?) -->\s*$')
 WORD = {'needs-decision': 'decision'}
 ASKS = ('needs-decision', 'blocked', 'failed')
 USAGE = ('usage: notes-keeping-bridge status <notes-file> | notify <notes-file> | link <task-id> <item> [--by <name>] | unlink <item>'
-         ' | block <task-id> --reason <text> [--by <name>] | pending <notes-file> | answer <request> | update <notes-file> <text> --by <name> --task <task-id> | open <notes-file> | active'
+         ' | block <task-id> --reason <text> [--by <name>] | pause <task-id> --reason <text> [--by <name>] | pending <notes-file> | answer <request> | update <notes-file> <text> --by <name> --task <task-id> | open <notes-file> | active'
          ' | fleet <notes-file> | waiting <task-id> <text> | crew <task-id>')
 
 
@@ -178,11 +185,11 @@ def state_lines(task):
     return out
 
 
-def blocks():
-    """Latest block record per task."""
+def holds(path, state):
+    """Latest block or pause record per task in path, each tagged with the status it reports."""
     out = {}
     try:
-        f = open(BLOCKS, encoding='utf-8')
+        f = open(path, encoding='utf-8')
     except FileNotFoundError:
         return out
     with f:
@@ -192,7 +199,16 @@ def blocks():
             except ValueError:
                 continue
             if isinstance(record.get('task'), str) and isinstance(record.get('reason'), str) and isinstance(record.get('lines'), int):
-                out[record['task']] = record
+                out[record['task']] = {**record, 'state': state}
+    return out
+
+
+def blocks():
+    """Latest block or pause record per task: of a task's latest block and latest pause, the later one; a tie is the pause."""
+    out = holds(BLOCKS, 'blocked')
+    for task, pause in holds(PAUSES, 'paused').items():
+        if task not in out or pause.get('at', 0) >= out[task].get('at', 0):
+            out[task] = pause
     return out
 
 
@@ -215,12 +231,12 @@ def outcomes():
 
 
 def derive(task, block, outcome=None):
-    """The task's status and, while it is blocked, the block's reason. A block holds while the status file has no state
-    line written after it and no outcome is recorded at or after it. With no meta, a done outcome reports done."""
+    """The task's status and, while it is blocked or paused, the reason. A block or pause holds while the status file has
+    no state line written after it and no outcome is recorded at or after it. With no meta, a done outcome reports done."""
     if not TASK_ID.match(task):
         return None, None
     if block is not None and len(state_lines(task)) <= block['lines'] and (outcome is None or outcome['at'] < block.get('at', 0)):
-        return 'blocked', block['reason']
+        return block['state'], block['reason']
     if os.path.exists(os.path.join(STATE, f'{task}.pr-poll-merge-notified')):
         return 'done', None
     if os.path.exists(os.path.join(STATE, f'{task}.meta')):
@@ -516,7 +532,7 @@ def noted(notes_file):
     except OSError:
         return set()
     ids = set(NOTE_ID.findall(text))
-    keys = {key_of(NOTE_ID.sub('', m)) for m in re.findall(r'^- \[.\] (.*)$', text, re.M)}
+    keys = {key_of(PAUSE_REASON.sub('', NOTE_ID.sub('', m))) for m in re.findall(r'^- \[.\] (.*)$', text, re.M)}
     return {r['task'] for r in links().values() if r.get('id') in ids or (r.get('id') is None and r['key'] in keys)}
 
 
@@ -534,7 +550,10 @@ def open_items(notes_file):
         m = TODO_ITEM.match(line) if inside else None
         if m and m.group(1) in OPEN_MARKS:
             found = NOTE_ID.search(m.group(2))
-            out.append({'id': found.group(1) if found else None, 'status': OPEN_MARKS[m.group(1)], 'text': NOTE_ID.sub('', m.group(2)).strip()})
+            rest = NOTE_ID.sub('', m.group(2)).strip()
+            why = PAUSE_REASON.search(rest) if m.group(1) == '/' else None
+            text = rest[:why.start()].strip() if why else rest
+            out.append({'id': found.group(1) if found else None, 'status': OPEN_MARKS[m.group(1)], 'text': text, **({'reason': why.group(1)} if why else {})})
     print(json.dumps(out, ensure_ascii=False))
 
 
@@ -703,15 +722,15 @@ def main(argv):
         if key not in links():
             die(f'no link for: {key}', 1)
         append({'unlink': True, 'key': key, 'at': int(time.time())})
-    elif verb == 'block' and len(args) >= 1:
+    elif verb in ('block', 'pause') and len(args) >= 1:
         task = args[0]
         by, rest = option(args[1:], '--by')
         if not TASK_ID.match(task):
             die(f'not a task id: {task}')
         if rest[:1] != ['--reason'] or len(rest) < 2 or ' '.join(rest[1:]).strip() == '':
-            die('block needs --reason <text>')
+            die(f'{verb} needs --reason <text>')
         reason = ' '.join(' '.join(rest[1:]).split())
-        append({'task': task, 'reason': reason, 'lines': len(state_lines(task)), **({} if by is None else {'by': by}), 'at': int(time.time())}, BLOCKS)
+        append({'task': task, 'reason': reason, 'lines': len(state_lines(task)), **({} if by is None else {'by': by}), 'at': int(time.time())}, BLOCKS if verb == 'block' else PAUSES)
     elif verb == 'pending' and len(args) == 1:
         pending(args[0])
     elif verb == 'answer' and len(args) == 1:

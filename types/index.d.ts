@@ -64,7 +64,7 @@ export type Fleet = { rows: FleetRow[]; calls: number; at: number }
 // The Work view's filters, keys 1 to 6.
 export type WorkGroup = 'you' | 'firstmate' | 'running' | 'idle' | 'done' | 'gone'
 
-export type Todo = { id: string; text: string; status: 'todo' | 'in-progress' | 'done' | 'declined' | 'blocked' }
+export type Todo = { id: string; text: string; status: 'todo' | 'in-progress' | 'done' | 'declined' | 'blocked' | 'paused' }
 
 declare module 'claude-code' {
   interface PluginState {
@@ -82,6 +82,7 @@ declare module 'claude-code' {
       cursor: string | null
       todoCursor: string | null
       todoOpen: string | null
+      todoPausing: string | null
       noteOpen: string | null
       hidden: Todo['status'][]
       fleet: Fleet | null

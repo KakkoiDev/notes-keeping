@@ -128,6 +128,7 @@ gets it on the first todo write; the heading layout of older and hand-edited fil
 - [x] done
 - [-] declined
 - [!] blocked
+- [/] paused <!-- paused:the review lane comes first -->
 ```
 
 One item per line. Edit the file by hand at any time; the plugin reads it back on every run. Lines in the section that
@@ -144,6 +145,10 @@ firstmate task, its hand-set mark and its bridge status, when you edit the wordi
 is when you edit. A file from before ids works as before, matched by text (lowercased, whitespace folded), and gets its
 ids on the next write; your wording is never changed. The pane, the objectives view and Claude's todo list leave the ids
 out.
+
+A paused item carries why it is paused on its line, before its id: `- [/] Ship the bridge <!-- paused:waiting on CI -->
+<!-- id:1kmv58p -->`. The pane, the Item view and Claude's context show it as `Ship the bridge (paused: waiting on CI)`;
+an item marked `[/]` by hand with no reason reads `(paused: no reason recorded)`. Any other status drops the reason.
 
 ### Who sets what
 
@@ -169,14 +174,15 @@ out.
 - Every change is logged in the notes file's `# Logs` section with who made it (see [Action log](#action-log)). A Laya
   move carries Laya's answer and its own probability. Undo one by clicking the item's marker.
 - Click an item's marker in the pane (or Enter on it) to cycle todo, in-progress, done, declined and back, step it with `f` and
-  `p` (see [In the pane](#in-the-pane)), or edit the marker by hand. Blocked is not in the cycle: a click, `f` or `p`
-  on a blocked item sets it to todo. Those statuses are yours: Laya leaves them, and a firstmate bridge report or
-  another click moves them.
+  `p` (see [In the pane](#in-the-pane)), or edit the marker by hand. Blocked and paused are not in the cycle: a click,
+  `f` or `p` on a blocked or paused item sets it to todo. `z` pauses the selected item: it asks why, and the reason
+  is written on the item and in the log row. Those statuses are yours: Laya leaves them, and a firstmate bridge report
+  or another click moves them.
 - Firstmate, when the session root holds an executable `config/notes-keeping-bridge` (a firstmate home that opted in;
   the bridge is this plugin's `bin/notes-keeping-bridge`, and `FM_ROOT` / `FM_HOME` name the firstmate checkout and home
   when it is run from here rather than through a link in `config/`):
   - On every todo run the plugin runs `bridge status <notes file>`, which prints
-    `{"<item text>": {"status": "blocked" | "in-progress" | "done" | null, "task": "<id>"}}` for every item linked to a firstmate
+    `{"<item text>": {"status": "blocked" | "paused" | "in-progress" | "done" | null, "task": "<id>"}}` for every item linked to a firstmate
     task; an item linked by id (`bridge link <task> id:<id>`) is printed as `"id:<id>"` with an `"id"` field and
     matched by id, an item linked by text (older links) by its text. A linked item follows that status forward and Laya is never asked about it; a null status leaves it where it
     is. `done` comes only from a landing: firstmate saw the task's PR merge (`state/<task>.pr-poll-merge-notified`), or
@@ -188,6 +194,12 @@ out.
     `blocked` with a `"reason"` field, move to `[!]` from todo or in-progress, and the log row reads
     `<task>[, by <name>]: <reason>`. The block holds until `state/<task>.status` gets a state line written after it, or an outcome is recorded after it; the
     item then follows the status the bridge reports (in-progress, done) out of blocked.
+  - `bridge pause <task> --reason <text> [--by <name>]` marks a task set aside on purpose, appended to
+    `state/notes-todo-pauses.jsonl`. Its linked items report `paused` with a `"reason"` field, move to `[/]` from todo,
+    in-progress or blocked with the reason written on the item, and the log row reads `<task>[, by <name>]: <reason>`.
+    Pausing it again with a fresh reason replaces the reason on the item; a reason you wrote yourself stays until the
+    bridge reports a different one. The pause holds as a block does, until a state line or an outcome after it; of a
+    task's latest block and latest pause, the later one is reported.
   - After every todo write, every click, and every five seconds, the plugin runs `bridge notify <notes file>` with the
     changes since its last write on stdin: `+ [ ] <item>` for a new item, `<item>: <from> -> <to> (<who>)` for every
     status change, each followed by ` [id:<id>]` when the item has an id. `<who>` is `captain` for a click, `laya`
@@ -204,7 +216,8 @@ out.
     seen before) is answered with why and not written. `bridge active` prints the notes file the latest session asked
     for, within the last 15 seconds, so firstmate needs no notes file of its own.
   - `bridge open <notes file>`, read-only, prints `[{"id", "status", "text"}]` for every item under `# Todo` that is not
-    done or declined, in file order, so firstmate can `link` the captain's existing item instead of queuing a duplicate.
+    done or declined, in file order, a paused one with its `"reason"`, so firstmate can `link` the captain's existing
+    item instead of queuing a duplicate.
   - Every five seconds an interactive session runs `bridge fleet <notes file>` for the [Work view](#work-view).
     `bridge waiting <task> <text>` sets the Waiting-on cell of a task's row, held until the task writes its next state
     line; `bridge crew <task>` prints `fm-crew-state.sh` for one task.
@@ -264,8 +277,13 @@ Every prompt carries every item that is not done or declined, in file order with
 and declined items it leaves out, which points to the notes file's `# Todo` section (each item with its marker, `[~]` for in-progress, and an instruction to start every
 open item now, in parallel, not waiting on one answer before starting another independent one; when an item is `[!]`
 blocked, an instruction to open the reply by telling the captain which items are blocked and why), each item as `label: text` with the text cut to 120 characters, or the cut text alone when it has no
-label. A prompt that already
-carries the whole notes file, after a compaction or a resume, does not repeat it. A compaction is seen through
+label, a paused item followed by `(paused: <reason>)`. A prompt that already
+carries the whole notes file, after a compaction or a resume, does not repeat it.
+
+When an item is `[/]` paused, every prompt also carries a paused block: each paused item with its reason, and an
+instruction to re-evaluate every one now and open the reply with the verdict for each, resume it or keep it paused
+with a fresh reason (`notes-keeping-bridge pause <task-id> --reason <text>` for firstmate). The prompt that carries
+the whole notes file, after a compaction or a resume, carries this block too, after the file. A compaction is seen through
 `session.compact` (the main conversation's, not a skipped or precomputed one, nor a subagent's), or by a changed first
 message where the engine puts its summary there.
 
@@ -323,11 +341,12 @@ the others dim.
 | --- | --- |
 | `j`, `k` | select the next or previous shown item; stays put at either end |
 | Up, Down | move the ring through every marker and text in turn (a marker or text under the ring selects its item) |
-| Enter | with the ring on its marker, cycle its status: todo, in-progress, done, declined, todo; blocked goes to todo. With the ring on its text, open it as `d` does |
+| Enter | with the ring on its marker, cycle its status: todo, in-progress, done, declined, todo; blocked and paused go to todo. With the ring on its text, open it as `d` does |
 | `d` | open it in the Item view, as a click on its text does |
 | `f` | step it forward one status; at declined it stays declined |
 | `p` | step it back one status; at todo it stays todo |
-| `1` `2` `3` `4` `5` | show or hide the `[ ]` todo, `[~]` in-progress, `[x]` done, `[-]` declined, `[!]` blocked items |
+| `z` | pause it: a field asks why; Enter writes `[/]` with the reason, logged as the captain. Enter on an empty field pauses nothing |
+| `1` `2` `3` `4` `5` `6` | show or hide the `[ ]` todo, `[~]` in-progress, `[x]` done, `[-]` declined, `[!]` blocked, `[/]` paused items |
 
 The row of toggles above the list is also the marker legend: `1: [ ] todo: shown  2: [~] in-progress: shown ...`,
 the same marks and names, in the same order, as the legend Claude reads with the list (both come from `MARKS` in

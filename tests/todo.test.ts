@@ -29,6 +29,8 @@ import {
   reconcile,
   settle,
   shown,
+  pausedContext,
+  row,
   withoutIds,
 } from '../hooks/todo'
 
@@ -144,6 +146,25 @@ describe('todo lines', () => {
     expect(items('- [!] spawn it').map(item => item.status)).toEqual(['blocked'])
     expect(format(parse('- [!] spawn it'))).toBe('- [!] spawn it')
     expect(cycle('blocked')).toBe('todo')
+  })
+
+  test('- [/] reads and writes back as paused with its reason; the reason sits before the id', () => {
+    const body = '- [/] **Ship**: Ship the bridge <!-- paused:waiting on the review slot --> <!-- id:ab12cd3 -->'
+    expect(items(body)).toEqual([{ status: 'paused', label: 'Ship', text: 'Ship the bridge', reason: 'waiting on the review slot', id: 'ab12cd3' }])
+    expect(format(parse(body))).toBe(body)
+    expect(items('- [/] no reason yet')).toEqual([{ status: 'paused', text: 'no reason yet' }])
+    expect(row(items(body)[0] ?? { status: 'todo', text: '' })).toBe('[/] Ship (paused: waiting on the review slot)')
+  })
+
+  test('pausing sets the reason; any later status drops it; a click on a paused item sets it back to todo', () => {
+    const paused = withoutIds(cycleItem('- [ ] one\n- [~] two', keyOf('two'), () => 'paused', 'the CI queue is full'))
+    expect(paused).toBe('- [ ] one\n- [/] two <!-- paused:the CI queue is full -->')
+    expect(cycle('paused')).toBe('todo')
+    expect(withoutIds(cycleItem(paused, keyOf('two')))).toBe('- [ ] one\n- [ ] two')
+  })
+
+  test('a reason cannot close its comment: -- is written as a single dash and the text is one line', () => {
+    expect(withoutIds(cycleItem('- [ ] one', keyOf('one'), () => 'paused', 'wait -->\nfor  CI'))).toBe('- [/] one <!-- paused:wait -> for CI -->')
   })
 })
 
@@ -493,7 +514,7 @@ describe('memory and reconcile', () => {
 
   test('an item the captain deleted leaves the memory', () => {
     const memory = { seen: ['gone'], ai: { gone: 'todo' as const }, pins: ['gone'], labeled: ['gone'], bridge: { gone: 'done' as const } }
-    expect(settle(memory, [])).toEqual({ seen: ['gone'], ai: {}, pins: [], labeled: [], bridge: {} })
+    expect(settle(memory, [])).toEqual({ seen: ['gone'], ai: {}, pins: [], labeled: [], bridge: {}, pauses: {} })
   })
 
   test('new items are added once, moves land on the status Laya read, and the AI remembers what it wrote', () => {
@@ -527,7 +548,7 @@ describe('memory and reconcile', () => {
 describe('context for Claude', () => {
   test('lists every open item under the legend', () => {
     const text = context('- [ ] a\n- [~] b\n- [x] c')
-    expect(text).toContain('([ ] todo, [~] in-progress, [x] done, [-] declined, [!] blocked)')
+    expect(text).toContain('([ ] todo, [~] in-progress, [x] done, [-] declined, [!] blocked, [/] paused)')
     expect(text).toContain('- [ ] a\n- [~] b\n1 done/declined items are not listed')
     expect(context('- [x] a')).toContain('Nothing is open.')
     expect(context('')).toBeUndefined()
@@ -557,6 +578,21 @@ describe('context for Claude', () => {
     expect(text).not.toContain('closed ')
     expect(text).toContain("45 done/declined items are not listed; read the notes file's # Todo section if you need them.")
     expect(text).not.toContain('more in the notes file')
+  })
+
+  test('each paused item is listed with its reason, and Claude is told to re-evaluate every one: resume it or keep it paused with a fresh reason', () => {
+    const body = '- [ ] a\n- [/] **Ship**: Ship the bridge <!-- paused:waiting on the review slot --> <!-- id:ab12cd3 -->\n- [/] Old one\n- [x] c'
+    const text = context(body) ?? ''
+    expect(text).toContain('- [ ] a\n- [/] Ship: Ship the bridge (paused: waiting on the review slot)\n- [/] Old one (paused: no reason recorded)\n')
+    const paused = pausedContext(body) ?? ''
+    expect(text).toContain(paused)
+    expect(paused).toContain('Paused ([/]): set aside on purpose, each with its reason.')
+    expect(paused).toContain('Re-evaluate every paused item now')
+    expect(paused).toContain('resume it, or keep it paused with a fresh reason')
+    expect(paused).toContain('notes-keeping-bridge pause <task-id> --reason <text>')
+    expect(paused).toContain('- [/] Ship: Ship the bridge (paused: waiting on the review slot)')
+    expect(pausedContext('- [ ] a\n- [!] b')).toBeUndefined()
+    expect(context('- [ ] a\n- [!] b')).not.toContain('Paused ([/])')
   })
 
   test('with no done or declined item there is no not-listed line', () => {
@@ -600,6 +636,39 @@ describe('bridge', () => {
     expect(bridgeMoves(blocked, { a: 'blocked' }, reported)).toEqual({})
     expect(bridgeMoves(blocked, { a: 'in-progress' }, reported)).toEqual({ a: { from: 'blocked', to: 'in-progress' } })
     expect(bridgeMoves(blocked, { a: 'done' }, reported)).toEqual({ a: { from: 'blocked', to: 'done' } })
+  })
+
+  test('a paused report moves an open or blocked item to paused, a blocked report lands on a paused item, and a later report moves it on', () => {
+    const open = [
+      { status: 'todo' as const, text: 'A' },
+      { status: 'in-progress' as const, text: 'B' },
+      { status: 'blocked' as const, text: 'C' },
+      { status: 'done' as const, text: 'D' },
+    ]
+    expect(bridgeMoves(open, { a: 'paused', b: 'paused', c: 'paused', d: 'paused' }, EMPTY)).toEqual({
+      a: { from: 'todo', to: 'paused' },
+      b: { from: 'in-progress', to: 'paused' },
+      c: { from: 'blocked', to: 'paused' },
+    })
+    const paused = [{ status: 'paused' as const, text: 'A' }]
+    const reported = { ...EMPTY, bridge: { a: 'paused' as const } }
+    expect(bridgeMoves(paused, { a: 'paused' }, reported)).toEqual({})
+    expect(bridgeMoves(paused, { a: 'blocked' }, reported)).toEqual({ a: { from: 'paused', to: 'blocked' } })
+    expect(bridgeMoves(paused, { a: 'in-progress' }, reported)).toEqual({ a: { from: 'paused', to: 'in-progress' } })
+  })
+
+  test('reconcile writes the reason the bridge reports on a paused item, and a fresh reason replaces the old one once', () => {
+    const moved = reconcile('- [ ] A', EMPTY, { add: [], set: { a: { from: 'todo', to: 'paused' } }, seen: [], bridge: { a: 'paused' }, reasons: { a: 'no slot' } })
+    expect(withoutIds(moved.body)).toBe('- [/] A <!-- paused:no slot -->')
+    const again = reconcile(moved.body, moved.memory, { add: [], set: {}, seen: [], bridge: { a: 'paused' }, reasons: { a: 'no slot' } })
+    expect(again.body).toBe(moved.body)
+    const fresh = reconcile(moved.body, moved.memory, { add: [], set: {}, seen: [], bridge: { a: 'paused' }, reasons: { a: 'the review is first' } })
+    expect(withoutIds(fresh.body)).toBe('- [/] A <!-- paused:the review is first -->')
+    // The captain wrote their own reason; the bridge's unchanged one does not overwrite it.
+    const mine = fresh.body.replace('the review is first', 'my call')
+    expect(reconcile(mine, fresh.memory, { add: [], set: {}, seen: [], bridge: { a: 'paused' }, reasons: { a: 'the review is first' } }).body).toBe(mine)
+    const resumed = reconcile(fresh.body, fresh.memory, { add: [], set: { a: { from: 'paused', to: 'in-progress' } }, seen: [], bridge: { a: 'in-progress' } })
+    expect(withoutIds(resumed.body)).toBe('- [~] A')
   })
 
   test('reconcile remembers what the bridge reported', () => {
@@ -660,7 +729,7 @@ describe('ids', () => {
   test('an item keeps its id, hand-set mark, AI status and bridge report when the captain edits its text', () => {
     const memory = { seen: [], ai: { ab12cd3: 'in-progress' as const }, pins: ['ab12cd3'], labeled: ['ab12cd3'], bridge: { ab12cd3: 'in-progress' as const } }
     const edited = [{ status: 'todo' as const, text: 'Review the PR again', id: 'ab12cd3' }]
-    expect(settle(memory, edited)).toEqual({ seen: [], ai: { ab12cd3: 'in-progress' }, pins: ['ab12cd3'], labeled: ['ab12cd3'], bridge: { ab12cd3: 'in-progress' } })
+    expect(settle(memory, edited)).toEqual({ seen: [], ai: { ab12cd3: 'in-progress' }, pins: ['ab12cd3'], labeled: ['ab12cd3'], bridge: { ab12cd3: 'in-progress' }, pauses: {} })
     // The captain set it back to todo; the same report does not move it again.
     expect(bridgeMoves(edited, { ab12cd3: 'in-progress' }, memory)).toEqual({})
     expect(bridgeMoves(edited, { ab12cd3: 'done' }, memory)).toEqual({ ab12cd3: { from: 'todo', to: 'done' } })
@@ -670,7 +739,7 @@ describe('ids', () => {
   test('memory kept under text keys before ids moves to the ids; the snapshot does not report the items as new', () => {
     const memory = { seen: [], ai: { a: 'done' as const }, pins: ['a'], labeled: ['a'], bridge: { a: 'done' as const } }
     const list = [{ status: 'done' as const, text: 'A', id: 'ab12cd3' }]
-    expect(settle(memory, list)).toEqual({ seen: [], ai: { ab12cd3: 'done' }, pins: ['ab12cd3'], labeled: ['ab12cd3'], bridge: { ab12cd3: 'done' } })
+    expect(settle(memory, list)).toEqual({ seen: [], ai: { ab12cd3: 'done' }, pins: ['ab12cd3'], labeled: ['ab12cd3'], bridge: { ab12cd3: 'done' }, pauses: {} })
     expect(diffSnapshot({ a: 'done' }, [{ status: 'done', text: 'A' }], list)).toEqual([])
     expect(diffSnapshot({ a: 'todo' }, list, list)).toEqual([{ item: list[0], from: 'todo', to: 'done', isFound: true }])
   })

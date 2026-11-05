@@ -2,7 +2,7 @@ import { expect, mock, test } from 'claude-code/testing'
 import type { On, RenderElement } from 'claude-code'
 import type { Engine } from 'claude-code/testing'
 import { nextStatus } from '../hooks/todos'
-import { context, idFor, items, withoutIds } from '../hooks/todo'
+import { context, idFor, items, pausedContext, withoutIds } from '../hooks/todo'
 import { sections, stamp } from '../hooks/notes'
 
 const HOME = '/home/me'
@@ -683,6 +683,23 @@ test('the first prompt after a compaction carries the whole notes file, once', a
   const notes = sent[2]?.context?.[0] ?? ''
   expect(notes).toContain(`Session notes kept by notes-keeping: ${BOUND}`)
   expect(notes).toContain(NOTES.trimEnd())
+})
+
+test('every prompt, the one after a compaction too, lists the paused items with their reasons and asks for them to be re-evaluated', async ($, on) => {
+  const head = { text: 'First prompt of the session' }
+  const sent = submitting(on)
+  const body = '- [ ] Open one\n- [/] Parked one <!-- paused:the review lane comes first --> <!-- id:ab12cd3 -->'
+  engine(on, { [BOUND]: NOTES.replace('# Important', `# Todo\n\n${body}\n\n# Important`) }, { [`session:${SESSION}`]: BOUND }, undefined, head)
+  await submit($, 'one')
+  head.text = `This session is being continued from a previous conversation that ran out of context. ${'x'.repeat(300)} summary`
+  await submit($, 'two')
+  await submit($, 'three')
+  const paused = pausedContext(body) ?? 'missing'
+  expect(paused).toContain('- [/] Parked one (paused: the review lane comes first)')
+  for (const row of sent) expect((row.context ?? []).join('\n')).toContain(paused)
+  expect(sent[1]?.context?.[0]).toContain(`Session notes kept by notes-keeping: ${BOUND}`)
+  expect(sent[1]?.context?.[1]).toBe(paused)
+  expect(sent[2]?.context?.[0]).toContain('- [ ] Open one')
 })
 
 test('a session continued with claude -c carries the notes on its first prompt, once', async ($, on) => {
@@ -1642,6 +1659,7 @@ test('the panel opens on the Todos view, t brings it back, and the other views c
     'show:done',
     'show:declined',
     'show:blocked',
+    'show:paused',
     'todo:ship it',
     'open:ship it',
     'select:down',
@@ -1649,6 +1667,7 @@ test('the panel opens on the Todos view, t brings it back, and the other views c
     'status:next',
     'status:prev',
     'item:open',
+    'item:pause',
   ])
   expect(await pane.find({ type: 'Text', text: 't todos, n paste, o objectives (u adds an update there), i important, c chat, q queue, h history, l logs, s send queue, Esc closes' })).toBeDefined()
   for (const at of ['view:objectives', 'view:important', 'view:chat', 'view:queue', 'view:logs']) {
@@ -2057,6 +2076,30 @@ test('a linked item whose task could not be started is blocked with the reason l
   await complete($, 'Nothing.')
   await flush()
   expect(bare(fs[BOUND])).toContain('- [~] Review this pr')
+})
+
+test('a linked item firstmate pauses is paused with the reason written on it and logged; a fresh reason replaces it; a later report resumes it', async ($, on) => {
+  const fs: Fs = { [BOUND]: setTodoFile('- [ ] Review this pr'), [PYTHON]: '', [BRIDGE]: '' }
+  engine(on, fs, { ...SESSION_BOUND })
+  fakeLaya()
+  bridge.links = { 'review this pr': { status: 'paused', task: 'pr-review', by: 'firstmate', reason: 'the fix lane comes first' } }
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: false })
+  await flush()
+  expect(bare(fs[BOUND])).toContain('- [/] Review this pr <!-- paused:the fix lane comes first -->')
+  expect(logsOf(fs[BOUND])).toContain(`- ${UTC} | firstmate | status | id:${idFor('Review this pr', new Set())} Review this pr | todo -> paused | pr-review, by firstmate: the fix lane comes first`)
+  const pane = await $.ui.mount({ ...NOTES_PANE, surface: 'terminal' })
+  expect((await pane.find({ key: 'show:paused' }))?.props).toMatchObject({ hotkey: '6', label: '[/] paused: shown' })
+  expect((await pane.find({ key: 'todo:review this pr' }))?.props.label).toBe('[/]')
+  expect((await pane.find({ key: 'open:review this pr' }))?.props.label).toBe('Review this pr (paused: the fix lane comes first)')
+  await pane.unmount()
+  bridge.links = { 'review this pr': { status: 'paused', task: 'pr-review', by: 'firstmate', reason: 'still behind the fix lane' } }
+  await complete($, 'Nothing.')
+  await flush()
+  expect(bare(fs[BOUND])).toContain('- [/] Review this pr <!-- paused:still behind the fix lane -->')
+  bridge.links = { 'review this pr': { status: 'in-progress', task: 'pr-review', by: 'firstmate' } }
+  await complete($, 'Nothing.')
+  await flush()
+  expect(bare(fs[BOUND])).toContain('- [~] Review this pr\n')
 })
 
 test('a status the captain sets on a linked item stays until the linked task changes state', async ($, on) => {
@@ -2651,10 +2694,34 @@ test('f steps the selected item forward and p back, stopping at declined and at 
   await pane.unmount()
 })
 
+test('z asks why and pauses the selected item with the reason; an empty answer pauses nothing', async ($, on) => {
+  const { fs, git, pane } = await keynav($, on, { [BRIDGE]: '' })
+  expect((await pane.find({ key: 'item:pause' }))?.props).toMatchObject({ hotkey: 'z' })
+  await ring($, 'todo:two')
+  await pane.press({ key: 'item:pause' })
+  expect((await pane.find({ key: 'todo:pause-reason' }))?.props).toMatchObject({ autoFocus: true })
+  await pane.input({ key: 'todo:pause-reason', text: '   ' })
+  await flush()
+  expect(await pane.find({ key: 'todo:pause-reason' })).toBeUndefined()
+  expect(marker(fs, 'Two')).toBe('~')
+  const notified = bridge.notified.length
+  const writes = commits(git).length
+  await pane.press({ key: 'item:pause' })
+  await pane.input({ key: 'todo:pause-reason', text: 'the CI queue is full' })
+  await flush()
+  expect(await pane.find({ key: 'todo:pause-reason' })).toBeUndefined()
+  expect(bare(fs[BOUND])).toContain('- [/] Two <!-- paused:the CI queue is full -->\n')
+  expect(logsOf(fs[BOUND]).some(row => row.includes('| captain | status |') && row.includes('Two | in-progress -> paused | the CI queue is full'))).toBe(true)
+  expect(bridge.notified.slice(notified).map(line => line.replace(/ \[id:[a-z0-9]+\]\n$/, '\n'))).toEqual(['Two: in-progress -> paused (captain)\n'])
+  expect(commits(git).length - writes).toBe(1)
+  expect((await pane.find({ key: 'open:two' }))?.props.label).toBe('Two (paused: the CI queue is full)')
+  await pane.unmount()
+})
+
 test('the row of toggles is the legend Claude reads with the todo list, mark and name, in its order', async ($, on) => {
   const { pane } = await keynav($, on)
   const legend = /notes-keeping \((.*?)\)\./.exec(context('- [ ] a') ?? '')?.[1]?.split(', ') ?? []
-  expect(legend).toHaveLength(5)
+  expect(legend).toHaveLength(6)
   const toggles = (await pane.findAll({ type: 'Button' })).filter(button => button.key?.startsWith('show:') === true)
   expect(toggles.map(button => button.props.label)).toEqual(legend.map(entry => `${entry}: shown`))
   const keys = (await pane.findAll({ type: 'Button' })).map(button => button.key ?? '')
@@ -2804,7 +2871,7 @@ test('d opens the selected item, the ring on the text of a row selects it, and t
   const { pane } = await keynav($, on, { [BOUND]: SOURCED })
   expect((await pane.find({ key: 'item:open' }))?.props).toMatchObject({ hotkey: 'd' })
   expect(
-    await pane.find({ type: 'Text', text: 'j and k select the next and previous item (Up and Down walk every marker and text), Enter or a click on its marker cycles its status, d or a click on its text opens it, f and p step it forward and back, 1 to 5 show or hide a status' }),
+    await pane.find({ type: 'Text', text: 'j and k select the next and previous item (Up and Down walk every marker and text), Enter or a click on its marker cycles its status, d or a click on its text opens it, f and p step it forward and back, z pauses it with a reason, 1 to 6 show or hide a status' }),
   ).toBeDefined()
   await pane.press({ key: 'item:open' })
   expect(await pane.find({ type: 'Text', text: '1. Ship the bridge\n   See the notes\n   - https://example.com/spec' })).toBeDefined()

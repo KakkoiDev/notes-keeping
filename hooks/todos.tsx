@@ -1,8 +1,8 @@
 import type { Todo } from '../types'
 import { legend, markOf } from './todo'
 
-export const STATUSES: readonly Todo['status'][] = ['todo', 'in-progress', 'done', 'declined', 'blocked']
-// Enter, f and p move through these; on a blocked item, which only the bridge sets, each lands on todo.
+export const STATUSES: readonly Todo['status'][] = ['todo', 'in-progress', 'done', 'declined', 'blocked', 'paused']
+// Enter, f and p move through these; on a blocked item, which only the bridge sets, or a paused one, each lands on todo.
 const CYCLE: readonly Todo['status'][] = ['todo', 'in-progress', 'done', 'declined']
 
 // The row the selection was last handed to, and the count of hand-overs.
@@ -41,11 +41,12 @@ export function nextShown(todos: readonly Todo[], id: string, hidden: readonly T
   return (todos.slice(at + 1).find(isShown) ?? todos.slice(0, Math.max(at, 0)).reverse().find(isShown))?.id
 }
 
-const SHOW: Record<Todo['status'], string> = { todo: '1', 'in-progress': '2', done: '3', declined: '4', blocked: '5' }
+const SHOW: Record<Todo['status'], string> = { todo: '1', 'in-progress': '2', done: '3', declined: '4', blocked: '5', paused: '6' }
 
 // The todo list of the notes panel's Todos view. The notes-todo work owns this file and the `todos` atom in
 // register.tsx: it fills the atom, `onCycle(id)` is called when a row's marker is clicked or Enter is pressed on it, and
-// `onOpen(id)` when its text is clicked or d is pressed.
+// `onOpen(id)` when its text is clicked or d is pressed, `onPause(id)` when z is pressed. `pause`, when set, is drawn in
+// place of the key row: the field that asks why.
 export function TodoSlot(props: {
   Box: any
   Button: any
@@ -59,8 +60,10 @@ export function TodoSlot(props: {
   onStep: (id: string, by: 1 | -1) => unknown
   onSelect: (id: string) => unknown
   onToggle: (status: Todo['status']) => unknown
+  onPause: (id: string) => unknown
+  pause?: unknown
 }) {
-  const { Box, Button, Text, todos, hidden, selected, landing, onCycle, onOpen, onStep, onSelect, onToggle } = props
+  const { Box, Button, Text, todos, hidden, selected, landing, onCycle, onOpen, onStep, onSelect, onToggle, onPause, pause } = props
   const shown = todos.filter(item => !hidden.includes(item.status))
   const step = (by: 1 | -1) => () => (selected === undefined ? undefined : onStep(selected, by))
   const at = shown.findIndex(item => item.id === selected)
@@ -108,8 +111,10 @@ export function TodoSlot(props: {
         <Button key="status:next" plain hotkey="f" label="next status" onPress={step(1)} />
         <Button key="status:prev" plain hotkey="p" label="previous status" onPress={step(-1)} />
         <Button key="item:open" plain hotkey="d" label="open item" onPress={() => (selected === undefined ? undefined : onOpen(selected))} />
+        <Button key="item:pause" plain hotkey="z" label="pause it" onPress={() => (selected === undefined ? undefined : onPause(selected))} />
       </Box>
-      <Text dimColor>j and k select the next and previous item (Up and Down walk every marker and text), Enter or a click on its marker cycles its status, d or a click on its text opens it, f and p step it forward and back, 1 to 5 show or hide a status</Text>
+      {pause ?? null}
+      <Text dimColor>j and k select the next and previous item (Up and Down walk every marker and text), Enter or a click on its marker cycles its status, d or a click on its text opens it, f and p step it forward and back, z pauses it with a reason, 1 to 6 show or hide a status</Text>
     </Box>
   )
 }

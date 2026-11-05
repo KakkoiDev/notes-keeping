@@ -233,6 +233,34 @@ check 'a block after a state line holds until the next one' 'blocked stalled aga
 echo "done [at=6]: PR https://x/pull/3" >> "$H/state/spawn-x.status"
 check 'a done line after the block clears it' 'in-progress' "$(st)"
 
+home
+b link spawn-x id:ab12cd3 --by firstmate
+b pause spawn-x --reason 'the review lane comes first' --by firstmate
+check 'a paused task reports paused with its reason' '{"id:ab12cd3": {"status": "paused", "task": "spawn-x", "id": "ab12cd3", "by": "firstmate", "reason": "the review lane comes first"}}' "$(b status /n.md)"
+check 'the pause is appended to notes-todo-pauses.jsonl with the reason and who paused it' 'spawn-x|the review lane comes first|firstmate|0' "$(python3 -c 'import json,sys; r=json.loads(open(sys.argv[1]).read().splitlines()[-1]); print(r["task"], r["reason"], r["by"], r["lines"], sep="|")' "$H/state/notes-todo-pauses.jsonl")"
+b pause spawn-x --reason '  waiting   on CI  '
+check 'a fresh pause replaces the reason, its whitespace folded' 'paused waiting on CI' "$(b status /n.md | python3 -c 'import json,sys; v=next(iter(json.load(sys.stdin).values())); print(v["status"], v["reason"])')"
+echo "working [at=5]: resumed" > "$H/state/spawn-x.status"
+: > "$H/state/spawn-x.meta"
+check 'a state line after the pause clears it' 'in-progress' "$(st)"
+b pause spawn-x --reason 'held for the captain'
+check 'a pause after a state line holds until the next one' 'paused held for the captain' "$(b status /n.md | python3 -c 'import json,sys; v=next(iter(json.load(sys.stdin).values())); print(v["status"], v["reason"])')"
+sleep 1
+b block spawn-x --reason 'no slot'
+check 'a block after the pause wins: the latest of the two holds' 'blocked no slot' "$(b status /n.md | python3 -c 'import json,sys; v=next(iter(json.load(sys.stdin).values())); print(v["status"], v["reason"])')"
+sleep 1
+b pause spawn-x --reason 'parked again'
+check 'a pause after the block wins' 'paused parked again' "$(b status /n.md | python3 -c 'import json,sys; v=next(iter(json.load(sys.stdin).values())); print(v["status"], v["reason"])')"
+
+home
+b pause spawn-x 2>/dev/null
+check 'pause without --reason is refused' '2' "$?"
+b pause spawn-x --reason '  ' 2>/dev/null
+check 'pause with an empty reason is refused' '2' "$?"
+b pause ../x --reason 'bad' 2>/dev/null
+check 'pause with a task id holding a path is refused' '2' "$?"
+check 'a refused pause writes nothing' 'absent' "$([ -e "$H/state/notes-todo-pauses.jsonl" ] && echo present || echo absent)"
+
 # The four steps of firstmate data/todo-bridge-stale/repro-1793776341: blocked, resumed, done line, cleanup.
 home
 b link egm id:0v0nnnz --by firstmate
@@ -353,6 +381,10 @@ b link lone-y id:ab12cd3
 check 'a live hold linked to an item in the notes file is a ! row' '! 0' "$(f fleet "$H/notes.md" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(next(r for r in d["rows"] if r["task"]=="lone-y")["flag"], d["calls"])')"
 printf '# Todo\n\n- [ ] Other <!-- id:zz99zz9 -->\n' > "$H/other.md"
 check 'the same hold is not tied to a notes file without that item' '1' "$(f fleet "$H/other.md" | python3 -c 'import json,sys; print(json.load(sys.stdin)["calls"])')"
+b unlink id:ab12cd3
+b link lone-y 'Parked by text'
+printf '# Todo\n\n- [/] Parked by text <!-- paused:after the review -->\n' > "$H/parked.md"
+check 'a hold linked by text to a paused item is tied to it, its reason not part of the text' '0' "$(f fleet "$H/parked.md" | python3 -c 'import json,sys; print(json.load(sys.stdin)["calls"])')"
 
 fleet_home
 meta origin-x 's:fm-origin-x'
@@ -441,8 +473,8 @@ f crew ../x 2>/dev/null
 check 'crew with a task id holding a path is refused' '2' "$?"
 
 home
-printf '# Objectives\n\n- [ ] not a todo item\n\n# Todo\n\n- [ ] Ship the bridge <!-- id:ab12cd3 -->\n- [x] Done one <!-- id:dd00000 -->\n- [-] Declined one\nnot an item\n- [~] **Short**: Started one <!-- id:cc11111 -->\n- [!] Blocked one\n\n# Important\n\n- [ ] not a todo item either\n' > "$H/n.md"
-check 'open prints every item under # Todo that is not done or declined, in file order, with its id' '[{"id": "ab12cd3", "status": "todo", "text": "Ship the bridge"}, {"id": "cc11111", "status": "in-progress", "text": "**Short**: Started one"}, {"id": null, "status": "blocked", "text": "Blocked one"}]' "$(b open "$H/n.md")"
+printf '# Objectives\n\n- [ ] not a todo item\n\n# Todo\n\n- [ ] Ship the bridge <!-- id:ab12cd3 -->\n- [x] Done one <!-- id:dd00000 -->\n- [-] Declined one\nnot an item\n- [~] **Short**: Started one <!-- id:cc11111 -->\n- [!] Blocked one\n- [/] Paused one <!-- paused:after the review --> <!-- id:ee22222 -->\n\n# Important\n\n- [ ] not a todo item either\n' > "$H/n.md"
+check 'open prints every item under # Todo that is not done or declined, in file order, with its id; a paused one with its reason' '[{"id": "ab12cd3", "status": "todo", "text": "Ship the bridge"}, {"id": "cc11111", "status": "in-progress", "text": "**Short**: Started one"}, {"id": null, "status": "blocked", "text": "Blocked one"}, {"id": "ee22222", "status": "paused", "text": "Paused one", "reason": "after the review"}]' "$(b open "$H/n.md")"
 check 'open on a missing notes file exits 1' '1' "$(b open "$H/none.md" 2>/dev/null; echo $?)"
 
 printf '\n' "" ; printf '%d passed, %d failed\n' "$pass" "$fail"

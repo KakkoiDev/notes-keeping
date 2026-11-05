@@ -1,9 +1,10 @@
 import type { Sections } from '../types'
 
-export type Status = 'todo' | 'in-progress' | 'done' | 'declined' | 'blocked'
+export type Status = 'todo' | 'in-progress' | 'done' | 'declined' | 'blocked' | 'paused'
 // label: the short name the model wrote for the item, shown in its place; the text stays whole beside it.
 // id: set once, kept when the text is edited; the item's objective or update line carries the same id.
-export type Item = { status: Status; text: string; label?: string; id?: string }
+// reason: why a paused item is paused, written on its line as <!-- paused:reason --> before the id.
+export type Item = { status: Status; text: string; label?: string; reason?: string; id?: string }
 export type Line = { item: Item } | { raw: string }
 // A candidate with isSure is an item as written (an update, a numbered objective); the others wait for Laya.
 export type Candidate = { text: string; isSure: boolean; id?: string }
@@ -13,11 +14,13 @@ export type Decision = { status: Status; label: string; p: number }
 // What the todo list remembers between runs: candidate lines already judged, the status the AI last wrote
 // per item, the items whose status the captain set (by hand or click), which the log flags when Laya changes them,
 // the items a label was asked for, each asked once, the status the bridge last reported per linked item, and the status
-// the captain clicked per item, which Laya leaves alone while the item keeps it.
-export type Memory = { seen: string[]; ai: Record<string, Status>; pins: string[]; labeled: string[]; bridge: Record<string, Status> }
+// the captain clicked per item, which Laya leaves alone while the item keeps it. pauses: the pause reason the bridge last
+// reported per linked item.
+export type Memory = { seen: string[]; ai: Record<string, Status>; pins: string[]; labeled: string[]; bridge: Record<string, Status>; pauses?: Record<string, string> }
 
-export const STATUSES: readonly Status[] = ['todo', 'in-progress', 'done', 'declined', 'blocked']
-// A click cycles these; blocked is set by firstmate through the bridge, and a click on a blocked item sets it to todo.
+export const STATUSES: readonly Status[] = ['todo', 'in-progress', 'done', 'declined', 'blocked', 'paused']
+// A click cycles these; blocked is set by firstmate through the bridge, paused by the pause key or the bridge, and a click
+// on a blocked or paused item sets it to todo.
 const CYCLE: readonly Status[] = ['todo', 'in-progress', 'done', 'declined']
 export const EMPTY: Memory = { seen: [], ai: {}, pins: [], labeled: [], bridge: {} }
 // A line is dropped as background only when Laya is this sure it is not a task.
@@ -29,7 +32,7 @@ export const CUELESS_FLOOR = 0.9
 // How many nats a start or finish cue in the reply adds to its option.
 const CUE_WEIGHT = 8
 
-const MARKS: Record<Status, string> = { todo: ' ', 'in-progress': '~', done: 'x', declined: '-', blocked: '!' }
+const MARKS: Record<Status, string> = { todo: ' ', 'in-progress': '~', done: 'x', declined: '-', blocked: '!', paused: '/' }
 
 export function markOf(status: Status): string {
   return `[${MARKS[status]}]`
@@ -39,17 +42,19 @@ export function markOf(status: Status): string {
 export function legend(status: Status): string {
   return `${markOf(status)} ${status}`
 }
-const ITEM = /^\s*[-*]\s+\[([ ~xX!-])\]\s+(\S.*?)\s*$/
+const ITEM = /^\s*[-*]\s+\[([ ~xX!/-])\]\s+(\S.*?)\s*$/
 const UPDATE_TAG = /^\[update\]/i
 // - [ ] **Short label**: the whole text
 const LABELED = /^\*\*(.+?)\*\*:\s+(\S.*)$/
 // A trailing <!-- id:x --> on an item line or on the first line of its objective or update.
 const ID = /\s*<!-- id:([a-z0-9]+) -->\s*$/
 const IDS = /[ \t]*<!-- id:[a-z0-9]+ -->/g
+// A trailing <!-- paused:reason --> on an item line, before its id.
+const REASON = /\s*<!-- paused:(.*?) -->\s*$/
 const MAX_TEXT = 120
 const MAX_LABEL = 48
 const MAX_LABEL_WORDS = 6
-const RANK: Record<Status, number> = { todo: 0, 'in-progress': 1, done: 2, declined: 2, blocked: 1 }
+const RANK: Record<Status, number> = { todo: 0, 'in-progress': 1, done: 2, declined: 2, blocked: 1, paused: 1 }
 // Laya's option names; its question says "refused or dropped" for rejected.
 const REPLY: Record<string, Status> = { started: 'in-progress', finished: 'done', rejected: 'declined' }
 // Checked in this order, so a refusal wins over a start and a start over a finish.
@@ -104,16 +109,31 @@ export function parse(body: string): Line[] {
       const m = ITEM.exec(split.line)
       if (m === null) return { raw: line }
       const status = statusOf(m[1] ?? ' ')
-      const rest = m[2] ?? ''
+      const why = REASON.exec(m[2] ?? '')
+      const rest = why === null ? m[2] ?? '' : (m[2] ?? '').slice(0, why.index)
       const named = LABELED.exec(rest)
       const item: Item = named === null ? { status, text: rest } : { status, text: named[2] ?? '', label: named[1] ?? '' }
-      return { item: split.id === undefined ? item : { ...item, id: split.id } }
+      const reasoned = why === null ? item : { ...item, reason: why[1] ?? '' }
+      return { item: split.id === undefined ? reasoned : { ...reasoned, id: split.id } }
     })
 }
 
 function written(item: Item): string {
-  const text = item.label === undefined ? item.text : `**${item.label}**: ${item.text}`
+  const named = item.label === undefined ? item.text : `**${item.label}**: ${item.text}`
+  const text = item.reason === undefined ? named : `${named} <!-- paused:${item.reason} -->`
   return item.id === undefined ? text : `${text} <!-- id:${item.id} -->`
+}
+
+// A reason as it is written: one line, with no -- to close its comment.
+export function cleanReason(reason: string): string {
+  return oneLine(reason).replace(/-{2,}/g, '-')
+}
+
+// The item with its status set: a paused one takes the reason given, else keeps its own; any other status has none.
+function withStatus(item: Item, status: Status, reason?: string): Item {
+  const { reason: had, ...rest } = item
+  const kept = status === 'paused' ? (reason === undefined ? had : cleanReason(reason)) : undefined
+  return kept === undefined ? { ...rest, status } : { ...rest, status, reason: kept }
 }
 
 // Every item without an id gets one.
@@ -136,8 +156,14 @@ export function shown(item: Item): string {
   return item.label ?? clip(item.text)
 }
 
+// A paused item's reason after its name: ` (paused: reason)`; empty for any other status.
+export function why(item: Item): string {
+  if (item.status !== 'paused') return ''
+  return ` (paused: ${item.reason === undefined || item.reason === '' ? 'no reason recorded' : item.reason})`
+}
+
 export function row(item: Item): string {
-  return `[${MARKS[item.status]}] ${shown(item)}`
+  return `[${MARKS[item.status]}] ${shown(item)}${why(item)}`
 }
 
 export function items(body: string): Item[] {
@@ -454,6 +480,7 @@ export function settle(memory: Memory, list: readonly Item[]): Memory {
   const labeled: string[] = []
   const ai: Record<string, Status> = {}
   const bridge: Record<string, Status> = {}
+  const pauses: Record<string, string> = {}
   for (const item of list) {
     const key = idOf(item)
     const isIn = (keys: readonly string[]) => keys.includes(key) || keys.includes(keyOf(item.text))
@@ -461,20 +488,23 @@ export function settle(memory: Memory, list: readonly Item[]): Memory {
     if (wrote !== undefined) ai[key] = wrote
     const reported = pick(memory.bridge, item)
     if (reported !== undefined) bridge[key] = reported
+    const paused = pick(memory.pauses ?? {}, item)
+    if (paused !== undefined) pauses[key] = paused
     if (isIn(memory.pins) || (wrote === undefined ? item.status !== 'todo' : wrote !== item.status)) pins.add(key)
     if (isIn(memory.labeled)) labeled.push(key)
   }
-  return { seen: memory.seen, ai, pins: [...pins], labeled, bridge }
+  return { seen: memory.seen, ai, pins: [...pins], labeled, bridge, pauses }
 }
 
 export function pin(memory: Memory, key: string): Memory {
   return memory.pins.includes(key) ? memory : { ...memory, pins: [...memory.pins, key] }
 }
 
-// A click on an item, by id or text key, sets its next status; the caller pins it. The write gives every item an id.
-export function cycleItem(body: string, key: string, change: (status: Status) => Status = cycle): string {
+// A click on an item, by id or text key, sets its next status; the caller pins it. reason: the pause reason, for a change
+// to paused. The write gives every item an id.
+export function cycleItem(body: string, key: string, change: (status: Status) => Status = cycle, reason?: string): string {
   const isIt = (item: Item) => idOf(item) === key || keyOf(item.text) === key
-  return format(withIds(parse(body).map(line => ('item' in line && isIt(line.item) ? { item: { ...line.item, status: change(line.item.status) } } : line))))
+  return format(withIds(parse(body).map(line => ('item' in line && isIt(line.item) ? { item: withStatus(line.item, change(line.item.status), reason) } : line))))
 }
 
 export type Move = { from: Status; to: Status }
@@ -486,13 +516,15 @@ export type Plan = {
   labels?: Readonly<Record<string, string>>
   labeled?: readonly string[]
   bridge?: Readonly<Record<string, Status>>
+  reasons?: Readonly<Record<string, string>>
 }
 // key: the item's key in the plan and the memory.
 export type Applied = { key: string; text: string; from: Status; to: Status; isHandSet: boolean }
 
 // Applies new items and status moves to the todo section as it is now. A move lands only on an item still in the
 // status Laya read; one the captain changed meanwhile is left. A move on a hand-set item is reported so it can be logged.
-// A body that changes gives every item an id; every id written is seen.
+// A pause reason the bridge reports is written on its paused item when the item moves to paused or the reason changed
+// since the last report. A body that changes gives every item an id; every id written is seen.
 export function reconcile(body: string, memory: Memory, plan: Plan): { body: string; memory: Memory; applied: Applied[] } {
   const settled = settle(memory, items(body))
   const ai = { ...settled.ai }
@@ -504,11 +536,15 @@ export function reconcile(body: string, memory: Memory, plan: Plan): { body: str
     const named = pick(plan.labels ?? {}, line.item)
     const item = line.item.label === undefined && named !== undefined ? { ...line.item, label: named } : line.item
     const move = pick(plan.set, item)
-    if (move === undefined || move.from !== item.status) return { item }
+    const reason = pick(plan.reasons ?? {}, item)
+    if (move === undefined || move.from !== item.status) {
+      const isFresh = item.status === 'paused' && reason !== undefined && reason !== pick(settled.pauses ?? {}, item)
+      return { item: isFresh ? withStatus(item, 'paused', reason) : item }
+    }
     applied.push({ key, text: item.text, from: move.from, to: move.to, isHandSet: pins.has(key) })
     ai[key] = move.to
     pins.delete(key)
-    return { item: { ...item, status: move.to } }
+    return { item: withStatus(item, move.to, reason) }
   })
   const have = new Set(items(body).flatMap(item => [idOf(item), keyOf(item.text)]))
   for (const item of plan.add) {
@@ -522,18 +558,25 @@ export function reconcile(body: string, memory: Memory, plan: Plan): { body: str
   const ids = out.flatMap(line => ('item' in line && line.item.id !== undefined ? [line.item.id] : []))
   const seen = [...new Set([...settled.seen, ...plan.seen, ...ids])]
   const labeled = [...new Set([...settled.labeled, ...(plan.labeled ?? [])])]
-  return { body: format(out), memory: { seen, ai, pins: [...pins], labeled, bridge: { ...settled.bridge, ...plan.bridge } }, applied }
+  // Kept under each item's key as written, the one settle reads first.
+  const pauses: Record<string, string> = { ...settled.pauses }
+  for (const line of out) {
+    const reason = 'item' in line ? pick(plan.reasons ?? {}, line.item) : undefined
+    if ('item' in line && reason !== undefined) pauses[idOf(line.item)] = reason
+  }
+  return { body: format(out), memory: { seen, ai, pins: [...pins], labeled, bridge: { ...settled.bridge, ...plan.bridge }, pauses }, applied }
 }
 
 // The moves the bridge's reported statuses make: forward only, and only when the report changed since the last run,
-// so a status the captain set on a linked item stays until the linked task's state changes again. Blocked lands on a todo
-// or in-progress item, and a blocked item takes any other report.
+// so a status the captain set on a linked item stays until the linked task's state changes again. Blocked and paused land
+// on a todo, in-progress, blocked or paused item, and a blocked or paused item takes any other report.
 export function bridgeMoves(list: readonly Item[], reported: Readonly<Record<string, Status>>, memory: Memory): Record<string, Move> {
   const set: Record<string, Move> = {}
   for (const item of list) {
     const to = pick(reported, item)
     if (to === undefined || to === pick(memory.bridge, item) || to === item.status) continue
-    const isForward = to === 'blocked' ? item.status === 'todo' || item.status === 'in-progress' : item.status === 'blocked' || RANK[to] > RANK[item.status]
+    const isHeld = (status: Status) => status === 'blocked' || status === 'paused'
+    const isForward = isHeld(to) ? RANK[item.status] <= 1 : isHeld(item.status) || RANK[to] > RANK[item.status]
     if (!isForward) continue
     set[idOf(item)] = { from: item.status, to }
   }
@@ -575,7 +618,19 @@ export function diffSnapshot(snapshot: Readonly<Record<string, Status>> | undefi
 }
 
 function brief(item: Item): string {
-  return item.label === undefined ? clip(item.text) : `${item.label}: ${clip(item.text)}`
+  return `${item.label === undefined ? clip(item.text) : `${item.label}: ${clip(item.text)}`}${why(item)}`
+}
+
+// What Claude reads about the paused items with every prompt, the one after a compaction too: each with its reason, and to
+// re-evaluate each one. Undefined when none is paused.
+export function pausedContext(body: string): string | undefined {
+  const paused = items(body).filter(item => item.status === 'paused')
+  if (paused.length === 0) return undefined
+  return [
+    'Paused ([/]): set aside on purpose, each with its reason. Re-evaluate every paused item now and open your reply with the verdict for each:',
+    'resume it, or keep it paused with a fresh reason (firstmate: notes-keeping-bridge pause <task-id> --reason <text>).',
+    ...paused.map(item => `- [${MARKS[item.status]}] ${brief(item)}`),
+  ].join('\n')
 }
 
 // What Claude reads each turn: the list, and to work every open item at once.
@@ -593,5 +648,6 @@ export function context(body: string): string | undefined {
   const blocked = list.some(item => item.status === 'blocked')
     ? ['Blocked ([!]): could not be started. Open your reply by telling the captain which items are blocked and why.']
     : []
-  return [`Todo list kept by notes-keeping (${STATUSES.map(legend).join(', ')}). The captain and the plugin set them; you never edit the notes file.`, head, ...blocked, ...shown, ...more].join('\n')
+  const paused = pausedContext(body)
+  return [`Todo list kept by notes-keeping (${STATUSES.map(legend).join(', ')}). The captain and the plugin set them; you never edit the notes file.`, head, ...blocked, ...shown, ...more, ...(paused === undefined ? [] : [paused])].join('\n')
 }
