@@ -19,7 +19,8 @@ export type Select = { mode: 'menu' | 'reply'; selection: string; row?: string; 
 // A reply's anchor: the note's id, the transcript row (requestId) the quoted text was selected in, and which occurrence of it in that row.
 export type Note = { id: string; row: string; at: number }
 
-export type Pair = { agent: string; user: string; note?: Note }
+// pasted: agent holds text the captain pasted (from source, when named) and user the notes taken on it.
+export type Pair = { agent: string; user: string; note?: Note; pasted?: { source?: string } }
 
 export type ChatNote = Note & { agent: string; user: string }
 

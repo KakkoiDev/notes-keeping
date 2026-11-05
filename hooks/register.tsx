@@ -10,15 +10,15 @@ import { importLegacy, logRow, readRows } from './logs'
 import {
   AGENT_TAG,
   USER_TAG,
-  addChat,
+  addQueued,
   addImportant,
   addLogs,
   addSession,
   addTurn,
+  queuedBlock,
   addUpdate,
   carryOver,
   chatNotes,
-  chatPair,
   create,
   dropEmptyUpdate,
   fileName,
@@ -86,7 +86,7 @@ const CREW_MS = 30_000
 // The ! rows already notified, as <task>@<hold stamp>.
 const NOTIFIED = 'fleet:notified'
 
-const SUBCOMMANDS = ['init', 'objectives', 'update', 'important', 'reply', 'replies', 'todo', 'history', 'show', 'hide', 'debug']
+const SUBCOMMANDS = ['init', 'objectives', 'update', 'important', 'reply', 'paste', 'note', 'replies', 'todo', 'history', 'show', 'hide', 'debug']
 
 const USAGE = [
   'Usage: /notes-keeping <subcommand>',
@@ -95,6 +95,8 @@ const USAGE = [
   '  update <text>              same as objectives',
   '  important [text]           add text, or the selected text, to # Important',
   '  reply <text>               queue the selected text and your reply; they go out with your next message',
+  '  paste [--from <source>] [text]  queue pasted text (the clipboard when no text) to go out with your next message',
+  '  note <text>                add a note to the last pasted text; the queue view edits it',
   '  replies                    open the panel at the queue: every reply editable, s moves all into the prompt',
   '  todo [sync]                show the todo list; sync runs Laya over the objectives and the last reply now',
   '  history [n|file]           list earlier notes; pick one to copy its objectives, updates and open todo items here',
@@ -750,6 +752,12 @@ async function isReleased($: EngineInterface, text: string): Promise<boolean> {
   }
 }
 
+// The clipboard's text, or empty when pbpaste fails.
+async function clipboardText($: EngineInterface): Promise<string> {
+  const pasted = await $.process.run(['pbpaste'], { timeoutMs: PASTE_MS }).catch(() => undefined)
+  return pasted?.exitCode === 0 ? pasted.stdout.trim() : ''
+}
+
 // A fleet row's report path: as the bridge names it, or relative to the session root, the firstmate home.
 async function reportPath($: EngineInterface, report: string): Promise<string> {
   return report.startsWith('/') ? report : `${await $.session.root()}/${report}`
@@ -861,12 +869,12 @@ async function sendQueue($: EngineInterface): Promise<void> {
     $.ui.toast('No replies queued.')
     return
   }
-  const filled = await $.prompt.fill({ text: pending.map(pair => chatPair(pair.agent, pair.user)).join('\n\n'), mode: 'insert' })
+  const filled = await $.prompt.fill({ text: pending.map(pair => queuedBlock(pair, false)).join('\n\n'), mode: 'insert' })
   if (!filled.isFilled) {
     $.ui.toast('The prompt box cannot take the replies now; they stay queued.')
     return
   }
-  warn($, told('', await edit($, 'reply', md => pending.reduce((text, pair) => addChat(text, pair.agent, pair.user, pair.note), md))))
+  warn($, told('', await edit($, 'reply', md => pending.reduce(addQueued, md))))
   await update($, queue, () => [])
   showQueue($, 0)
 }
@@ -1196,6 +1204,22 @@ export const register: Register = on => {
           await queueReply($, agent, rest, picked?.requestId)
           return { text: 'Reply queued; it goes out with your next message.' }
         }
+        case 'paste': {
+          const from = /^--from\s+(\S+)\s*/.exec(rest)
+          const text = (from === null ? rest : rest.slice(from[0].length)).trim() || (await clipboardText($))
+          if (text === '') return { text: 'Nothing to paste: give text, or copy some first.' }
+          const next = await update($, queue, list => [...list, { agent: text, user: '', pasted: from === null ? {} : { source: from[1] } }])
+          showQueue($, next.length)
+          return { text: `Pasted text queued${from === null ? '' : ` (from ${from[1]})`}; add notes with /notes-keeping note <text>. It goes out with your next message.` }
+        }
+        case 'note': {
+          if (rest === '') return { text: 'Usage: /notes-keeping note <text>' }
+          const list = await read($, queue)
+          const at = list.findLastIndex(pair => pair.pasted !== undefined)
+          if (at === -1) return { text: 'Paste text first: /notes-keeping paste [--from <source>] <text>.' }
+          await update($, queue, rows => rows.map((row, j) => (j === at ? { ...row, user: row.user === '' ? rest : `${row.user}\n${rest}` } : row)))
+          return { text: 'Note added to the pasted text.' }
+        }
         case 'replies':
           await showNotes($, 'queue')
           return {}
@@ -1240,7 +1264,7 @@ export const register: Register = on => {
     const pending = e.origin.kind === 'composer' && e.isMeta !== true ? await read($, queue) : []
     let text = e.text
     if (pending.length > 0) {
-      text = [...pending.map(pair => chatPair(pair.agent, pair.user)), e.text].join('\n\n')
+      text = [...pending.map(pair => queuedBlock(pair, false)), e.text].join('\n\n')
       warn($, told('', await edit($, 'reply', md => addTurn(md, pending, e.text))))
       await update($, queue, () => [])
       showQueue($, 0)
@@ -1745,7 +1769,7 @@ export const register: Register = on => {
           {list.map((pair, i) => (
             <Box key={`queued:${i}`} flexDirection="column" marginBottom={1}>
               <Text dimColor wrap="truncate-end">
-                {AGENT_TAG} {pair.agent.replace(/\s+/g, ' ')}
+                {pair.pasted === undefined ? AGENT_TAG : queuedBlock({ ...pair, user: '' }, false).split('\n')[0]} {pair.agent.replace(/\s+/g, ' ')}
               </Text>
               {Input === undefined ? (
                 <Text>{`${USER_TAG} ${pair.user}`}</Text>

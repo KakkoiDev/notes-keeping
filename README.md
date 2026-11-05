@@ -10,6 +10,8 @@ Session notes in `~/.notes-keeping/<date>-<time>-<project>-<session>.md`, commit
 | `objectives <text>`, `update <text>` | set the objectives; once set, add an `[UPDATE]` under `## Updates` |
 | `important [text]` | add text, or the selected text, to `# Important` |
 | `reply <text>` | queue the selected text and your reply |
+| `paste [--from <source>] [text]` | queue pasted text (a Slack message, an email) as its own entry; no text takes the clipboard. `--from` takes one word |
+| `note <text>` | add a note to the last pasted text; each note is one more line |
 | `replies` | open the panel at the queue view |
 | `todo [sync]` | show the todo list; `sync` runs Laya over the objectives and the last reply now |
 | `history [n\|file]` | list earlier notes; pick one to continue it here: its objectives, updates and open todo items (statuses kept) are copied into this file under a `Continuation of:` line, and the picked file is never written. Todo items marked done `[x]` or declined `[-]` are not copied, nor is an objective whose items are all done or declined (an objective with no item, or with one open, is copied) |
@@ -57,6 +59,23 @@ Any other key hands the keyboard back to the prompt and closes the pane. The pan
 Leaving the pane never blocks the next selection: Esc, the close mark, `x`, `i`, a sent reply, the Ctrl+q chord, switching tabs, and a click in the transcript (which also closes an open reply box) each leave the next selection free to open the menu. Selecting the same text again after Esc opens the menu once the poll (every 600 ms) has read any other text in between, as it does during a drag; a re-selection quicker than that (a double click on the same word) does nothing while the terminal still holds the old selection, because the plugin cannot tell it from a retained one. An empty reply keeps the box open.
 
 Queued replies go out ahead of your next message when you press Enter, unless you moved them into the prompt first with `s`.
+
+## Pasted text
+
+Text from outside the session gets notes the same way a reply does, through the same queue:
+
+1. `/notes-keeping paste --from Slack <the message>` (or copy it and run `/notes-keeping paste`).
+2. `/notes-keeping note <text>` once per note, or edit the notes in the Queue view (`q`), where the entry is the line `[PASTED from Slack] ...` with its notes in the field under it.
+3. Press Enter on your next message (or `s` in the panel): Claude gets the text and its notes as one block ahead of what you typed, and `# Chat` records the same block:
+
+```
+[PASTED from Slack]
+Can we ship Friday?
+[USER] QA owner is out this week
+ask for the QA list
+
+what should I answer?
+```
 
 ### Marks on replied text
 

@@ -422,6 +422,46 @@ test('a queued reply goes out with the next composer Enter, recorded as one turn
   expect(commits(git)).toEqual([`init: ${FILE}`, `reply: ${FILE}`])
 })
 
+test('pasted text and the notes taken on it go out as one message with the next composer Enter, recorded in # Chat', async ($, on) => {
+  const fs: Fs = {}
+  const sent = submitting(on)
+  const { git, ui } = engine(on, fs)
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: false })
+  await run($, 'init Plan')
+
+  expect((await run($, 'note too early')).text).toBe('Paste text first: /notes-keeping paste [--from <source>] <text>.')
+  expect((await run($, 'paste --from Slack Can we ship Friday?\nQA is still open.')).text).toBe(
+    'Pasted text queued (from Slack); add notes with /notes-keeping note <text>. It goes out with your next message.',
+  )
+  expect((await run($, 'note QA owner is out this week')).text).toBe('Note added to the pasted text.')
+  await run($, 'note ask for the QA list')
+  expect(ui.status.at(-1)).toBe('notes: 1 reply queued, sent with your next message. Ctrl+q: edit, remove, send')
+
+  await submit($, 'what should I answer?')
+
+  const block = '[PASTED from Slack]\nCan we ship Friday?\nQA is still open.\n[USER] QA owner is out this week\nask for the QA list'
+  expect(sent.map(row => row.text)).toEqual([`${block}\n\nwhat should I answer?`])
+  expect(fs[NOW]?.endsWith(`# Chat\n\n${block}\n\n[USER] what should I answer?\n`)).toBe(true)
+  expect(commits(git)).toEqual([`init: ${FILE}`, `reply: ${FILE}`])
+})
+
+test('paste with no text takes the clipboard; s moves it with its note into the prompt', async ($, on) => {
+  const fs: Fs = {}
+  const { ui } = engine(on, fs)
+  engineDraws(on)
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: false })
+  clipboard.text = 'Deploy is red\n'
+  expect((await run($, 'paste')).text).toBe('Pasted text queued; add notes with /notes-keeping note <text>. It goes out with your next message.')
+  clipboard.text = undefined
+  expect((await run($, 'paste')).text).toBe('Nothing to paste: give text, or copy some first.')
+  const pane = await $.ui.mount({ ...NOTES_PANE, surface: 'terminal' })
+  await pane.press({ key: 'view:queue' })
+  await pane.input({ key: 'reply:0', text: 'which deploy?' })
+  await pane.press({ key: 'send' })
+  expect(ui.fills.at(-1)).toEqual({ text: '[PASTED]\nDeploy is red\n[USER] which deploy?', mode: 'insert' })
+  await pane.unmount()
+})
+
 test('a slash command leaves the queue for the next typed message', async ($, on) => {
   const sent = submitting(on)
   engine(on, {}, {}, () => 'Q?')

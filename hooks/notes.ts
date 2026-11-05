@@ -193,9 +193,20 @@ export function addChat(md: string, agent: string, user: string, note?: Note): s
   return appendTo(md, CHAT, [LOGS], chatPair(agent, user, note))
 }
 
+// A queued entry as the prompt carries it, or with its note as the notes file does: pasted text under its source, then the notes on it.
+export function queuedBlock(pair: Pair, isFile: boolean): string {
+  if (pair.pasted === undefined) return chatPair(pair.agent, pair.user, isFile ? pair.note : undefined)
+  const head = pair.pasted.source === undefined ? '[PASTED]' : `[PASTED from ${pair.pasted.source}]`
+  return `${head}\n${pair.agent.trim()}${pair.user.trim() === '' ? '' : `\n${USER_TAG} ${pair.user.trim()}`}`
+}
+
+export function addQueued(md: string, pair: Pair): string {
+  return appendTo(md, CHAT, [LOGS], queuedBlock(pair, true))
+}
+
 // One turn that carried replies: each pair, then the message the user typed with them.
 export function addTurn(md: string, pairs: readonly Pair[], message: string): string {
-  const blocks = pairs.map(pair => chatPair(pair.agent, pair.user, pair.note))
+  const blocks = pairs.map(pair => queuedBlock(pair, true))
   return appendTo(md, CHAT, [LOGS], [...blocks, `${USER_TAG} ${message.trim()}`].join('\n\n'))
 }
 
