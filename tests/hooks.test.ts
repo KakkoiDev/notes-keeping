@@ -435,7 +435,7 @@ test('pasted text and the notes taken on it go out as one message with the next 
   )
   expect((await run($, 'note QA owner is out this week')).text).toBe('Note added to the pasted text.')
   await run($, 'note ask for the QA list')
-  expect(ui.status.at(-1)).toBe('notes: 1 reply queued, sent with your next message. Ctrl+q: edit, remove, send')
+  expect(ui.status.at(-1)).toBe('notes: 1 note on pasted text queued, sent with your next message. Ctrl+q: edit, remove, send')
 
   await submit($, 'what should I answer?')
 
@@ -459,6 +459,56 @@ test('paste with no text takes the clipboard; s moves it with its note into the 
   await pane.input({ key: 'reply:0', text: 'which deploy?' })
   await pane.press({ key: 'send' })
   expect(ui.fills.at(-1)).toEqual({ text: '[PASTED]\nDeploy is red\n[USER] which deploy?', mode: 'insert' })
+  await pane.unmount()
+})
+
+test('the n pane: pasted text stays; a selection in it opens the note box, the noted part is highlighted, the notes go out as queued notes, then the highlights clear; x clears the text', async ($, on) => {
+  const fs: Fs = { [BOUND]: '# Objectives\n\nPlan\n\n## Updates\n\n# Important\n\n# Chat\n' }
+  let selection: string | { text: string } | undefined
+  const sent = submitting(on)
+  const { clock, ui } = engine(on, fs, { [`session:${SESSION}`]: BOUND }, () => selection)
+  engineDraws(on)
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
+  await run($, 'show')
+  const pane = await $.ui.mount({ ...NOTES_PANE, surface: 'terminal' })
+  expect((await pane.find({ key: 'view:paste' }))?.props).toMatchObject({ hotkey: 'n' })
+  await pane.press({ key: 'view:paste' })
+  expect((await pane.find({ key: 'paste:text' }))?.props).toMatchObject({ autoFocus: true })
+  await pane.input({ key: 'paste:text', text: 'Can we ship Friday?\nQA is still open.' })
+  expect(await pane.find({ key: 'paste:text' })).toBeUndefined()
+  expect(await pane.find({ type: 'Text', text: 'Can we ship Friday?' })).toBeDefined()
+
+  selection = { text: 'QA is still open.' }
+  await clock.advance(1800)
+  expect(ui.shown).toBe('notes-keeping-select')
+  const box = await $.ui.mount({ ...SELECT_PANE, surface: 'terminal' })
+  expect((await box.find({ key: 'reply' }))?.props.autoFocus).toBe(true)
+  await box.input({ key: 'reply', text: 'who owns QA?' })
+  await box.unmount()
+  expect(ui.shown).toBe('notes-keeping')
+  expect(ui.status.at(-1)).toBe('notes: 1 note on pasted text queued, sent with your next message. Ctrl+q: edit, remove, send')
+  const marks = async () => (await pane.findAll({ type: 'Text', text: 'QA is still open.' })).filter(one => one.props.inverse === true)
+  expect(await marks()).toHaveLength(1)
+  await clock.advance(1200)
+
+  selection = { text: 'Can we ship Friday?' }
+  await clock.advance(1800)
+  expect(ui.shown).toBe('notes-keeping-select')
+  hostClose(ui, 'notes-keeping-select')
+  await clock.advance(1200)
+  expect(ui.shown).toBe('notes-keeping')
+  expect(await marks()).toHaveLength(1)
+
+  selection = undefined
+  await submit($, 'what should I answer?')
+  expect(sent.map(row => row.text)).toEqual(['[PASTED]\nQA is still open.\n[USER] who owns QA?\n\nwhat should I answer?'])
+  expect(await pane.find({ type: 'Text', text: 'Can we ship Friday?' })).toBeDefined()
+  expect(await marks()).toHaveLength(0)
+
+  expect((await pane.find({ key: 'paste:clear' }))?.props).toMatchObject({ hotkey: 'x' })
+  await pane.press({ key: 'paste:clear' })
+  expect(await pane.find({ type: 'Text', text: 'Can we ship Friday?' })).toBeUndefined()
+  expect(await pane.find({ key: 'paste:text' })).toBeDefined()
   await pane.unmount()
 })
 
@@ -1579,6 +1629,7 @@ test('the panel opens on the Todos view, t brings it back, and the other views c
   expect((await pane.find({ key: 'view:todos' }))?.props).toMatchObject({ hotkey: 't', dimColor: false })
   expect((await pane.findAll({ type: 'Button' })).map(button => button.key)).toEqual([
     'view:todos',
+    'view:paste',
     'view:objectives',
     'view:important',
     'view:chat',
@@ -1599,7 +1650,7 @@ test('the panel opens on the Todos view, t brings it back, and the other views c
     'status:prev',
     'item:open',
   ])
-  expect(await pane.find({ type: 'Text', text: 't todos, o objectives (u adds an update there), i important, c chat, q queue, h history, l logs, s send queue, Esc closes' })).toBeDefined()
+  expect(await pane.find({ type: 'Text', text: 't todos, n paste, o objectives (u adds an update there), i important, c chat, q queue, h history, l logs, s send queue, Esc closes' })).toBeDefined()
   for (const at of ['view:objectives', 'view:important', 'view:chat', 'view:queue', 'view:logs']) {
     await pane.press({ key: at })
     expect(await pane.find({ key: 'todo:ship it' })).toBeUndefined()

@@ -28,6 +28,7 @@ Toggle with ctrl+q (see below), `/notes-keeping show` / `hide`, or the `Notes` b
 | Key | Does |
 | --- | --- |
 | `t` | Todos view: the todo list (see [Todo list](#todo-list)) and the notes file path |
+| `n` | Paste view: paste outside text (a Slack message) and note parts of it (see [Pasted text](#pasted-text)) |
 | `o` | Objectives view: objectives and updates |
 | `i` | Important view |
 | `c` | Chat view |
@@ -62,7 +63,30 @@ Queued replies go out ahead of your next message when you press Enter, unless yo
 
 ## Pasted text
 
-Text from outside the session gets notes the same way a reply does, through the same queue:
+The Paste view (`n` in the panel) holds text from outside the session and takes notes on parts of it the way the transcript does:
+
+| Step | Keys |
+| --- | --- |
+| Open the panel at the Paste view | ctrl+q, then `n` |
+| Paste the text into the field, keep it | the terminal's paste, then Enter |
+| Note a part | select it with the mouse and hold still; the Note box opens on it; type the note, Enter queues it. The panel comes back with that part highlighted |
+| Leave a Note box without a note | Esc; the panel comes back at the Paste view |
+| Send the notes | `s` in the panel (into the prompt), or Enter on your next message |
+| Clear the text | `x` |
+
+Each note goes out like a queued reply, as its own block with the part it is on:
+
+```
+[PASTED]
+QA is still open.
+[USER] who owns QA?
+
+what should I answer?
+```
+
+Sending leaves the text in the view and clears its highlights, so the next notes start on the same text. `x` empties it. The status line counts notes on pasted text apart from replies (`notes: 1 reply, 2 notes on pasted text queued, ...`).
+
+The commands below do the same from the prompt, sending the whole text with its notes as one block:
 
 1. `/notes-keeping paste --from Slack <the message>` (or copy it and run `/notes-keeping paste`).
 2. `/notes-keeping note <text>` once per note, or edit the notes in the Queue view (`q`), where the entry is the line `[PASTED from Slack] ...` with its notes in the field under it.

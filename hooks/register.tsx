@@ -113,6 +113,8 @@ const handled = atom({ plugin: 'notes-keeping', key: 'handled' } as const, '')
 const queue = atom({ plugin: 'notes-keeping', key: 'queue' } as const, [] as Pair[])
 const editing = atom({ plugin: 'notes-keeping', key: 'editing' } as const, false)
 const draft = atom({ plugin: 'notes-keeping', key: 'draft' } as const, '')
+// The text the Paste view holds; sending its notes leaves it there.
+const pasteText = atom({ plugin: 'notes-keeping', key: 'pasteText' } as const, '')
 const view = atom({ plugin: 'notes-keeping', key: 'view' } as const, 'todos' as View)
 const isNotesOpen = atom({ plugin: 'notes-keeping', key: 'isNotesOpen' } as const, false)
 const picked = atom({ plugin: 'notes-keeping', key: 'picked' } as const, null as Opened | null)
@@ -791,17 +793,43 @@ async function important($: EngineInterface, text: string, tag: string): Promise
 }
 
 // The one status line the plugin has: queued replies, then the fleet rows that need the captain.
-let queuedCount = 0
+let queued: readonly Pair[] = []
 let callCount = 0
 
+// The queue counted by kind: replies to Claude's text, and notes on pasted text.
+function queuedText(list: readonly Pair[]): string | undefined {
+  const pasted = list.filter(pair => pair.pasted !== undefined).length
+  const replies = list.length - pasted
+  const parts = [replies === 0 ? '' : `${replies} repl${replies === 1 ? 'y' : 'ies'}`, pasted === 0 ? '' : `${pasted} note${pasted === 1 ? '' : 's'} on pasted text`].filter(part => part !== '')
+  return parts.length === 0 ? undefined : `notes: ${parts.join(', ')} queued, sent with your next message. Ctrl+q: edit, remove, send`
+}
+
+// The text cut where each part first occurs, in order of place; a part not found, or overlapping one before it, is not marked.
+function marks(text: string, parts: readonly string[]): { text: string; isMarked: boolean }[] {
+  const found = [...new Set(parts)]
+    .map(part => ({ at: text.indexOf(part), end: text.indexOf(part) + part.length }))
+    .filter(one => one.at !== -1 && one.end > one.at)
+    .sort((a, b) => a.at - b.at)
+  const out: { text: string; isMarked: boolean }[] = []
+  let at = 0
+  for (const one of found) {
+    if (one.at < at) continue
+    if (one.at > at) out.push({ text: text.slice(at, one.at), isMarked: false })
+    out.push({ text: text.slice(one.at, one.end), isMarked: true })
+    at = one.end
+  }
+  if (at < text.length) out.push({ text: text.slice(at), isMarked: false })
+  return out
+}
+
 function pinStatus($: EngineInterface): void {
-  const parts = [queuedCount === 0 ? undefined : `notes: ${queuedCount} repl${queuedCount === 1 ? 'y' : 'ies'} queued, sent with your next message. Ctrl+q: edit, remove, send`, workStatus(callCount)]
+  const parts = [queuedText(queued), workStatus(callCount)]
   const text = parts.filter(part => part !== undefined).join(' · ')
   $.ui.status(text === '' ? undefined : text)
 }
 
-function showQueue($: EngineInterface, n: number): void {
-  queuedCount = n
+function showQueue($: EngineInterface, list: readonly Pair[]): void {
+  queued = list
   pinStatus($)
 }
 
@@ -858,8 +886,16 @@ async function queueReply($: EngineInterface, agent: string, user: string, row?:
   const held = [...chatNotes((await read($, notes))?.sections.chat ?? ''), ...(await read($, queue)).flatMap(pair => (pair.note === undefined ? [] : [{ ...pair.note, agent: pair.agent }]))]
   const note = row === undefined ? undefined : { id: idFor(`${row}\n${agent}\n${user}`, new Set(held.map(one => one.id))), row, at: held.filter(one => one.row === row && one.agent === agent).length }
   const next = await update($, queue, list => [...list, note === undefined ? { agent, user } : { agent, user, note }])
-  showQueue($, next.length)
+  showQueue($, next)
   await finish($, agent)
+}
+
+// A note on a part of the Paste view's text: queued as pasted text with the note, then the notes panel is back at that view.
+async function queuePasted($: EngineInterface, part: string, user: string): Promise<void> {
+  const next = await update($, queue, list => [...list, { agent: part, user, pasted: {} }])
+  showQueue($, next)
+  await finish($, part)
+  await showNotes($, 'paste')
 }
 
 // Moves every queued reply into the prompt box; the user presses Enter. Nothing is sent from here.
@@ -876,14 +912,15 @@ async function sendQueue($: EngineInterface): Promise<void> {
   }
   warn($, told('', await edit($, 'reply', md => pending.reduce(addQueued, md))))
   await update($, queue, () => [])
-  showQueue($, 0)
+  showQueue($, [])
 }
 
 // An open notes pane holding the keyboard refuses the selection pane's focus and keeps it a tab behind, so it closes first.
-async function openSelect($: EngineInterface, selection: string, row: string | undefined): Promise<void> {
+// Text selected in the Paste view opens the note box at once.
+async function openSelect($: EngineInterface, selection: string, row: string | undefined, isPasted = false): Promise<void> {
   if ((await $.ui.panes()).some(pane => pane.id === PANE)) await hideNotes($)
-  await update($, select, () => ({ mode: 'menu', selection, ...(row === undefined ? {} : { row }), isPlaced: false, hadFocus: false }))
-  const opened = await $.ui.open({ id: SELECT, title: 'Selection', focus: true, closeOnEscape: true, rows: 4 })
+  await update($, select, () => ({ mode: isPasted ? 'reply' : 'menu', selection, ...(row === undefined ? {} : { row }), isPlaced: false, hadFocus: false, ...(isPasted ? { isPasted: true as const } : {}) }))
+  const opened = await $.ui.open({ id: SELECT, title: isPasted ? 'Note' : 'Selection', focus: true, closeOnEscape: true, rows: 4 })
   await update($, select, current => (current === null ? null : { ...current, isPlaced: opened.isPlaced }))
   isReflowed = true
   if (!opened.isPlaced && !isTold) {
@@ -994,13 +1031,19 @@ async function poll($: EngineInterface): Promise<string> {
     }
     await finish($, current.selection)
     isReflowed = false
+    // Esc or the close mark on the note box of pasted text goes back to the Paste view.
+    if (current.isPasted === true && selectPane === undefined) await showNotes($, 'paste')
     return `${current.mode} lost the keyboard, closed: ${current.selection}`
   }
   if (current !== null && isFocused && !current.hadFocus) await update($, select, () => ({ ...current, hadFocus: true }))
   // A selection with no transcript row lies in a pane or the prompt: while a pane of this plugin is shown it is the pane's text.
   const picked = await $.ui.selection()
   const isInPane = picked !== undefined && picked.requestId === undefined && panes.some(pane => (pane.id === PANE || pane.id === SELECT) && pane.isShown)
-  const text = isInPane ? '' : (picked?.text ?? '').trim()
+  // In the Paste view, a selection within the pasted text is one to note.
+  const pasted = await read($, pasteText)
+  const inPasted = (picked?.text ?? '').trim()
+  const isPasted = isInPane && inPasted !== '' && panes.some(pane => pane.id === PANE && pane.isShown) && (await read($, view)) === 'paste' && pasted.includes(inPasted)
+  const text = isInPane && !isPasted ? '' : (picked?.text ?? '').trim()
   // The first selection read after the dock opens or closes is the old one, moved by the reflow: it counts as answered.
   if (isReflowed) {
     isReflowed = false
@@ -1028,8 +1071,8 @@ async function poll($: EngineInterface): Promise<string> {
     return `still changing: ${text}`
   }
   if (!(await isReleased($, text))) return `held, the clipboard has not taken it: ${text}`
-  await openSelect($, text, picked?.requestId)
-  return `opened: ${text}`
+  await openSelect($, text, picked?.requestId, isPasted)
+  return `opened${isPasted ? ' on pasted text' : ''}: ${text}`
 }
 
 // Keeps an outcome only when it differs from the last one, so a quiet poll leaves one line.
@@ -1132,7 +1175,7 @@ export const register: Register = on => {
     if (e.reason === 'clear' || e.reason === 'resume') carried = await boundPath($)
     if (e.reason === 'clear') {
       await update($, queue, () => [])
-      showQueue($, 0)
+      showQueue($, [])
     }
     return next(e)
   })
@@ -1169,6 +1212,12 @@ export const register: Register = on => {
         await update($, select, () => null)
       }
       isReflowed = true
+      // Esc or the close mark on the note box of pasted text goes back to the Paste view; the testing kit cannot raise this close.
+      if (current?.isPasted === true) {
+        const done = await next(e)
+        await showNotes($, 'paste')
+        return done
+      }
     }
     if (e.id === PANE) {
       await update($, editing, () => false)
@@ -1209,7 +1258,7 @@ export const register: Register = on => {
           const text = (from === null ? rest : rest.slice(from[0].length)).trim() || (await clipboardText($))
           if (text === '') return { text: 'Nothing to paste: give text, or copy some first.' }
           const next = await update($, queue, list => [...list, { agent: text, user: '', pasted: from === null ? {} : { source: from[1] } }])
-          showQueue($, next.length)
+          showQueue($, next)
           return { text: `Pasted text queued${from === null ? '' : ` (from ${from[1]})`}; add notes with /notes-keeping note <text>. It goes out with your next message.` }
         }
         case 'note': {
@@ -1267,7 +1316,7 @@ export const register: Register = on => {
       text = [...pending.map(pair => queuedBlock(pair, false)), e.text].join('\n\n')
       warn($, told('', await edit($, 'reply', md => addTurn(md, pending, e.text))))
       await update($, queue, () => [])
-      showQueue($, 0)
+      showQueue($, [])
     }
     const path = await boundPath($)
     const isResumed = resumed
@@ -1394,16 +1443,17 @@ export const register: Register = on => {
       return (
         <Box flexDirection="column">
           <Text dimColor wrap="truncate-end">
-            {AGENT_TAG} {preview}
+            {current.isPasted === true ? '[PASTED]' : AGENT_TAG} {preview}
           </Text>
           <Input
             key="reply"
             label={USER_TAG}
-            placeholder="your reply; it goes out with your next message"
+            placeholder={current.isPasted === true ? 'your note on it; it goes out with your next message' : 'your reply; it goes out with your next message'}
             submitLabel="queue"
             autoFocus
             onSubmit={async (value: string) => {
-              if (value.trim() !== '') await queueReply($, current.selection, value.trim(), current.row)
+              if (value.trim() === '') return
+              await (current.isPasted === true ? queuePasted($, current.selection, value.trim()) : queueReply($, current.selection, value.trim(), current.row))
             }}
           />
         </Box>
@@ -1461,6 +1511,7 @@ export const register: Register = on => {
     const nav = (
       <Box key="nav" flexDirection="row" flexWrap="wrap" columnGap={2} marginBottom={1}>
         {tab('todos', 't', 'Todos', 'todos')}
+        {tab('paste', 'n', 'Paste', 'paste')}
         {tab('objectives', 'o', 'Objectives', 'objectives')}
         {work === null ? null : tab('work', 'w', calls === 0 ? 'Work' : `Work (${calls}!)`, 'work')}
         {tab('important', 'i', 'Important', 'important')}
@@ -1761,6 +1812,46 @@ export const register: Register = on => {
           </Box>
         )
       }
+    } else if (at === 'paste') {
+      const text = await read($, pasteText)
+      const parts = list.filter(pair => pair.pasted !== undefined).map(pair => pair.agent)
+      content =
+        text === '' ? (
+          <Box key="content" flexDirection="column">
+            {Input === undefined ? (
+              <Text dimColor>Paste from a terminal or desktop: this surface draws no field.</Text>
+            ) : (
+              <Input
+                key="paste:text"
+                label="Paste"
+                placeholder="paste the text here (a Slack message, an email); Enter keeps it"
+                submitLabel="keep"
+                rows={6}
+                autoFocus
+                onSubmit={async (value: string) => {
+                  if (value.trim() !== '') await update($, pasteText, () => value.trim())
+                }}
+              />
+            )}
+            {hint('Paste, then Enter keeps the text here. Select a part of it to note it.')}
+          </Box>
+        ) : (
+          <Box key="content" flexDirection="column">
+            <Text key="paste:shown">
+              {marks(text, parts).map((one, i) =>
+                one.isMarked ? (
+                  <Text key={`paste:mark:${i}`} inverse>
+                    {one.text}
+                  </Text>
+                ) : (
+                  one.text
+                ),
+              )}
+            </Text>
+            <Button key="paste:clear" plain hotkey="x" label="Clear" onPress={() => update($, pasteText, () => '')} />
+            {hint('Select a part to note it; noted parts stay highlighted until sent. s or your next message sends the notes, the text stays. x clears the text, b goes back')}
+          </Box>
+        )
     } else if (at === 'queue') {
       content = (
         <Box key="content" flexDirection="column">
@@ -1791,7 +1882,7 @@ export const register: Register = on => {
                 label="[remove]"
                 onPress={async () => {
                   const next = await update($, queue, rows => rows.filter((_, j) => j !== i))
-                  showQueue($, next.length)
+                  showQueue($, next)
                 }}
               />
             </Box>
@@ -1910,7 +2001,7 @@ export const register: Register = on => {
         <Box key="content" flexDirection="column">
           {slot}
           {current === null ? <Text dimColor>No notes for this session yet; the first write starts them.</Text> : <Text dimColor wrap="truncate-start">{current.path}</Text>}
-          {hint('t todos, o objectives (u adds an update there), i important, c chat, q queue, h history, l logs, s send queue, Esc closes')}
+          {hint('t todos, n paste, o objectives (u adds an update there), i important, c chat, q queue, h history, l logs, s send queue, Esc closes')}
         </Box>
       )
     }

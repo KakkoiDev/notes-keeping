@@ -13,8 +13,9 @@ export type Notes = { path: string; sections: Sections }
 
 export type NameParts = { date: string; time: string; project: string; shortId: string }
 
-// row: the transcript row the selection lies in; isPlaced: the selection pane is drawn; hadFocus: it held the keyboard, so losing it closes it.
-export type Select = { mode: 'menu' | 'reply'; selection: string; row?: string; isPlaced: boolean; hadFocus: boolean }
+// row: the transcript row the selection lies in; isPlaced: the selection pane is drawn; hadFocus: it held the keyboard, so losing it closes it;
+// isPasted: the selection lies in the text of the Paste view.
+export type Select = { mode: 'menu' | 'reply'; selection: string; row?: string; isPlaced: boolean; hadFocus: boolean; isPasted?: true }
 
 // A reply's anchor: the note's id, the transcript row (requestId) the quoted text was selected in, and which occurrence of it in that row.
 export type Note = { id: string; row: string; at: number }
@@ -25,8 +26,9 @@ export type Pair = { agent: string; user: string; note?: Note; pasted?: { source
 export type ChatNote = Note & { agent: string; user: string }
 
 // item: one todo item whole, opened from the Todos view; note: one reply, opened from its mark in the transcript; work:
-// the firstmate fleet, work-item one row of it whole, and work-report that row's report read in the pane.
-export type View = 'todos' | 'objectives' | 'important' | 'chat' | 'queue' | 'history' | 'logs' | 'item' | 'note' | 'work' | 'work-item' | 'work-report'
+// the firstmate fleet, work-item one row of it whole, and work-report that row's report read in the pane; paste: text the
+// captain pasted, to select parts of and note.
+export type View = 'paste' | 'todos' | 'objectives' | 'important' | 'chat' | 'queue' | 'history' | 'logs' | 'item' | 'note' | 'work' | 'work-item' | 'work-report'
 
 // The note the History view shows whole (preview) or is about to attach (confirm).
 export type Opened = { name: string; step: 'preview' | 'confirm' }
@@ -73,6 +75,7 @@ declare module 'claude-code' {
       queue: Pair[]
       editing: boolean
       draft: string
+      pasteText: string
       view: View
       isNotesOpen: boolean
       picked: Opened | null
