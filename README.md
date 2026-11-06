@@ -1,3 +1,17 @@
+# notes-keeping
+
+A Claude Code mod: a session notes file that survives compaction, a notes panel, and a selection band.
+
+## Install
+
+```sh
+git clone https://github.com/KakkoiDev/notes-keeping ~/Code/notes-keeping
+```
+
+Add the clone to `CLAUDE_CODE_PLUGIN_DIRS` (colon-separated absolute paths) in the `env` of your Claude Code settings, then restart Claude Code.
+
+License: MIT.
+
 Session notes in `~/.notes-keeping/<date>-<time>-<project>-<session>.md`, committed in that folder's own git repository (never pushed). Sections: `# Objectives` (with `## Updates`), `# Todo`, `# Important`, `# Chat`.
 
 ## Commands
@@ -526,8 +540,7 @@ Limits:
 
 ## ctrl+q
 
-The Notes button's chord works only when `~/.claude/keybindings.json` binds it. This repo tracks it as
-`claude-profiles/main/keybindings.json`, linked from `packages/claude/.claude/keybindings.json`:
+The Notes button's chord works only when `~/.claude/keybindings.json` binds it:
 
 ```json
 {
