@@ -524,6 +524,35 @@ async function runTodo($: EngineInterface, answer: string): Promise<void> {
     const own = verdict.probs[verdict.label] ?? 0
     return Math.abs(verdict.p - own) < 0.005 ? `${verdict.label} ${own.toFixed(2)}` : `${verdict.label} ${own.toFixed(2)}, ${verdict.p.toFixed(2)} with the ${verdict.label === 'started' ? 'start' : 'finish'} cue`
   }
+  const unlabeled = [...list.filter(item => item.label === undefined && !memory.labeled.includes(idOf(item))), ...add]
+  const named = await Promise.all(unlabeled.map(async item => [idOf(item), await askLabel($, item.text)] as const))
+  const labels: Record<string, string> = {}
+  for (const [key, label] of named) if (label !== undefined) labels[key] = label
+  const labeled = named.map(([key]) => key)
+  const added = add.map(item => (labels[idOf(item)] === undefined ? item : { ...item, label: labels[idOf(item)] }))
+  await applyTodo($, path, bridge, links, list, memory, { add: added, set, seen, labels, labeled, adders, addNotes, said })
+}
+
+// What a todo run writes besides the bridge's moves: new items with who added them, Laya's moves with what it said,
+// labels, and the candidate keys judged.
+type Changes = {
+  add: readonly Item[]
+  set: Record<string, Move>
+  seen: readonly string[]
+  labels: Readonly<Record<string, string>>
+  labeled: readonly string[]
+  adders: Readonly<Record<string, ActorId>>
+  addNotes: Readonly<Record<string, string>>
+  said: (key: string) => string
+}
+
+const NO_CHANGES: Changes = { add: [], set: {}, seen: [], labels: {}, labeled: [], adders: {}, addNotes: {}, said: () => '' }
+
+// Adds the moves the linked tasks' statuses make to the changes and writes them all onto the file as it is now, logs
+// each and sends them to the bridge.
+async function applyTodo($: EngineInterface, path: string, bridge: string | undefined, links: Record<string, Link>, list: readonly Item[], memory: Memory, changes: Changes): Promise<void> {
+  const { add: added, seen, labels, labeled, adders, addNotes, said } = changes
+  const set = { ...changes.set }
   const reported: Record<string, Status> = {}
   const reasons: Record<string, string> = {}
   for (const item of list) {
@@ -532,14 +561,8 @@ async function runTodo($: EngineInterface, answer: string): Promise<void> {
     if (link?.status === 'paused' && link.reason !== undefined) reasons[idOf(item)] = link.reason
   }
   Object.assign(set, bridgeMoves(list, reported, memory))
-  const unlabeled = [...list.filter(item => item.label === undefined && !memory.labeled.includes(idOf(item))), ...add]
-  const named = await Promise.all(unlabeled.map(async item => [idOf(item), await askLabel($, item.text)] as const))
-  const labels: Record<string, string> = {}
-  for (const [key, label] of named) if (label !== undefined) labels[key] = label
-  const labeled = named.map(([key]) => key)
-  const added = add.map(item => (labels[idOf(item)] === undefined ? item : { ...item, label: labels[idOf(item)] }))
   // The file may have changed while Laya ran: apply onto what is there now.
-  const { warned, changes } = await locked(async () => {
+  const { warned, changes: sent } = await locked(async () => {
     const latest = await readText($, path)
     const body = sections(latest).todo
     const out = reconcile(body, await readMemory($, path), { add: added, set, seen, labels, labeled, bridge: reported, reasons })
@@ -569,7 +592,31 @@ async function runTodo($: EngineInterface, answer: string): Promise<void> {
     return { warned: await save($, path, await logged($, path, todo, entries), 'todo'), changes: lines }
   })
   warn($, told('', warned))
-  if (bridge !== undefined) await notify($, bridge, path, changes)
+  if (bridge !== undefined) await notify($, bridge, path, sent)
+}
+
+// Each refresh moves the linked items to the statuses their firstmate tasks report, without waiting for a turn to end.
+// It asks neither Laya nor the label model and adds no item; while a todo run is under way it leaves the moves to it.
+// A failure is told once; the todo run at a turn end still tells each of its own.
+let isToldNoLinks = false
+async function syncLinks($: EngineInterface): Promise<void> {
+  const path = await keptPath($)
+  const bridge = await bridgeOf($)
+  if (isSyncing || path === undefined || bridge === undefined) return
+  isSyncing = true
+  try {
+    const links = await linked($, bridge, path)
+    const list = items(sections(await readText($, path)).todo)
+    await applyTodo($, path, bridge, links, list, settle(await readMemory($, path), list), NO_CHANGES)
+  } catch (error) {
+    if (!isToldNoLinks) $.ui.toast(`notes-keeping todo: ${message(error)}`)
+    isToldNoLinks = true
+  } finally {
+    isSyncing = false
+  }
+  const next = waiting
+  waiting = undefined
+  if (next !== undefined) await syncTodo($, next)
 }
 
 async function syncTodo($: EngineInterface, answer: string): Promise<void> {
@@ -1245,6 +1292,7 @@ export const register: Register = on => {
         await watchTodo($)
         await drainQueue($)
         await watchFleet($)
+        await syncLinks($)
       })
     }
     return next(e)

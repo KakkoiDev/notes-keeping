@@ -203,7 +203,10 @@ an item marked `[/]` by hand with no reason reads `(paused: no reason recorded)`
 - Firstmate, when the session root holds an executable `config/notes-keeping-bridge` (a firstmate home that opted in;
   the bridge is this plugin's `bin/notes-keeping-bridge`, and `FM_ROOT` / `FM_HOME` name the firstmate checkout and home
   when it is run from here rather than through a link in `config/`):
-  - On every todo run the plugin runs `bridge status <notes file>`, which prints
+  - On every todo run, and on every five-second refresh of an interactive session, the plugin runs
+    `bridge status <notes file>`. The refresh applies only these linked-item moves, with no Laya or label call and no
+    new item, so a marker follows its task within one refresh instead of waiting for a turn to end; a failing refresh
+    is told once. `status` prints
     `{"<item text>": {"status": "blocked" | "paused" | "in-progress" | "done" | null, "task": "<id>"}}` for every item linked to a firstmate
     task; an item linked by id (`bridge link <task> id:<id>`) is printed as `"id:<id>"` with an `"id"` field and
     matched by id, an item linked by text (older links) by its text. A linked item follows that status forward and Laya is never asked about it; a null status leaves it where it
@@ -212,6 +215,10 @@ an item marked `[/]` by hand with no reason reads `(paused: no reason recorded)`
     state line is `done` (a PR opened, a branch ready to land) is still `in-progress`. The move is logged as `firstmate` with the task id. `bridge link <task> <item> --by <name>` records who made
     the link (firstmate, a crewmate); `status` then prints a `"by"` field and the log row names it. A status you set on
     a linked item stays until the bridge reports a different one.
+  - A task whose `state/<task>.meta` holds `todo=id:<id>` links that item from spawn, with no `bridge link` call:
+    `status` prints it with the task's status (in-progress from its meta, blocked or paused from a block or pause) and no
+    `"by"` field. A link or an unlink recorded for the item wins over the meta. A `todo=` that is not `id:<id>` links
+    nothing.
   - `bridge block <task> --reason <text> [--by <name>]` marks a task that could not be started. Its linked items report
     `blocked` with a `"reason"` field, move to `[!]` from todo or in-progress, and the log row reads
     `<task>[, by <name>]: <reason>`. The block holds until `state/<task>.status` gets a state line written after it, or an outcome is recorded after it; the

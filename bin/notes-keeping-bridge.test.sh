@@ -62,6 +62,20 @@ printf 'window=w\nkind=ship\n' > "$H/state/scout-x.meta"
 check 'a ship task whose last state line is done stays in-progress until its done outcome' 'in-progress' "$(st)"
 
 home
+printf 'window=w\nkind=ship\ntodo=id:ab12cd3\n' > "$H/state/run-a.meta"
+check 'a meta whose todo= names an item id links it with no link record: in-progress from spawn' '{"id:ab12cd3": {"status": "in-progress", "task": "run-a", "id": "ab12cd3"}}' "$(b status /n.md)"
+b block run-a --reason 'no slot'
+check 'a meta-named item reports its task block with the reason' '{"id:ab12cd3": {"status": "blocked", "task": "run-a", "id": "ab12cd3", "reason": "no slot"}}' "$(b status /n.md)"
+b link other id:ab12cd3 --by firstmate
+check 'a link record for the item wins over a meta that names it' '{"id:ab12cd3": {"status": null, "task": "other", "id": "ab12cd3", "by": "firstmate"}}' "$(b status /n.md)"
+b unlink id:ab12cd3
+check 'an unlink of the item wins over a meta that names it' '{}' "$(b status /n.md)"
+
+home
+printf 'window=w\nkind=ship\ntodo=Ship the bridge\n' > "$H/state/run-b.meta"
+check 'a meta todo= in text links nothing: only an id names an item' '{}' "$(b status /n.md)"
+
+home
 b link first 'Ship  the BRIDGE'
 b link second 'ship the bridge'
 : > "$H/state/second.meta"
