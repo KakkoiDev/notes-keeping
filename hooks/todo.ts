@@ -25,12 +25,8 @@ const CYCLE: readonly Status[] = ['todo', 'in-progress', 'done', 'declined']
 export const EMPTY: Memory = { seen: [], ai: {}, pins: [], labeled: [], bridge: {} }
 // A line is dropped as background only when Laya is this sure it is not a task.
 export const BACKGROUND_FLOOR = 0.8
-// A status moves to the one a start or finish cue in the reply names when Laya, with the cue added, reaches CHANGE_FLOOR,
-// and to the other at CUELESS_FLOOR. Laya alone is not calibrated: its confidence did not rise with its precision.
-export const CHANGE_FLOOR = 0.5
-export const CUELESS_FLOOR = 0.9
-// How many nats a start or finish cue in the reply adds to its option.
-const CUE_WEIGHT = 8
+// Laya moves an item to in-progress at this score for "started": no wrong start at 0.7 on eval/bench.py, tune or held-out.
+export const START_FLOOR = 0.7
 
 const MARKS: Record<Status, string> = { todo: ' ', 'in-progress': '~', done: 'x', declined: '-', blocked: '!', paused: '/' }
 
@@ -56,15 +52,6 @@ const UPDATE_INDENT = '    '
 const MAX_LABEL = 48
 const MAX_LABEL_WORDS = 6
 const RANK: Record<Status, number> = { todo: 0, 'in-progress': 1, done: 2, declined: 2, blocked: 1, paused: 1 }
-// Laya's option names; its question says "refused or dropped" for rejected.
-const REPLY: Record<string, Status> = { started: 'in-progress', finished: 'done', rejected: 'declined' }
-// Checked in this order, so a refusal wins over a start and a start over a finish.
-const CUES: [string, RegExp][] = [
-  ['rejected', /\b(rejected|won't|will not|not (do|doing|build|building|write|writing|add|adding|worth|something)|(was|were|is|are|been|being|be|i|we|got|get) (\w+ )?skipp(ed|ing)|decided against|leav(e|ing) (it )?(out|undone|as it is)|leav(e|ing) .{0,30} out|out of scope|dropp(ed|ing)|refus\w+|declin\w+)\b|見送|やらない|行わない|手を付けません|範囲外|しません/i],
-  ['started', /\b(started|starting|begun|began|begin|beginning|working on|in progress|under ?way|partway|partly|half|in the middle|continu\w+|still|more (to do|remains|is open)|not (yet|drawn|hooked|connected|wired)|but not|spawn\w*|launch(ed|ing)|running|kicked off|dispatched|merge word|waiting (on|for)|awaiting|ready (to|for)|(pr|pull request) (is )?(open|opened|up)|opened (a |the )?(pr|pull request)|(not|nothing|\w+n't)( [\w']+){0,3} (merged|landed))\b|着手|始め|途中|進めて|半分/i],
-  ['finished', /\b(done|finish\w*|complete[d]?|implemented|landed|committed|fixed|verified|works|written|added|merged|in and)\b|完了|実装し|済み|仕上げ|通りました/i],
-]
-const QUOTED = /"[^"\n]*"|“[^”\n]*”|`[^`\n]*`|「[^」\n]*」/g
 const STOP = new Set(['this', 'that', 'with', 'from', 'have', 'will', 'your', 'should', 'must', 'into', 'also', 'then', 'than', 'when', 'what', 'they', 'them', 'their', 'there', 'here', 'just', 'make', 'been', 'were', 'does', 'done'])
 
 export function keyOf(text: string): string {
@@ -451,46 +438,19 @@ export function mentions(item: string, answer: string, siblings: readonly string
   return shares(own, tokensIn(words, ownLinks(item, answer)))
 }
 
-// The cue the reply gives for this item, read only from the sentences about it and the ones that carry on from them,
-// with the item's own words (four letters or more, as tokens are) removed so that "skipped-move counter" does not read
-// as a refusal, and quoted text removed so that Pushback on "done" does not read as a finish.
-function cueFor(item: string, answer: string, siblings: readonly string[]): string | undefined {
-  const sentences = answer.split(/(?<=[.!?。！？])\s+|\n+|;\s+/).filter(s => s.trim() !== '')
-  const about = sentences.map(s => mentions(item, s, siblings))
-  const other = sentences.map(s => siblings.some(text => text !== item && mentions(text, s, siblings)))
-  const own = tokensIn(wordsOf(siblings), item)
-  const text = sentences
-    .filter((_, i) => about[i] || (i > 0 && about[i - 1] && !other[i]))
-    .map(s => (s.replace(QUOTED, ' ').match(/[\p{L}\p{N}_']+/gu) ?? []).filter(word => word.length < 4 || ![...own].some(token => same(stem(word.toLowerCase()), token))).join(' '))
-    .join(' ')
-  return CUES.find(([, rx]) => rx.test(text))?.[0]
-}
-
-// Laya's probabilities with the option the cue names raised, as a distribution over the options.
-function posterior(probs: Record<string, number>, cue: string | undefined): Record<string, number> {
-  const scores = Object.entries(probs).map(([label, p]) => [label, Math.log(Math.max(p, 1e-4)) + (label === cue ? CUE_WEIGHT : 0)] as const)
-  const total = scores.reduce((sum, [, score]) => sum + Math.exp(score), 0)
-  return Object.fromEntries(scores.map(([label, score]) => [label, Math.exp(score) / total]))
-}
-
 export function isBackground(pTask: number): boolean {
   return 1 - pTask >= BACKGROUND_FLOOR
 }
 
-// The status a reply moves an item to, or undefined to leave it. Statuses only move forward, and never to declined: a
-// refusal cue only keeps the other cues from counting, and only the captain or firstmate declines an item. A status the
-// captain set is never moved.
+// The status a reply moves an item to, or undefined to leave it: todo to in-progress when Laya says started at START_FLOOR.
+// Laya never closes or declines an item: on eval/bench.py its best held-out score on those moves was 35 of 70. A status
+// the captain set is never moved.
 export function moved(item: Item, answer: string, verdict: Verdict | undefined, siblings: readonly string[] = [], isHandSet = false): Decision | undefined {
-  if (isHandSet || verdict === undefined || !mentions(item.text, answer, siblings)) return undefined
-  const found = cueFor(item.text, answer, siblings)
-  const cue = found === 'rejected' ? undefined : found
-  const odds = posterior(verdict.probs, cue)
-  const label = Object.keys(odds).reduce((best, key) => ((odds[key] ?? 0) > (odds[best] ?? 0) ? key : best))
-  const next = REPLY[label]
-  const p = odds[label] ?? 0
-  const floor = label === cue ? CHANGE_FLOOR : CUELESS_FLOOR
-  if (next === undefined || next === 'declined' || RANK[next] <= RANK[item.status] || p < floor) return undefined
-  return { status: next, label, p }
+  if (isHandSet || verdict === undefined || item.status !== 'todo' || !mentions(item.text, answer, siblings)) return undefined
+  const p = verdict.probs.started ?? 0
+  const label = Object.keys(verdict.probs).reduce((best, key) => ((verdict.probs[key] ?? 0) > (verdict.probs[best] ?? 0) ? key : best))
+  if (label !== 'started' || p < START_FLOOR) return undefined
+  return { status: 'in-progress', label, p }
 }
 
 // A record's value for an item: under its id, else under its text key (written before the item had an id).
