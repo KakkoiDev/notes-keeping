@@ -22,6 +22,7 @@ import {
   stampIds,
   summary,
 } from '../hooks/notes'
+import { candidates, items } from '../hooks/todo'
 
 const ID = '0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d'
 
@@ -176,6 +177,18 @@ describe('section writer', () => {
     expect(twice.updates).toBe('[UPDATE] 2026-10-24-10-00\nold change <!-- id:aaaaaaa -->')
     expect(twice.objectives).toBe('Old plan <!-- id:bbbbbbb -->\n\nNew plan')
     expect(twice.todo).toBe('- [~] old change <!-- id:aaaaaaa -->\n- [ ] Old plan <!-- id:bbbbbbb -->')
+  })
+
+  test('carryOver gives a carried update and objective the id this file already holds for the same item text, so each todo still finds its line by id', () => {
+    const previous = '# Objectives\n\nShip the exporter <!-- id:ccccccc -->\n\n## Updates\n\n[UPDATE] 2026-10-24-10-00\nfix the login bug <!-- id:aaaaaaa -->\n\n# Todo\n\n- [~] Ship the exporter <!-- id:ccccccc -->\n- [~] fix the login bug <!-- id:aaaaaaa -->\n\n# Important\n\n# Chat\n'
+    const here = setTodo(create('', ID), '- [ ] fix the login bug <!-- id:bbbbbbb -->\n- [ ] Ship the exporter <!-- id:ddddddd -->')
+    const md = carryOver(here, previous, 'old.md')
+    const s = sections(md)
+    expect(s.updates).toBe('[UPDATE] 2026-10-24-10-00\nfix the login bug <!-- id:bbbbbbb -->')
+    expect(s.objectives).toBe('Ship the exporter <!-- id:ddddddd -->')
+    expect(s.todo).toBe('- [ ] fix the login bug <!-- id:bbbbbbb -->\n- [ ] Ship the exporter <!-- id:ddddddd -->')
+    const ids = candidates(s).map(c => c.id)
+    for (const item of items(s.todo)) expect(ids).toContain(item.id)
   })
 
   test('summary and the panel text leave the ids out', () => {

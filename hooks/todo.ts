@@ -337,11 +337,13 @@ export function candidateKeys(c: Candidate): string[] {
   return c.id === undefined ? keysOf(c.text) : [c.id, ...keysOf(c.text)]
 }
 
-// The objective or update an item came from, whole and without ids: matched by id, else by text.
+// The objective or update an item came from, whole and without ids: matched by id, else by the text it yields, else by a whole line of
+// it (a label line or a wrapped detail line an item was once written from).
 export function sourceOf(s: Pick<Sections, 'objectives' | 'updates'>, item: Item): { section: 'objectives' | 'updates'; text: string } | undefined {
   const all = sources(s)
   const keys = keysOf(item.text)
-  const found = all.find(source => item.id !== undefined && source.id === item.id) ?? all.find(source => keysOf(source.text).some(key => keys.includes(key)))
+  const isLine = (source: Source) => source.whole.split('\n').some(line => keys.includes(keyOf(stripBullet(splitId(line).line))))
+  const found = all.find(source => item.id !== undefined && source.id === item.id) ?? all.find(source => keysOf(source.text).some(key => keys.includes(key))) ?? all.find(isLine)
   return found === undefined ? undefined : { section: found.section, text: withoutIds(found.whole) }
 }
 

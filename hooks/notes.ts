@@ -292,14 +292,18 @@ function updateEntries(updates: string): string[] {
 export function carryOver(md: string, previous: string, name: string): string {
   const from = sections(previous)
   const here = sections(md)
+  const mine = new Map(items(here.todo).flatMap(item => (item.id === undefined ? [] : [[keyOf(item.text), item.id] as const])))
+  // A carried line keeps the id of the item this file already holds for the same text, so the item finds its line.
+  const renamed = new Map(items(from.todo).flatMap(item => (item.id === undefined || mine.get(keyOf(item.text)) === undefined || mine.get(keyOf(item.text)) === item.id ? [] : [[item.id, mine.get(keyOf(item.text)) ?? ''] as const])))
+  const reid = (text: string) => text.replace(/<!-- id:([a-z0-9]+) -->/g, (all, id: string) => (renamed.has(id) ? `<!-- id:${renamed.get(id)} -->` : all))
   let out = setContinuation(md, name)
-  const goals = openObjectives(from.objectives, items(from.todo))
+  const goals = reid(openObjectives(from.objectives, items(from.todo)))
   if (goals !== '' && !withoutIds(here.objectives).includes(withoutIds(goals))) {
     out = setObjectives(out, [goals, here.objectives].filter(text => text !== '').join('\n\n'))
   }
   const own = updateEntries(here.updates)
   const ownBare = own.map(withoutIds)
-  const carried = updateEntries(from.updates).filter(entry => !ownBare.includes(withoutIds(entry)))
+  const carried = updateEntries(from.updates).map(reid).filter(entry => !ownBare.includes(withoutIds(entry)))
   if (carried.length > 0) out = setUpdates(out, [...carried, ...own].join('\n\n'))
   const lines = parse(here.todo)
   const have = new Set(items(here.todo).flatMap(item => [idOf(item), keyOf(item.text)]))
