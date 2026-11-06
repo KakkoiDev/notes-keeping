@@ -513,7 +513,10 @@ test('the n pane: pasted text stays; a selection in it opens the note box, the n
 
   selection = undefined
   await submit($, 'what should I answer?')
-  expect(sent.map(row => row.text)).toEqual(['[PASTED]\nQA is still open.\n[USER] who owns QA?\n\nwhat should I answer?'])
+  const whole = '[PASTED TEXT]\nCan we ship Friday?\nQA is still open.\n[END PASTED TEXT]'
+  const turn = `${whole}\n\n[PASTED]\nQA is still open.\n[USER] who owns QA?\n\nwhat should I answer?`
+  expect(sent.map(row => row.text)).toEqual([turn])
+  expect(fs[BOUND]?.endsWith(`# Chat\n\n${turn.replace(/what should I answer\?$/, '[USER] what should I answer?')}\n`)).toBe(true)
   expect(await pane.find({ type: 'Text', text: 'Can we ship Friday?' })).toBeDefined()
   expect(await marks()).toHaveLength(0)
 

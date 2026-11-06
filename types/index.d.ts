@@ -20,10 +20,11 @@ export type Select = { mode: 'menu' | 'reply'; selection: string; row?: string; 
 // A reply's anchor: the note's id, the transcript row (requestId) the quoted text was selected in, and which occurrence of it in that row.
 export type Note = { id: string; row: string; at: number }
 
-// pasted: agent holds text the captain pasted (from source, when named) and user the notes taken on it.
+// pasted: agent holds text the captain pasted (from source, when named) and user the notes taken on it; whole, when agent
+// is a part of it, holds the whole pasted text.
 // call: the answer in user to the call task, with agent the question; it goes to firstmate through the bridge, never into the prompt.
 // release: the task is held work, not a question, so the answer resumes it. isRefused: the bridge refused it; only s sends it again.
-export type Pair = { agent: string; user: string; note?: Note; pasted?: { source?: string }; call?: { task: string; release?: true; isRefused?: true } }
+export type Pair = { agent: string; user: string; note?: Note; pasted?: { source?: string; whole?: string }; call?: { task: string; release?: true; isRefused?: true } }
 
 export type ChatNote = Note & { agent: string; user: string }
 

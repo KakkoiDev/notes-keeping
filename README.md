@@ -88,9 +88,14 @@ The Paste view (`n` in the panel) holds text from outside the session and takes 
 | Send the notes | `s` in the panel (into the prompt), or Enter on your next message |
 | Clear the text | `x` |
 
-Each note goes out like a queued reply, as its own block with the part it is on:
+Each note goes out like a queued reply, as its own block with the part it is on. The whole pasted text goes out once ahead of the first note on it, so lines without a note reach Claude too. It is sent as is, at any length, and `# Chat` records it the same way:
 
 ```
+[PASTED TEXT]
+Can we ship Friday?
+QA is still open.
+[END PASTED TEXT]
+
 [PASTED]
 QA is still open.
 [USER] who owns QA?

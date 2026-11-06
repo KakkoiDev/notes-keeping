@@ -233,6 +233,24 @@ describe('section writer', () => {
     expect(sections(md).chat).toBe('[AI_AGENT] Merge?\n[USER] Yes\n\n[AI_AGENT] Push?\n[USER] No\n\n[USER] carry on')
   })
 
+  test('addTurn records a pasted text that notes are on whole, once, ahead of the first note on it', () => {
+    const whole = 'Can we ship Friday?\nQA is still open.\nDocs are done.'
+    const pairs = [
+      { agent: 'QA is still open.', user: 'who owns QA?', pasted: { whole } },
+      { agent: 'Merge?', user: 'Yes' },
+      { agent: 'Can we ship Friday?', user: 'not yet', pasted: { whole } },
+    ]
+    expect(sections(addTurn(create('Plan', ID), pairs, 'carry on')).chat).toBe(
+      [
+        `[PASTED TEXT]\n${whole}\n[END PASTED TEXT]`,
+        '[PASTED]\nQA is still open.\n[USER] who owns QA?',
+        '[AI_AGENT] Merge?\n[USER] Yes',
+        '[PASTED]\nCan we ship Friday?\n[USER] not yet',
+        '[USER] carry on',
+      ].join('\n\n'),
+    )
+  })
+
   test('a reply anchored to a transcript row carries its note id, row and occurrence after the quoted text, and reads back', () => {
     const note = { id: 'k3x9', row: '2cc6721d-79e7-4487-9aaa-a9ef47567336', at: 1 }
     let md = addChat(create('Plan', ID), 'Merge?', 'Yes')

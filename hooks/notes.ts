@@ -200,14 +200,25 @@ export function queuedBlock(pair: Pair, isFile: boolean): string {
   return `${head}\n${pair.agent.trim()}${pair.user.trim() === '' ? '' : `\n${USER_TAG} ${pair.user.trim()}`}`
 }
 
-export function addQueued(md: string, pair: Pair): string {
-  return appendTo(md, CHAT, [LOGS], queuedBlock(pair, true))
+// The prompt and the notes file carry each pasted text that notes are on whole, once, ahead of the first of them.
+export function queuedBlocks(pairs: readonly Pair[], isFile: boolean): string[] {
+  const shown = new Set<string>()
+  return pairs.flatMap(pair => {
+    const whole = pair.pasted?.whole
+    const block = queuedBlock(pair, isFile)
+    if (whole === undefined || shown.has(whole)) return [block]
+    shown.add(whole)
+    return [`[PASTED TEXT]\n${whole.trim()}\n[END PASTED TEXT]`, block]
+  })
+}
+
+export function addQueued(md: string, pairs: readonly Pair[]): string {
+  return appendTo(md, CHAT, [LOGS], queuedBlocks(pairs, true).join('\n\n'))
 }
 
 // One turn that carried replies: each pair, then the message the user typed with them.
 export function addTurn(md: string, pairs: readonly Pair[], message: string): string {
-  const blocks = pairs.map(pair => queuedBlock(pair, true))
-  return appendTo(md, CHAT, [LOGS], [...blocks, `${USER_TAG} ${message.trim()}`].join('\n\n'))
+  return appendTo(md, CHAT, [LOGS], [...queuedBlocks(pairs, true), `${USER_TAG} ${message.trim()}`].join('\n\n'))
 }
 
 // The quoted text runs from its tag to the note, never past another pair's tag.
