@@ -1744,6 +1744,36 @@ test('the queue view lists every queued reply in its own editable field, removes
   await pane.unmount()
 })
 
+test('a queue moved into the prompt goes out once when Enter lands before the move finishes', async ($, on) => {
+  const fs: Fs = { [BOUND]: NOTES }
+  const { ui } = engine(on, fs, { [`session:${SESSION}`]: BOUND }, () => 'Question one')
+  const sent = submitting(on)
+  engineDraws(on)
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: false })
+  await run($, 'reply one')
+  const pane = await $.ui.mount({ ...NOTES_PANE, surface: 'terminal' })
+  await pane.press({ key: 'view:queue' })
+  const pressed = pane.press({ key: 'send' })
+  while (ui.fills.length === 0) await Promise.resolve()
+  await submit($, `${ui.fills.at(-1)?.text}\n\nmine`)
+  await pressed
+  expect(sent.at(-1)?.text).toBe('[AI_AGENT] Question one\n[USER] one\n\nmine')
+  await pane.unmount()
+})
+
+test('two quick presses of send queue move the queue into the prompt once', async ($, on) => {
+  const fs: Fs = { [BOUND]: NOTES }
+  const { ui } = engine(on, fs, { [`session:${SESSION}`]: BOUND }, () => 'Question one')
+  engineDraws(on)
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: false })
+  await run($, 'reply one')
+  const pane = await $.ui.mount({ ...NOTES_PANE, surface: 'terminal' })
+  await pane.press({ key: 'view:queue' })
+  await Promise.all([pane.press({ key: 'send' }), pane.press({ key: 'send' })])
+  expect(ui.fills).toEqual([{ text: '[AI_AGENT] Question one\n[USER] one', mode: 'insert' }])
+  await pane.unmount()
+})
+
 test('the replies command opens the panel at the queue view', async ($, on) => {
   engine(on, {}, {}, () => 'Question one')
   await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: false })

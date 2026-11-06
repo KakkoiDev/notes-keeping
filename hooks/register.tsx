@@ -908,20 +908,25 @@ async function queuePasted($: EngineInterface, part: string, user: string): Prom
 }
 
 // Moves every queued reply into the prompt box; the user presses Enter. Nothing is sent from here.
+// The queue is emptied before the fill, so a second press or an Enter during the move finds nothing left to add.
 async function sendQueue($: EngineInterface): Promise<void> {
-  const pending = await read($, queue)
+  let pending: Pair[] = []
+  await update($, queue, list => {
+    pending = list
+    return []
+  })
   if (pending.length === 0) {
     $.ui.toast('No replies queued.')
     return
   }
+  showQueue($, [])
   const filled = await $.prompt.fill({ text: pending.map(pair => queuedBlock(pair, false)).join('\n\n'), mode: 'insert' })
   if (!filled.isFilled) {
+    showQueue($, await update($, queue, list => [...pending, ...list]))
     $.ui.toast('The prompt box cannot take the replies now; they stay queued.')
     return
   }
   warn($, told('', await edit($, 'reply', md => pending.reduce(addQueued, md))))
-  await update($, queue, () => [])
-  showQueue($, [])
 }
 
 // An open notes pane holding the keyboard refuses the selection pane's focus and keeps it a tab behind, so it closes first.
