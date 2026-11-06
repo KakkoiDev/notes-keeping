@@ -2838,6 +2838,60 @@ test('f steps the selected item forward and p back, stopping at declined and at 
   await pane.unmount()
 })
 
+const ARROWS = 'status:arrows'
+
+test('Right steps the selected item forward, stopping at declined; the change notifies the bridge once, as f does', async ($, on) => {
+  const { fs, git, pane } = await keynav($, on, { [BRIDGE]: '' })
+  await ring($, 'todo:one')
+  const notified = bridge.notified.length
+  const writes = commits(git).length
+  const seen: (string | undefined)[] = []
+  for (let i = 0; i < 4; i++) {
+    await pane.key({ key: 'right', in: ARROWS })
+    await flush()
+    seen.push(marker(fs, 'One'))
+  }
+  expect(seen).toEqual(['~', 'x', '-', '-'])
+  expect(bridge.notified.slice(notified).map(line => line.replace(/ \[id:[a-z0-9]+\]\n$/, '\n'))).toEqual([
+    'One: todo -> in-progress (captain)\n',
+    'One: in-progress -> done (captain)\n',
+    'One: done -> declined (captain)\n',
+  ])
+  expect(commits(git).length - writes).toBe(3)
+  expect(logsOf(fs[BOUND]).some(row => row.includes('| captain | status |') && row.includes('One | todo -> in-progress'))).toBe(true)
+  expect(marker(fs, 'Two')).toBe('~')
+  await pane.unmount()
+})
+
+test('Left steps the selected item back, stopping at todo; the change notifies the bridge once, as p does', async ($, on) => {
+  const { fs, git, pane } = await keynav($, on, { [BRIDGE]: '' })
+  await ring($, 'todo:three')
+  const notified = bridge.notified.length
+  const writes = commits(git).length
+  const seen: (string | undefined)[] = []
+  for (let i = 0; i < 4; i++) {
+    await pane.key({ key: 'left', in: ARROWS })
+    await flush()
+    seen.push(marker(fs, 'Three'))
+  }
+  expect(seen).toEqual(['~', ' ', ' ', ' '])
+  expect(bridge.notified.slice(notified).map(line => line.replace(/ \[id:[a-z0-9]+\]\n$/, '\n'))).toEqual([
+    'Three: done -> in-progress (captain)\n',
+    'Three: in-progress -> todo (captain)\n',
+  ])
+  expect(commits(git).length - writes).toBe(2)
+  expect(marker(fs, 'One')).toBe(' ')
+  await pane.unmount()
+})
+
+test('the arrow keys are drawn in the Todos key row as a legend, beside every existing key', async ($, on) => {
+  const { pane } = await keynav($, on)
+  const strip = await pane.find({ key: ARROWS })
+  expect(strip?.props).toMatchObject({ module: 'hooks/arrows.tsx' })
+  for (const key of ['select:down', 'select:up', 'status:next', 'status:prev', 'item:open', 'item:pause']) expect(await pane.find({ key })).toBeDefined()
+  await pane.unmount()
+})
+
 test('z asks why and pauses the selected item with the reason; an empty answer pauses nothing', async ($, on) => {
   const { fs, git, pane } = await keynav($, on, { [BRIDGE]: '' })
   expect((await pane.find({ key: 'item:pause' }))?.props).toMatchObject({ hotkey: 'z' })

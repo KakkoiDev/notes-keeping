@@ -413,6 +413,7 @@ pressed.
 | `d` | open it in the Item view, as a click on its text does |
 | `f` | step it forward one status; at declined it stays declined |
 | `p` | step it back one status; at todo it stays todo |
+| Left, Right | step it back or forward one status, as `p` and `f` do. Only after a click on the dim `left, right: previous, next status` strip at the end of the key row, which gives that strip the keyboard (Up and Down need no click); Esc returns the keyboard to the pane. Not drawn on mobile or vscode |
 | `z` | pause it: a field asks why; Enter writes `[/]` with the reason, logged as the captain. Enter on an empty field pauses nothing |
 | `a` | with an open call on it: its card in the Item view, the answer field open (a queued answer is in the field, to change) |
 | `v` | with a linked report: the report reader |

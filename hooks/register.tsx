@@ -182,6 +182,8 @@ let ticks = 0
 let lastTick = 0
 const outcomes: { at: number; text: string }[] = []
 let landing: Landing | undefined
+// Steps the selected to-do of the last Todos draw; the key strip's Left and Right reach it through ui.message.
+let stepSelected: ((by: 1 | -1) => unknown) | undefined
 
 async function boundPath($: EngineInterface): Promise<string | undefined> {
   const id = await $.session.id()
@@ -1289,6 +1291,14 @@ export const register: Register = on => {
     return done
   })
 
+  // Left and Right on the key strip step the selected to-do, through the path f and p use.
+  on('ui.message', { element: 'status:arrows' }, async ($, e, next) => {
+    const data = e.data
+    const by = typeof data === 'object' && data !== null && !Array.isArray(data) ? (data as { step?: unknown }).step : undefined
+    if (by === 1 || by === -1) await stepSelected?.(by)
+    return next(e)
+  })
+
   on('ui.close', async ($, e, next) => {
     if (e.id === SELECT) {
       const current = await read($, select)
@@ -1575,6 +1585,8 @@ export const register: Register = on => {
     const { Box, Button, Markdown, Text } = table
     // The mobile app draws no field.
     const Input = 'Input' in table ? table.Input : undefined
+    // Mobile and vscode draw no Client, so no arrow strip there.
+    const Client = 'Client' in table ? table.Client : undefined
     const current = await read($, notes)
     const isEditing = await read($, editing)
     const at = await read($, view)
@@ -1630,6 +1642,7 @@ export const register: Register = on => {
       const write = () => clickItem($, id, to, reason)
       await (item !== undefined && hide.includes(to(item.status)) ? handOver(nextShown(rows, id, hide), write) : write())
     }
+    stepSelected = by => (selected === undefined ? undefined : change(selected, status => stepStatus(status, by)))
     const pausing = await read($, todoPausing)
     const clockNow = await $.clock.now()
     const subLines: Record<string, SubLine[]> = {}
@@ -1662,6 +1675,7 @@ export const register: Register = on => {
         Box={Box}
         Button={Button}
         Text={Text}
+        Client={Client}
         todos={rows}
         hidden={hide}
         selected={selected}

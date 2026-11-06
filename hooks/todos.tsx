@@ -72,6 +72,7 @@ export function TodoSlot(props: {
   Box: any
   Button: any
   Text: any
+  Client?: any
   todos: readonly Todo[]
   hidden: readonly Todo['status'][]
   selected: string | undefined
@@ -91,7 +92,7 @@ export function TodoSlot(props: {
   // Keys drawn at the end of the key row, each only when it acts on the selected item.
   keys?: unknown
 }) {
-  const { Box, Button, Text, todos, hidden, selected, landing, onCycle, onOpen, onStep, onSelect, onToggle, onFilter, onPause, onCall, pause, lines, keys } = props
+  const { Box, Button, Text, Client, todos, hidden, selected, landing, onCycle, onOpen, onStep, onSelect, onToggle, onFilter, onPause, onCall, pause, lines, keys } = props
   const shown = todos.filter(item => !hidden.includes(item.status))
   const step = (by: 1 | -1) => () => (selected === undefined ? undefined : onStep(selected, by))
   const at = shown.findIndex(item => item.id === selected)
@@ -150,6 +151,7 @@ export function TodoSlot(props: {
         <Button key="status:prev" plain hotkey="p" label="previous status" onPress={step(-1)} />
         <Button key="item:open" plain hotkey="d" label="open item" onPress={() => (selected === undefined ? undefined : onOpen(selected))} />
         <Button key="item:pause" plain hotkey="z" label="pause it" onPress={() => (selected === undefined ? undefined : onPause(selected))} />
+        {Client === undefined ? null : <Client key="status:arrows" module="./arrows.tsx" />}
         {keys ?? null}
       </Box>
       {pause ?? null}
