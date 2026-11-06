@@ -43,7 +43,9 @@ const bridge: {
   // The argv after `call-answer` and the answer on stdin, each time; callFails: why the bridge refuses them, when it does.
   callAnswers: { argv: string[]; stdin: string }[]
   callFails: string | undefined
-} = { links: {}, notified: [], calls: [], argv: [], pending: [], answers: [], fleet: { rows: [], calls: 0 }, crew: '', callAnswers: [], callFails: undefined }
+  // When set, status exits 1 with this on stderr.
+  statusError: string | undefined
+} = { links: {}, notified: [], calls: [], argv: [], pending: [], answers: [], fleet: { rows: [], calls: 0 }, crew: '', callAnswers: [], callFails: undefined, statusError: undefined }
 // What the fake Laya answers; left undefined, the call fails.
 const laya: { answer: ((ask: Ask) => unknown) | undefined; asks: Ask[] } = { answer: undefined, asks: [] }
 // What the fake label model answers per prompt; left undefined, the call fails as an API error.
@@ -97,6 +99,7 @@ function engine(
   bridge.crew = ''
   bridge.callAnswers = []
   bridge.callFails = undefined
+  bridge.statusError = undefined
   model.answer = undefined
   model.asks = []
   clipboard.text = undefined
@@ -150,6 +153,7 @@ function engine(
         bridge.callAnswers.push({ argv: e.argv.slice(2), stdin: e.init?.stdin ?? '' })
         if (bridge.callFails !== undefined) return { value: { exitCode: 1, stdout: '', stderr: `notes-keeping-bridge: ${bridge.callFails}\n`, isStdoutTruncated: false, isStderrTruncated: false } }
       }
+      if (e.argv[1] === 'status' && bridge.statusError !== undefined) return { value: { exitCode: 1, stdout: '', stderr: bridge.statusError, isStdoutTruncated: false, isStderrTruncated: false } }
       const stdout =
         e.argv[1] === 'status'
           ? JSON.stringify(bridge.links)
@@ -2332,6 +2336,73 @@ test('a hand edit made between turns reaches the bridge within one refresh', asy
   await clock.advance(5_000)
   await flush()
   expect(bridge.notified).toHaveLength(1)
+  expect(fs[BOUND]).toBe(written)
+})
+
+test('a linked item follows its firstmate task within one refresh, with no turn ending: the move is logged and sent as firstmate', async ($, on) => {
+  const fs: Fs = { [BOUND]: setTodoFile('- [ ] Check tenant API leak'), [PYTHON]: '', [BRIDGE]: '' }
+  const { clock } = engine(on, fs, { ...SESSION_BOUND })
+  fakeLaya()
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
+  await flush()
+  bridge.links = { 'Check tenant API leak': { status: 'in-progress', task: 'leak-curl-tenants' } }
+  await clock.advance(5_000)
+  await flush()
+  expect(bare(fs[BOUND])).toContain('- [~] Check tenant API leak')
+  expect(logsOf(fs[BOUND])).toContain(`- ${TICK} | firstmate | status | ${cell('Check tenant API leak')} | todo -> in-progress | leak-curl-tenants`)
+  expect(bridge.notified).toContain(`Check tenant API leak: todo -> in-progress (firstmate leak-curl-tenants) [id:${idFor('Check tenant API leak', new Set())}]\n`)
+})
+
+test('a refresh with no new bridge report writes nothing, logs nothing and sends nothing', async ($, on) => {
+  const fs: Fs = { [BOUND]: setTodoFile('- [ ] Check tenant API leak'), [PYTHON]: '', [BRIDGE]: '' }
+  const { clock } = engine(on, fs, { ...SESSION_BOUND })
+  fakeLaya()
+  bridge.links = { 'Check tenant API leak': { status: 'in-progress', task: 'leak-curl-tenants' } }
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
+  await flush()
+  expect(bare(fs[BOUND])).toContain('- [~] Check tenant API leak')
+  const written = fs[BOUND]
+  const sent = bridge.notified.length
+  await clock.advance(5_000)
+  await flush()
+  await clock.advance(5_000)
+  await flush()
+  expect(fs[BOUND]).toBe(written)
+  expect(bridge.notified).toHaveLength(sent)
+})
+
+test('a refresh applies bridge reports only: it asks neither Laya nor the label model, even with a new update line and an unlabeled item waiting', async ($, on) => {
+  const fs: Fs = { [BOUND]: setTodoFile('- [ ] Check tenant API leak'), [PYTHON]: '', [BRIDGE]: '' }
+  const { clock } = engine(on, fs, { ...SESSION_BOUND })
+  fakeLaya()
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
+  await flush()
+  fakeLabels()
+  laya.asks.length = 0
+  model.asks.length = 0
+  fs[BOUND] = (fs[BOUND] ?? '').replace('## Updates', 'Write the release notes for the filter.\n\n## Updates')
+  bridge.links = { 'Check tenant API leak': { status: 'in-progress', task: 'leak-curl-tenants' } }
+  await clock.advance(5_000)
+  await flush()
+  expect(bare(fs[BOUND])).toContain('- [~] Check tenant API leak')
+  expect(laya.asks).toEqual([])
+  expect(model.asks).toEqual([])
+})
+
+test('a bridge status that fails on every refresh is told once, and the list is left as it is', async ($, on) => {
+  const fs: Fs = { [BOUND]: setTodoFile('- [ ] Check tenant API leak'), [PYTHON]: '', [BRIDGE]: '' }
+  const { clock, ui } = engine(on, fs, { ...SESSION_BOUND })
+  fakeLaya()
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
+  await flush()
+  const written = fs[BOUND]
+  const told = ui.toasts.length
+  bridge.statusError = 'no state dir'
+  for (let i = 0; i < 3; i++) {
+    await clock.advance(5_000)
+    await flush()
+  }
+  expect(ui.toasts.slice(told)).toEqual(['notes-keeping todo: bridge status failed: no state dir'])
   expect(fs[BOUND]).toBe(written)
 })
 
