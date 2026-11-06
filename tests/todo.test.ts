@@ -804,4 +804,20 @@ describe('ids', () => {
     expect(sourceOf(s, { status: 'todo', text: 'Last one', id: 'ddddddd' })).toEqual({ section: 'updates', text: '[UPDATE] t2\nLast one' })
     expect(sourceOf(s, { status: 'todo', text: 'Written by hand', id: 'eeeeeee' })).toBeUndefined()
   })
+
+  test('an item written from a label line or a wrapped detail line finds the block that holds that line whole; a line that only contains its words does not match', () => {
+    const s = {
+      objectives: '3. Share the OCR page <!-- id:0o9cgvi -->\nThis is the digest. It is here to make it easy\n to share what we did and why we chose the solution we chose.\n- https://example.com/a',
+      updates: '[Update] t1\nProject: webapp-cleanroom-poc\nAs a thought experiment, copy it <!-- id:0v86npk -->\n- run it locally',
+    }
+    expect(sourceOf(s, { status: 'todo', text: 'to share what we did and why we chose the solution we chose.', id: '0v7mo3v' })).toEqual({
+      section: 'objectives',
+      text: '3. Share the OCR page\nThis is the digest. It is here to make it easy\n to share what we did and why we chose the solution we chose.\n- https://example.com/a',
+    })
+    expect(sourceOf(s, { status: 'todo', text: 'Project: webapp-cleanroom-poc', id: '0sz9ax4' })).toEqual({
+      section: 'updates',
+      text: '[Update] t1\nProject: webapp-cleanroom-poc\nAs a thought experiment, copy it\n- run it locally',
+    })
+    expect(sourceOf(s, { status: 'todo', text: 'run it', id: 'fffffff' })).toBeUndefined()
+  })
 })
