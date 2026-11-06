@@ -304,7 +304,7 @@ Every action on the objectives and the todo list is one row at the end of the no
 
 Columns: UTC time, actor id, action (`status`, `added`, `objective`, `update`, `attach`), item id and label (`-` for
 none), `from -> to` (`none -> <status>` for an added item, `-` for none), and a note (Laya's answer and probability,
-the firstmate task, the copied file). The actors are listed once in `hooks/actors.ts`:
+the firstmate task, the copied file). An attach from History logs one `attach` row (the source notes file), one `added` row per copied todo item naming its id, and one `objective` row per copied objective no item stands for; items left behind as done or declined are not logged. The actors are listed once in `hooks/actors.ts`:
 
 | id | kind | who |
 | --- | --- | --- |

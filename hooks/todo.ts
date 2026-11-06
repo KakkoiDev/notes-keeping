@@ -366,20 +366,33 @@ export function stamped(s: Pick<Sections, 'objectives' | 'updates'>, list: reado
   return { objectives: lines.objectives.join('\n'), updates: lines.updates.join('\n') }
 }
 
+function linkedStatuses(objectives: string, list: readonly Item[]): { block: Block; linked: Status[] }[] {
+  const byId = new Map(list.flatMap(item => (item.id === undefined ? [] : [[item.id, item.status] as const])))
+  const byText = new Map(list.map(item => [keyOf(item.text), item.status] as const))
+  return blocks(objectives).map(block => ({
+    block,
+    linked: candidates({ objectives: block.lines.join('\n'), updates: '' }).flatMap(c =>
+      c.id === undefined ? keysOf(c.text).flatMap(key => byText.get(key) ?? []) : byId.get(c.id) ?? [],
+    ),
+  }))
+}
+
 // The objectives without the blocks whose items are all finished: a block is matched to its items by the text it yields as
 // a candidate, and one with no item in the list stays. Blank lines the cut leaves doubled are folded.
 export function openObjectives(objectives: string, list: readonly Item[]): string {
-  const byId = new Map(list.flatMap(item => (item.id === undefined ? [] : [[item.id, item.status] as const])))
-  const byText = new Map(list.map(item => [keyOf(item.text), item.status] as const))
   const lines = objectives.split('\n')
   const gone = new Set<number>()
-  for (const block of blocks(objectives)) {
-    const linked = candidates({ objectives: block.lines.join('\n'), updates: '' }).flatMap(c =>
-      c.id === undefined ? keysOf(c.text).flatMap(key => byText.get(key) ?? []) : byId.get(c.id) ?? [],
-    )
+  for (const { block, linked } of linkedStatuses(objectives, list)) {
     if (linked.length > 0 && linked.every(s => s === 'done' || s === 'declined')) for (let i = block.first; i <= block.last; i++) gone.add(i)
   }
   return lines.filter((_, i) => !gone.has(i)).join('\n').replace(/\n{3,}/g, '\n\n').trim()
+}
+
+// The objective blocks no item in the list is matched to, whole, in order.
+export function itemlessObjectives(objectives: string, list: readonly Item[]): string[] {
+  return linkedStatuses(objectives, list)
+    .filter(({ linked }) => linked.length === 0)
+    .map(({ block }) => block.lines.join('\n'))
 }
 
 const stem = (word: string): string => word.replace(/(ing|ed|es|s)$/, '').replace(/y$/, 'i')

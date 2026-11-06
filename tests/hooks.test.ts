@@ -598,6 +598,21 @@ test('history lists earlier notes of every project newest first and continues th
   expect(fs[NOW]?.match(/old change/g)?.length).toBe(2)
 })
 
+test('history logs the attach, one row per item carried over naming its id, and one per carried objective that has no item', async ($, on) => {
+  const old = `${DIR}/2026-10-24-09-00-firstmate-11111111.md`
+  const before = '# Objectives\n\nOld plan\n\n## Updates\n\n[UPDATE] 2026-10-24-10-00\nold change\n\n# Todo\n\n- [x] shipped\n- [~] old change\n- [ ] not yet\n\n# Important\n\n# Chat\n'
+  const fs: Fs = { [BOUND]: NOTES, [old]: before }
+  engine(on, fs, { [`session:${SESSION}`]: BOUND })
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: false })
+  await run($, 'history 1')
+  const rows = logsOf(fs[BOUND])
+  expect(rows).toContain(`- ${UTC} | captain | attach | - | - | 2026-10-24-09-00-firstmate-11111111.md`)
+  expect(rows).toContain(`- ${UTC} | captain | added | ${cell('old change')} | none -> in-progress | copied from 2026-10-24-09-00-firstmate-11111111.md`)
+  expect(rows).toContain(`- ${UTC} | captain | added | ${cell('not yet')} | none -> todo | copied from 2026-10-24-09-00-firstmate-11111111.md`)
+  expect(rows).toContain(`- ${UTC} | captain | objective | - | - | copied from 2026-10-24-09-00-firstmate-11111111.md: Old plan`)
+  expect(rows.join('\n')).not.toContain('shipped')
+})
+
 test('the panel History view lists other notes newest first; Enter previews one read-only, a asks before attaching, Enter alone never attaches', async ($, on) => {
   const old = `${DIR}/2026-10-24-09-00-firstmate-11111111.md`
   const newer = `${DIR}/2026-10-25-18-30-dotfiles-22222222.md`
@@ -655,8 +670,9 @@ test('the panel History view lists other notes newest first; Enter previews one 
   expect(fs[BOUND]).not.toContain('dropped')
   expect(fs[BOUND]).toContain('The plan')
   expect(ui.toasts.at(-1)).toContain('the original is unchanged')
-  expect(logsOf(fs[BOUND]).slice(-3)).toEqual([
+  expect(logsOf(fs[BOUND]).slice(-4)).toEqual([
     `- ${UTC} | captain | attach | - | - | 2026-10-24-09-00-firstmate-11111111.md`,
+    `- ${UTC} | captain | objective | - | - | copied from 2026-10-24-09-00-firstmate-11111111.md: Old plan`,
     `- ${UTC} | captain | added | ${cell('old change')} | none -> in-progress | copied from 2026-10-24-09-00-firstmate-11111111.md`,
     `- ${UTC} | captain | added | ${cell('not yet')} | none -> todo | copied from 2026-10-24-09-00-firstmate-11111111.md`,
   ])

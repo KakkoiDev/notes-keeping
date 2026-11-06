@@ -17,6 +17,7 @@ import {
   addTurn,
   queuedBlock,
   addUpdate,
+  carriedGoals,
   carryOver,
   chatNotes,
   create,
@@ -693,7 +694,8 @@ async function attach($: EngineInterface, pick: string, actor: ActorId): Promise
     const copied: Entry[] = found
       .filter(change => change.isFound !== true)
       .map(change => ({ at, actor, action: 'added', item: change.item, to: change.to, note: `copied from ${pick}` }))
-    const entries = [...foundEntries(found, at), { at, actor, action: 'attach' as const, note: pick }, ...copied]
+    const goals: Entry[] = carriedGoals(md, previous).map(goal => ({ at, actor, action: 'objective', note: `copied from ${pick}: ${withoutIds(goal)}` }))
+    const entries = [...foundEntries(found, at), { at, actor, action: 'attach' as const, note: pick }, ...goals, ...copied]
     // Lines the linked file's todo run already judged are not asked again here.
     const mine = await readMemory($, path)
     const seen = [...new Set([...mine.seen, ...(await readMemory($, `${dir}/${pick}`)).seen])]

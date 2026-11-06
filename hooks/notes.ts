@@ -1,6 +1,6 @@
 import type { ChatNote, NameParts, Note, Pair, Sections } from '../types'
 import type { Item } from './todo'
-import { format, idOf, items, keyOf, openObjectives, parse, stamped, withoutIds } from './todo'
+import { format, idOf, itemlessObjectives, items, keyOf, openObjectives, parse, stamped, withoutIds } from './todo'
 
 export const OBJECTIVES = '# Objectives'
 export const UPDATES = '## Updates'
@@ -306,6 +306,14 @@ export function carryOver(md: string, previous: string, name: string): string {
   const added = items(from.todo).filter(item => item.status !== 'done' && item.status !== 'declined' && !have.has(idOf(item)) && !have.has(keyOf(item.text)))
   if (added.length > 0) out = setTodo(out, format([...added.map(item => ({ item })), ...lines]))
   return out
+}
+
+// The objective blocks carryOver copies that no todo item stands for, whole, in order.
+export function carriedGoals(md: string, previous: string): string[] {
+  const from = sections(previous)
+  const goals = openObjectives(from.objectives, items(from.todo))
+  if (goals === '' || withoutIds(sections(md).objectives).includes(withoutIds(goals))) return []
+  return itemlessObjectives(goals, items(from.todo))
 }
 
 // Puts each item's id on the objective or update line it came from; a file whose lines all carry theirs comes back as is.
