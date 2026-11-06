@@ -72,6 +72,7 @@ type Ui = {
   isFocusable: boolean
   fills: { text: string; mode: string }[]
   isFillable: boolean
+  draft: string
   notices: { text: string; title: string | undefined }[]
   copied: string[]
   rows: Record<string, number | undefined>
@@ -108,7 +109,7 @@ function engine(
   mock.env(on, { HOME, ...shell.vars })
   shell.vars = {}
   const git: Git = { calls: [], remotes: '' }
-  const ui: Ui = { panes: new Map(), shown: undefined, opened: [], closed: [], status: [], toasts: [], isPlaced: true, isFocusable: true, fills: [], isFillable: true, notices: [], copied: [], rows: {} }
+  const ui: Ui = { panes: new Map(), shown: undefined, opened: [], closed: [], status: [], toasts: [], isPlaced: true, isFocusable: true, fills: [], isFillable: true, draft: '', notices: [], copied: [], rows: {} }
   on('session.start', (_$, e) => ({ cwd: e.cwd }))
   on('session.end', (_$, e) => ({ sessionId: e.sessionId }))
   on('command.register', (_$, e) => ({ value: { command: e.name } }))
@@ -216,6 +217,7 @@ function engine(
     ui.status.push(e.text)
     return { value: undefined }
   })
+  on('prompt.read', () => ({ value: { text: ui.draft, cursor: ui.draft.length } }))
   on('prompt.fill', (_$, e) => {
     ui.fills.push({ text: e.text, mode: e.mode })
     return { isFilled: ui.isFillable }
@@ -1461,6 +1463,46 @@ test('the Notes toggle under the prompt carries the chord action and opens and c
   await hint.press({ key: 'notes-toggle' })
   expect(ui.closed).toEqual(['notes-keeping'])
   expect((await hint.find({ key: 'notes-toggle' }))?.props.label).toBe('Notes: show (ctrl+q)')
+  await hint.unmount()
+})
+
+test('the Notes toggle on an open notes pane the prompt holds the keyboard from hands the pane the keyboard instead of closing it', async ($, on) => {
+  const { ui } = engine(on, { [BOUND]: NOTES }, { [`session:${SESSION}`]: BOUND })
+  engineDraws(on)
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: false })
+  const hint = await $.ui.mount({ ...HINT, surface: 'terminal' })
+  await hint.press({ key: 'notes-toggle' })
+  const pane = await $.ui.mount({ ...NOTES_PANE, surface: 'terminal' })
+  await pane.press({ key: 'view:objectives' })
+  // The person clicks the prompt: it takes the keyboard back from the pane.
+  ui.panes.set('notes-keeping', { isFocused: false })
+  await hint.press({ key: 'notes-toggle' })
+  expect(ui.closed).toEqual([])
+  expect(ui.opened).toEqual([{ id: 'notes-keeping', focus: true }, { id: 'notes-keeping', focus: true }])
+  expect(ui.panes.get('notes-keeping')?.isFocused).toBe(true)
+  // The pane stays at the view it was left at.
+  expect(await pane.find({ key: 'view:back' })).toBeDefined()
+  await pane.unmount()
+  expect((await hint.find({ key: 'notes-toggle' }))?.props.label).toBe('Notes: hide (ctrl+q)')
+  // Holding the keyboard, the toggle closes it.
+  await hint.press({ key: 'notes-toggle' })
+  expect(ui.closed).toEqual(['notes-keeping'])
+  await hint.unmount()
+})
+
+test('the Notes toggle closes an open notes pane the prompt holds the keyboard from while the prompt holds a draft', async ($, on) => {
+  const { ui } = engine(on, { [BOUND]: NOTES }, { [`session:${SESSION}`]: BOUND })
+  engineDraws(on)
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: false })
+  const hint = await $.ui.mount({ ...HINT, surface: 'terminal' })
+  await hint.press({ key: 'notes-toggle' })
+  // The person types in the prompt: it holds the keyboard, and the engine refuses the pane focus over the draft.
+  ui.panes.set('notes-keeping', { isFocused: false })
+  ui.draft = 'half a message'
+  ui.isFocusable = false
+  await hint.press({ key: 'notes-toggle' })
+  expect(ui.closed).toEqual(['notes-keeping'])
+  expect(ui.opened).toEqual([{ id: 'notes-keeping', focus: true }])
   await hint.unmount()
 })
 
