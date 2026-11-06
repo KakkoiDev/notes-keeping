@@ -71,6 +71,7 @@ type Ui = {
   isFillable: boolean
   notices: { text: string; title: string | undefined }[]
   copied: string[]
+  rows: Record<string, number | undefined>
 }
 
 function engine(
@@ -102,7 +103,7 @@ function engine(
   mock.env(on, { HOME, ...shell.vars })
   shell.vars = {}
   const git: Git = { calls: [], remotes: '' }
-  const ui: Ui = { panes: new Map(), shown: undefined, opened: [], closed: [], status: [], toasts: [], isPlaced: true, isFocusable: true, fills: [], isFillable: true, notices: [], copied: [] }
+  const ui: Ui = { panes: new Map(), shown: undefined, opened: [], closed: [], status: [], toasts: [], isPlaced: true, isFocusable: true, fills: [], isFillable: true, notices: [], copied: [], rows: {} }
   on('session.start', (_$, e) => ({ cwd: e.cwd }))
   on('session.end', (_$, e) => ({ sessionId: e.sessionId }))
   on('command.register', (_$, e) => ({ value: { command: e.name } }))
@@ -185,6 +186,7 @@ function engine(
   on('ui.open', (_$, e) => {
     const focus = e.focus === true
     ui.opened.push({ id: e.id, focus })
+    ui.rows[e.id] = e.rows
     if (!ui.isPlaced) return { value: { isPlaced: false as const, reason: 'narrow' } }
     const isHeld = [...ui.panes].some(([id, pane]) => id !== e.id && pane.isFocused)
     const isFocused = focus && ui.isFocusable && !isHeld
@@ -1292,6 +1294,40 @@ test('the open pane outlives the selection the terminal drops when the dock narr
   selection = 'alpha bravo'
   await clock.advance(1200)
   expect(ui.opened).toHaveLength(1)
+})
+
+test('the reply box shows every line of the selected text, wrapped, and grows the pane to hold it', async ($, on) => {
+  const fs: Fs = { [BOUND]: NOTES }
+  const picked = 'First line of the selection\nsecond line\nthird line\nfourth line\nfifth line'
+  const { clock, ui } = engine(on, fs, { [`session:${SESSION}`]: BOUND }, () => picked)
+  engineDraws(on)
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
+  await clock.advance(1200)
+  const menu = await $.ui.mount({ ...SELECT_PANE, surface: 'terminal' })
+  await menu.press({ key: 'reply-open' })
+  await menu.unmount()
+  expect(ui.rows['notes-keeping-select']).toBe(8)
+  const box = await $.ui.mount({ ...SELECT_PANE, surface: 'terminal' })
+  const quoted = (await box.findAll({ type: 'Text' })).filter(text => text.text.includes('First line'))
+  expect(quoted.map(text => text.text)).toEqual([`[AI_AGENT] ${picked}`])
+  expect(quoted[0]?.props.wrap).toBe('wrap')
+  await box.unmount()
+})
+
+test('a reply box on a very long selection stops growing at 12 rows; the rest scrolls', async ($, on) => {
+  const fs: Fs = { [BOUND]: NOTES }
+  const picked = Array.from({ length: 30 }, (_, i) => `line ${i}`).join('\n')
+  const { clock, ui } = engine(on, fs, { [`session:${SESSION}`]: BOUND }, () => picked)
+  engineDraws(on)
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
+  await clock.advance(1200)
+  const menu = await $.ui.mount({ ...SELECT_PANE, surface: 'terminal' })
+  await menu.press({ key: 'reply-open' })
+  await menu.unmount()
+  expect(ui.rows['notes-keeping-select']).toBe(12)
+  const box = await $.ui.mount({ ...SELECT_PANE, surface: 'terminal' })
+  expect((await box.findAll({ type: 'Text' })).some(text => text.text === `[AI_AGENT] ${picked}`)).toBe(true)
+  await box.unmount()
 })
 
 // The terminal keeps the selection where it was on screen: once the dock narrows the transcript, the same rows hold other text.

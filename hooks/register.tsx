@@ -945,7 +945,8 @@ async function openSelect($: EngineInterface, selection: string, row: string | u
 
 async function openReply($: EngineInterface, current: Select): Promise<void> {
   await update($, select, () => ({ ...current, mode: 'reply', isPlaced: true, hadFocus: false }))
-  await $.ui.open({ id: SELECT, title: 'Reply', focus: true, closeOnEscape: true, rows: 4 })
+  // One row per line of the selection and three for the field, up to 12 rows; the rest of a longer selection scrolls.
+  await $.ui.open({ id: SELECT, title: 'Reply', focus: true, closeOnEscape: true, rows: Math.min(12, current.selection.split('\n').length + 3) })
 }
 
 async function refresh($: EngineInterface): Promise<void> {
@@ -1458,8 +1459,8 @@ export const register: Register = on => {
       if (Input === undefined) return <Text dimColor>Reply from a terminal or desktop: this surface draws no field.</Text>
       return (
         <Box flexDirection="column">
-          <Text dimColor wrap="truncate-end">
-            {current.isPasted === true ? '[PASTED]' : AGENT_TAG} {preview}
+          <Text dimColor wrap="wrap">
+            {current.isPasted === true ? '[PASTED]' : AGENT_TAG} {current.selection}
           </Text>
           <Input
             key="reply"

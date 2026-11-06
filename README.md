@@ -51,7 +51,7 @@ Select text in the transcript and hold still. The Selection pane opens (text sel
 
 | Key | Does |
 | --- | --- |
-| `r` | Reply: type the reply, Enter queues it with the selected text |
+| `r` | Reply: the box shows the whole selected text, wrapped (the pane grows to 12 rows, then scrolls); type the reply, Enter queues it with the selected text |
 | `i` | Important: add the selected text to `# Important` |
 | `x` | Dismiss |
 
