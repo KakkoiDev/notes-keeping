@@ -16,6 +16,7 @@ import {
   addSession,
   addTurn,
   queuedBlock,
+  queuedBlocks,
   addUpdate,
   carriedGoals,
   carryOver,
@@ -908,7 +909,8 @@ async function queueReply($: EngineInterface, agent: string, user: string, row?:
 
 // A note on a part of the Paste view's text: queued as pasted text with the note, then the notes panel is back at that view.
 async function queuePasted($: EngineInterface, part: string, user: string): Promise<void> {
-  const next = await update($, queue, list => [...list, { agent: part, user, pasted: {} }])
+  const whole = await read($, pasteText)
+  const next = await update($, queue, list => [...list, { agent: part, user, pasted: whole === part ? {} : { whole } }])
   showQueue($, next)
   await finish($, part)
   await showNotes($, 'paste')
@@ -991,13 +993,13 @@ async function sendQueue($: EngineInterface): Promise<void> {
   })
   if (pending.length === 0) return
   showQueue($, kept)
-  const filled = await $.prompt.fill({ text: pending.map(pair => queuedBlock(pair, false)).join('\n\n'), mode: 'insert' })
+  const filled = await $.prompt.fill({ text: queuedBlocks(pending, false).join('\n\n'), mode: 'insert' })
   if (!filled.isFilled) {
     showQueue($, await update($, queue, list => [...pending, ...list]))
     $.ui.toast('The prompt box cannot take the replies now; they stay queued.')
     return
   }
-  warn($, told('', await edit($, 'reply', md => pending.reduce(addQueued, md))))
+  warn($, told('', await edit($, 'reply', md => addQueued(md, pending))))
 }
 
 // An open notes pane holding the keyboard refuses the selection pane's focus and keeps it a tab behind, so it closes first.
@@ -1397,7 +1399,7 @@ export const register: Register = on => {
     const pending = isOwn ? (await read($, queue)).filter(pair => pair.call === undefined) : []
     let text = e.text
     if (pending.length > 0) {
-      text = [...pending.map(pair => queuedBlock(pair, false)), e.text].join('\n\n')
+      text = [...queuedBlocks(pending, false), e.text].join('\n\n')
       warn($, told('', await edit($, 'reply', md => addTurn(md, pending, e.text))))
       showQueue($, await update($, queue, list => list.filter(pair => pair.call !== undefined)))
     }
