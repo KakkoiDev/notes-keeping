@@ -209,6 +209,10 @@ an item marked `[/]` by hand with no reason reads `(paused: no reason recorded)`
     `blocked` with a `"reason"` field, move to `[!]` from todo or in-progress, and the log row reads
     `<task>[, by <name>]: <reason>`. The block holds until `state/<task>.status` gets a state line written after it, or an outcome is recorded after it; the
     item then follows the status the bridge reports (in-progress, done) out of blocked.
+  - A live captain call (a captain hold in the backlog, the one the fleet shows as `!`) also reports `blocked` for every
+    item linked to the call or to its origin task, with the reason `captain call: <question>`, so the item moves to
+    `[!]`. Once no call on the task is open, the item follows what the bridge reports otherwise. An item you hold as
+    `[/]` is not reported blocked by a call.
   - `bridge pause <task> --reason <text> [--by <name>]` marks a task set aside on purpose, appended to
     `state/notes-todo-pauses.jsonl`. Its linked items report `paused` with a `"reason"` field, move to `[/]` from todo,
     in-progress or blocked with the reason written on the item, and the log row reads `<task>[, by <name>]: <reason>`.

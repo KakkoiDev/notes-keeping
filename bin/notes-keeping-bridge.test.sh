@@ -442,6 +442,33 @@ live 's:fm-origin-x'
 tasks "ask-q,queued,captain,-,\"Ask Q\",$TODAY,captain,\"-\",\"long reason\",none,\"Captain hold set: $SET\\nCaptain hold origin: origin-x\\nQuestion: Send the proposal to the client?\\nOptions: Store-only batch 1 (recommended)\\nOptions: Measure first only\\nOptions: Close it now\""
 check 'a call takes its Question: line and one option per Options: line' "Send the proposal to the client?|['Store-only batch 1 (recommended)', 'Measure first only', 'Close it now']" "$(field ask-q 'r["call"]["question"] + "|" + str(r["call"]["options"])')"
 
+# status under a captain call: fs <item key> prints that item's status and reason from `status`.
+fs() { f status "$H/notes.md" | python3 -c "import json,sys; v=json.load(sys.stdin)['$1']; print(v['status'], v.get('reason', ''))"; }
+fleet_home
+printf '# Todo\n\n- [~] Ship it <!-- id:ab12cd3 -->\n- [ ] Ask it <!-- id:cd34ef5 -->\n' > "$H/notes.md"
+meta origin-x 's:fm-origin-x'
+echo "working [at=$NOW]: studying" > "$H/state/origin-x.status"
+b link origin-x id:ab12cd3
+b link ask-q id:cd34ef5
+check 'with no captain call the linked task reports what its state files say' 'in-progress ' "$(fs id:ab12cd3)"
+tasks "ask-q,queued,captain,-,\"Ask Q\",$TODAY,captain,\"-\",\"long reason\",none,\"Captain hold set: $SET\\nCaptain hold origin: origin-x\\nQuestion: Ship to prod?\"" \
+  "ask-r,queued,captain,-,\"Ask R\",$TODAY,captain,\"-\",\"other\",none,\"Captain hold set: $SET\\nCaptain hold origin: origin-x\\nQuestion: Which colour?\""
+rm -f "$H"/cache/*.json
+check 'an open captain call whose origin is the linked task reports blocked, with the question as the reason' 'blocked captain call: Ship to prod?' "$(fs id:ab12cd3)"
+check 'an item linked to the call itself reports blocked' 'blocked captain call: Ship to prod?' "$(fs id:cd34ef5)"
+tasks "ask-q,done,captain,-,\"Ask Q\",$TODAY,captain,\"-\",\"long reason\",none,\"Captain hold set: $SET\\nCaptain hold origin: origin-x\\nQuestion: Ship to prod?\"" \
+  "ask-r,queued,captain,-,\"Ask R\",$TODAY,captain,\"-\",\"other\",none,\"Captain hold set: $SET\\nCaptain hold origin: origin-x\\nQuestion: Which colour?\""
+rm -f "$H"/cache/*.json
+check 'one call answered and another still open on the task: still blocked, by the open one' 'blocked captain call: Which colour?' "$(fs id:ab12cd3)"
+tasks "ask-q,done,captain,-,\"Ask Q\",$TODAY,captain,\"-\",\"long reason\",none,\"Captain hold set: $SET\\nCaptain hold origin: origin-x\\nQuestion: Ship to prod?\"" \
+  "ask-r,done,captain,-,\"Ask R\",$TODAY,captain,\"-\",\"other\",none,\"Captain hold set: $SET\\nCaptain hold origin: origin-x\\nQuestion: Which colour?\""
+rm -f "$H"/cache/*.json
+check 'every call answered: the task reports what its state files say again' 'in-progress ' "$(fs id:ab12cd3)"
+tasks "ask-q,queued,captain,-,\"Ask Q\",$TODAY,captain,\"-\",\"long reason\",none,\"Captain hold set: $SET\\nCaptain hold origin: origin-x\\nQuestion: Ship to prod?\""
+rm -f "$H"/cache/*.json
+printf '# Todo\n\n- [/] Ship it <!-- id:ab12cd3 --> <!-- paused:after the review -->\n' > "$H/notes.md"
+check 'an item the notes file holds as paused is not reported blocked by an open call' 'in-progress ' "$(fs id:ab12cd3)"
+
 # tasks with their closed date: id,state,kind,repo,title,created,closed,hold_kind,hold_until,hold_reason,blocked_by,body
 ctasks() { { printf 'count: %d\ntasks[%d]{id,state,kind,repo,title,created,closed,hold_kind,hold_until,hold_reason,blocked_by,body}:\n' "$#" "$#"; for row in "$@"; do printf '  %s\n' "$row"; done; } > "$H/tasks.txt"; }
 
