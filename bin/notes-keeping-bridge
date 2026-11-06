@@ -15,6 +15,8 @@ home opted in). Five verbs are the plugin's; six are firstmate's.
                              done: else the task's latest outcome record, appended by firstmate's cleanup as
                              {"task", "outcome", "at"} with no key, is done and not older than the link.
                              null: anything else; the plugin leaves the item where it is.
+                             A state/<task>.meta holding todo=id:<id> links that item from spawn, printed with no "by"
+                             field, unless a link or an unlink was recorded for the item.
   notify <notes-file>        change lines on stdin become one captain inbox note (bin/fm-inbox.sh note), one wake.
                              The note's first line is the first change, with who made it, and "(+N more)" when there are
                              several. A change line ends in [id:<id>] when the item has one. An added item's line is
@@ -191,8 +193,8 @@ def append(record, path=LINKS):
         f.write(json.dumps(record, ensure_ascii=False) + '\n')
 
 
-def links():
-    """Latest record per key; an unlink removes the key."""
+def links(dropped=None):
+    """Latest record per key; an unlink removes the key and, when dropped is a set, adds the key to it until a later link."""
     out = {}
     try:
         f = open(LINKS, encoding='utf-8')
@@ -209,8 +211,12 @@ def links():
                 continue
             if record.get('unlink'):
                 out.pop(key, None)
+                if dropped is not None:
+                    dropped.add(key)
             elif isinstance(record.get('task'), str) and (isinstance(record.get('text'), str) or isinstance(record.get('id'), str)):
                 out[key] = record
+                if dropped is not None:
+                    dropped.discard(key)
     return out
 
 
@@ -293,7 +299,8 @@ def status():
     out = {}
     blocked = blocks()
     ended = outcomes()
-    for r in links().values():
+    dropped = set()
+    for r in links(dropped).values():
         outcome = ended.get(r['task'])
         # An outcome older than the link belongs to an earlier task with the same id.
         state, reason = derive(r['task'], blocked.get(r['task']), outcome if outcome is not None and outcome['at'] >= r.get('at', 0) else None)
@@ -302,6 +309,14 @@ def status():
             out[f"id:{r['id']}"] = {'status': state, 'task': r['task'], 'id': r['id'], **extra}
         else:
             out[r['text']] = {'status': state, 'task': r['task'], **extra}
+    # A meta's todo=id:<id> links its item from spawn, until a link or an unlink for that item is recorded.
+    for name in sorted(os.listdir(STATE)) if os.path.isdir(STATE) else []:
+        task = name[:-len('.meta')]
+        m = ITEM_ID.match(read_meta(task).get('todo', '')) if name.endswith('.meta') and TASK_ID.match(task) else None
+        if m is None or f'id:{m.group(1)}' in out or f'id:{m.group(1)}' in dropped:
+            continue
+        state, reason = derive(task, blocked.get(task))
+        out[f'id:{m.group(1)}'] = {'status': state, 'task': task, 'id': m.group(1), **({'reason': reason} if reason is not None else {})}
     print(json.dumps(out, ensure_ascii=False))
 
 
