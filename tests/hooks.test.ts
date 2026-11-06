@@ -2651,10 +2651,10 @@ const SENTRY = 'Investigate the Sentry production alert'
 
 // Audit 2026-10-29, sections 3.1 and 3.5: Laya, leaning "started" with rejected at 0.05, declined the Sentry item on one
 // refusal cue in Claude's reply, firstmate never heard of it, and the captain's four clicks reached firstmate as "(captain)".
-test('the Sentry decline: a refusal cue leaves the item, so does Laya however sure, and so does a finish cue; the clicks reach firstmate as the captain', async ($, on) => {
+test('the Sentry decline: a refusal word leaves the item, so does Laya however sure of a refusal or a finish; the clicks reach firstmate as the captain', async ($, on) => {
   const fs: Fs = { [BOUND]: setTodoFile(`- [ ] ${SENTRY}`), [PYTHON]: '', [BRIDGE]: '' }
   engine(on, fs, { ...SESSION_BOUND })
-  let probs = { 'not-mentioned': 0, started: 0.85, finished: 0.1, rejected: 0.05 }
+  let probs = { 'not-mentioned': 0.25, started: 0.6, finished: 0.1, rejected: 0.05 }
   laya.answer = ask => ({ lines: {}, statuses: Object.fromEntries(ask.statuses.map(status => [status.id, { label: 'started', p: probs.started, probs }])), predictMs: 1 })
   await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: false })
   await flush()
@@ -2675,9 +2675,9 @@ test('the Sentry decline: a refusal cue leaves the item, so does Laya however su
   expect(bare(fs[BOUND])).toContain(`- [ ] ${SENTRY}`)
   expect(bridge.notified.slice(seeded)).toEqual([])
 
-  // A finish cue with Laya leaning started does not close it: only a linked task that is done does.
-  probs = { 'not-mentioned': 0, started: 0.6, finished: 0.3, rejected: 0.1 }
-  laya.answer = ask => ({ lines: {}, statuses: Object.fromEntries(ask.statuses.map(status => [status.id, { label: 'started', p: 0.6, probs }])), predictMs: 1 })
+  // Laya sure of a finish does not close it: only a linked task that is done does.
+  probs = { 'not-mentioned': 0, started: 0.03, finished: 0.95, rejected: 0.02 }
+  laya.answer = ask => ({ lines: {}, statuses: Object.fromEntries(ask.statuses.map(status => [status.id, { label: 'finished', p: 0.95, probs }])), predictMs: 1 })
   await complete($, 'The Sentry alert is fixed.')
   await flush()
   const id = idFor(SENTRY, new Set())

@@ -4,7 +4,18 @@ import json, sys, time
 LINE_MODEL = 'aac6fef/laya-multilingual-mlx'
 STATUS_MODEL = 'aac6fef/laya-mlx'
 LINE = {'line': {'type': 'choice', 'instructions': 'Is this line an action the assistant should carry out, or only background and context?', 'criteria': ['task', 'background']}}
-STATUS = {'status': {'type': 'choice', 'instructions': "What does the assistant's reply say about this task: no mention of it, work on it has started, it is finished, or it is refused or dropped?", 'criteria': ['not-mentioned', 'started', 'finished', 'rejected']}}
+INSTRUCTIONS = "What does the assistant's reply say about this task: no mention of it, work on it has started, it is finished, or it is refused or dropped?"
+STATUS = {'status': {'type': 'choice', 'instructions': INSTRUCTIONS, 'criteria': ['not-mentioned', 'started', 'finished', 'rejected']}}
+
+
+def status_agent():
+    import laya_mlx as laya
+    return laya.load(STATUS_MODEL)
+
+
+def status(agent, item, answer):
+    result = agent.predict(f"Task: {item['text']}\nAssistant reply: {answer}", STATUS)['answers']['status']
+    return {'label': result['choice'], 'p': result['probabilities'][result['choice']], 'probs': result['probabilities']}
 
 
 def main():
@@ -21,12 +32,12 @@ def main():
     answer = request.get('answer', '')
     statuses = request.get('statuses', []) if answer != '' else []
     if statuses:
-        agent = laya.load(STATUS_MODEL)
+        agent = status_agent()
     for item in statuses:
-        result = agent.predict(f"Task: {item['text']}\nAssistant reply: {answer}", STATUS)['answers']['status']
-        out['statuses'][item['id']] = {'label': result['choice'], 'p': result['probabilities'][result['choice']], 'probs': result['probabilities']}
+        out['statuses'][item['id']] = status(agent, item, answer)
     out['predictMs'] = round((time.time() - start) * 1000)
     json.dump(out, sys.stdout)
 
 
-main()
+if __name__ == '__main__':
+    main()

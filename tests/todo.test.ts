@@ -291,181 +291,61 @@ describe('Laya answers', () => {
   }
   const item = { status: 'todo' as const, text: 'Add a ctrl+q toggle for the notes pane' }
 
-  test('a reply moves an item only when it shares a word with it, Laya and the reply agree, and the move is forward', () => {
-    expect(moved(item, 'The toggle works, tests pass.', verdict('finished', 0.9))).toMatchObject({ status: 'done', label: 'finished' })
-    expect(moved(item, 'The notes pane toggle is partway there.', verdict('started', 0.7))).toMatchObject({ status: 'in-progress' })
-    expect(moved(item, 'Test suite is green, 42 pass.', verdict('finished', 0.99))).toBeUndefined()
-    expect(moved(item, 'The toggle was reworked.', verdict('finished', 0.59))).toBeUndefined()
-    expect(moved(item, 'The toggle was moved.', verdict('not-mentioned', 0.99))).toBeUndefined()
-    expect(moved({ ...item, status: 'in-progress' }, 'The toggle is half done.', verdict('started', 0.99))).toBeUndefined()
-    expect(moved({ ...item, status: 'done' }, 'The toggle is dropped.', verdict('rejected', 0.99))).toBeUndefined()
+  // laya-bench 2026-11-06: 19 of 22 real closes came from a cue word lifting Laya's own score under 0.5 to 1.00.
+  test('a cue word in the reply does not lift Laya: a start moves at Laya 0.7 on its own score', () => {
+    expect(moved(item, 'Started on the toggle, still running.', verdict('started', 0.69))).toBeUndefined()
+    expect(moved(item, 'The toggle was reworked.', verdict('started', 0.7))).toMatchObject({ status: 'in-progress', label: 'started', p: 0.7 })
+    expect(moved(item, 'The toggle landed.', verdict('started', 0.5))).toBeUndefined()
+  })
+
+  test('Laya never closes or declines an item, however sure', () => {
+    expect(moved(item, 'The toggle works, tests pass.', verdict('finished', 0.99))).toBeUndefined()
     expect(moved(item, 'The toggle is dropped.', verdict('rejected', 0.99))).toBeUndefined()
   })
 
-  test('a reply that says partway outweighs Laya calling it finished; a reply with no cue word moves only at Laya 0.9', () => {
-    expect(moved(item, 'The toggle is half wired up, the rest is still open.', verdict('finished', 0.9))).toMatchObject({ status: 'in-progress', label: 'started' })
-    expect(moved(item, 'The toggle landed.', verdict('finished', 0.59))).toMatchObject({ status: 'done' })
-    expect(moved(item, 'The toggle was reworked.', verdict('finished', 0.89))).toBeUndefined()
-    expect(moved(item, 'The toggle was reworked.', verdict('finished', 0.9))).toMatchObject({ status: 'done' })
+  test('a reply moves an item only when it shares a word with it, Laya says started, and the item is todo', () => {
+    expect(moved(item, 'The notes pane toggle is partway there.', verdict('started', 0.7))).toMatchObject({ status: 'in-progress' })
+    expect(moved(item, 'Test suite is green, 42 pass.', verdict('started', 0.99))).toBeUndefined()
+    expect(moved(item, 'The toggle was moved.', verdict('not-mentioned', 0.99))).toBeUndefined()
+    expect(moved({ ...item, status: 'in-progress' }, 'The toggle is half done.', verdict('started', 0.99))).toBeUndefined()
+    expect(moved({ ...item, status: 'done' }, 'The toggle is half done.', verdict('started', 0.99))).toBeUndefined()
   })
 
   // 2026-10-29 06:32Z: the captain set Review PR #27921 back to in-progress and Laya closed it again on a finish cue.
-  test('Laya never moves a status the captain set, with or without a cue word', () => {
-    const hand = { ...item, status: 'in-progress' as const }
-    expect(moved(hand, 'The toggle was reworked.', verdict('finished', 0.99), [], true)).toBeUndefined()
-    expect(moved(hand, 'The toggle is merged.', verdict('finished', 0.99), [], true)).toBeUndefined()
-    expect(moved({ ...item, status: 'todo' }, 'Started on the toggle.', verdict('started', 0.99), [], true)).toBeUndefined()
-    expect(moved(hand, 'The toggle is merged.', verdict('finished', 0.6), [], false)).toMatchObject({ status: 'done' })
+  test('Laya never moves a status the captain set', () => {
+    expect(moved(item, 'Started on the toggle.', verdict('started', 0.99), [], true)).toBeUndefined()
+    expect(moved(item, 'Started on the toggle.', verdict('started', 0.99), [], false)).toMatchObject({ status: 'in-progress' })
   })
 
   // Audit 2026-10-29, section 3.5 A: Laya leaning "started" on the Sentry item, rejected at 0.05, declined it on one refusal cue.
-  test('Laya never declines an item, on a refusal cue or on its own however sure; a finish cue still closes one', () => {
-    const sentry = { status: 'in-progress' as const, text: 'Investigate the Sentry production alert' }
-    const weak = { label: 'started', p: 0.85, probs: { 'not-mentioned': 0, started: 0.85, finished: 0.1, rejected: 0.05 } }
-    for (const reply of [
-      'The Sentry alert was skipped this turn.',
-      'Sentry alert: out of scope until we get access.',
-      "I won't touch the Sentry alert now.",
-      'The Sentry alert is not something I can open without a login.',
-    ]) {
+  test('a refusal word in the reply does not decline an item', () => {
+    const sentry = { status: 'todo' as const, text: 'Investigate the Sentry production alert' }
+    const weak = { label: 'started', p: 0.6, probs: { 'not-mentioned': 0.25, started: 0.6, finished: 0.1, rejected: 0.05 } }
+    for (const reply of ['The Sentry alert was skipped this turn.', "I won't touch the Sentry alert now.", 'The Sentry alert was dropped.']) {
       expect(moved(sentry, reply, weak)).toBeUndefined()
+      expect(moved(sentry, reply, verdict('rejected', 0.99))).toBeUndefined()
     }
-    expect(moved(sentry, 'The Sentry alert was dropped.', verdict('rejected', 0.9))).toBeUndefined()
-    expect(moved(sentry, 'The Sentry alert was dropped.', verdict('rejected', 0.99))).toBeUndefined()
-    expect(moved(sentry, 'The Sentry alert went nowhere.', verdict('rejected', 0.99))).toBeUndefined()
-    // Done is the AI's to set: a finish cue lifts Laya's finished as a start cue lifts started.
-    expect(moved(sentry, 'The Sentry alert is done.', weak)).toMatchObject({ status: 'done', label: 'finished' })
-    expect(moved(sentry, 'The Sentry alert went out.', verdict('finished', 0.89))).toBeUndefined()
-    expect(moved(sentry, 'The Sentry alert went out.', verdict('finished', 0.95))).toMatchObject({ status: 'done', p: 0.95 })
-    // A start still moves on the cue: it says work began, nothing is closed.
-    expect(moved({ ...sentry, status: 'todo' }, 'Started on the Sentry alert.', verdict('not-mentioned', 0.6))).toMatchObject({ status: 'in-progress' })
   })
 
-  // 2026-10-29 00:48Z: a firstmate report declined this item while its worker was running (PR 40 then shipped it). The
-  // refusal cue was "Dropping" in the sentence after the one naming the editor key; Laya itself said rejected 0.19.
-  test('a refusal cue in a sentence that carries on from the item does not decline it while work on it is running', () => {
-    const editor = { status: 'todo' as const, text: 'I would like to be able to use hx (my system editor) when updating my objectives (maybe a u: update, e: open in editor) and I want e: Queue to be relabeled to q: Queue' }
-    const reply = [
-      'Editor key (`e` opens hx, Queue becomes `q`): worker running.',
-      '- mid-task-ask on editor key, disagree: Jev said invalidates (0.33), I chose follow-up. Dropping the legend narrows the scope; it doesn\'t invalidate the work.',
-    ].join('\n')
-    const probs = { 'not-mentioned': 0.29, started: 0.245, finished: 0.274, rejected: 0.19 }
-    expect(moved(editor, reply, { label: 'not-mentioned', p: 0.29, probs })).toBeUndefined()
-  })
-
-  // held3 eval case: "not" was taken for the start of the item's own word "notes", so "will not" lost its refusal and
-  // "written" closed the item.
-  test('a short reply word that only starts an item word is not removed from the cue: a refusal there is no finish', () => {
-    const notes = { status: 'todo' as const, text: 'Release notes for the todo list feature' }
-    const probs = { 'not-mentioned': 0.38, started: 0.03, finished: 0.19, rejected: 0.39 }
-    expect(moved(notes, 'Release notes will not be written, the PR body covers them.', { label: 'rejected', p: 0.39, probs })).toBeUndefined()
-    expect(moved(notes, 'Release notes are written.', { label: 'rejected', p: 0.39, probs })).toMatchObject({ status: 'done' })
-  })
-
-  // 2026-10-29: three Laya moves to done on a finish word the reply did not say of the item. Replies cut from firstmate's
+  // 2026-10-29: Laya moves to done on a finish word the reply did not say of the item. Replies cut from firstmate's
   // real ones; probabilities are Laya's (aac6fef/laya-mlx) on the whole real reply and item.
   const publicRepo = { status: 'todo' as const, text: "I want to move notes-keeping's plugin to a public repo on KakkoiDev" }
-  const review = { status: 'in-progress' as const, text: 'review this pr https://github.com/acme/webapp/pull/27921' }
+  const review = { status: 'todo' as const, text: 'review this pr https://github.com/acme/webapp/pull/27921' }
   const reviewSiblings = [review.text, 'review this pr: https://github.com/acme/webapp/pull/27787']
-  const tickets = { status: 'in-progress' as const, text: 'i want to update the notion tickets, indicate all the closed prs and also update the status on all the poc experiments we ran' }
 
   test('a word inside a link in the reply names only the item holding that link', () => {
-    const reply = [
-      'Done this turn:',
-      '- **pr-review-enhanced is installed** and working. PR https://github.com/KakkoiDev/example/pull/45 is merged and applied to `~/dotfiles`.',
-      '  - exploration-video and terminal-demo work again too. The cause was an agent-skills version that was never pushed.',
-    ].join('\n')
-    const probs = { 'not-mentioned': 0.21, started: 0.338, finished: 0.24, rejected: 0.211 }
-    expect(moved(publicRepo, reply, { label: 'started', p: 0.338, probs })).toBeUndefined()
-    const linked = 'The PR 27921 review is posted: request changes, 4 inline comments on https://github.com/acme/webapp/pull/27921. Done.'
-    expect(moved(review, linked, { label: 'started', p: 0.477, probs: { 'not-mentioned': 0.202, started: 0.477, finished: 0.273, rejected: 0.049 } }, reviewSiblings)).toMatchObject({ status: 'done' })
-    const moved45 = 'The notes-keeping plugin is moved to a public repo on KakkoiDev: https://github.com/KakkoiDev/notes-keeping. Merged.'
-    expect(moved(publicRepo, moved45, { label: 'finished', p: 0.603, probs: { 'not-mentioned': 0.135, started: 0.228, finished: 0.603, rejected: 0.034 } })).toMatchObject({ status: 'done' })
+    const reply = 'Done this turn: pr-review-enhanced is installed. PR https://github.com/KakkoiDev/example/pull/45 is merged.'
+    expect(moved(publicRepo, reply, verdict('started', 0.9))).toBeUndefined()
+    const linked = 'The review of https://github.com/acme/webapp/pull/27921 is drafted, not posted.'
+    expect(moved(review, linked, verdict('started', 0.9), reviewSiblings)).toMatchObject({ status: 'in-progress' })
   })
 
-  test('a finish word followed by "but not" says the work is partway, not finished', () => {
-    const reply = [
-      'Captain, the PR 27921 review is written but not posted. It is waiting on you.',
-      '',
-      '**PR 27921 review** (https://github.com/acme/webapp/pull/27921):',
-      '- Drafted: request changes, 4 inline comments. Not posted; the PR still shows 0 reviews.',
-    ].join('\n')
-    const probs = { 'not-mentioned': 0.221, started: 0.336, finished: 0.308, rejected: 0.136 }
-    expect(moved(review, reply, { label: 'started', p: 0.336, probs }, reviewSiblings)).toBeUndefined()
-    expect(moved({ ...review, status: 'todo' }, reply, { label: 'started', p: 0.336, probs }, reviewSiblings)).toMatchObject({ status: 'in-progress' })
-  })
-
-  test('a cue word inside quotes is a word talked about, not a status', () => {
-    const reply = ['- **To close it:** open ego-lite, find the space "ego-lite-check", close it.', '', 'Pushback on "done":', '- `/reload-plugins` reloaded plugins, not hooks ("0 hooks").'].join('\n')
-    const probs = { 'not-mentioned': 0.469, started: 0.092, finished: 0.224, rejected: 0.215 }
-    expect(moved(tickets, reply, { label: 'not-mentioned', p: 0.469, probs })).toBeUndefined()
-    const finished = 'The Notion tickets now mark every closed PR, and the POC experiment statuses are updated. Done.'
-    expect(moved(tickets, finished, { label: 'started', p: 0.543, probs: { 'not-mentioned': 0.17, started: 0.543, finished: 0.23, rejected: 0.058 } })).toMatchObject({ status: 'done' })
-  })
-
-  // 2026-10-29 09:20Z: Laya closed this item two minutes after its worker was spawned. The finish cue was "spawn finished"
-  // in the turn ledger; nothing had landed. Reply is firstmate's real one; probabilities are Laya's on it.
-  const economizer = { status: 'in-progress' as const, text: "I want to add this to firstmate's normal behavior https://github.com/microsoft/TokenEconomizer" }
-  const economizerSiblings = [economizer.text, 'I want to integrate this https://github.com/google/elephant-goldfish-model in our workflow, so that every coding tasks has to go through it.']
-  const economizerProbs = { 'not-mentioned': 0.1367, started: 0.454, finished: 0.3789, rejected: 0.0304 }
-  const economizerVerdict = { label: 'started', p: 0.454, probs: economizerProbs }
-
-  test('a worker spawned or running does not close its item', () => {
-    const reply = [
-      '[new_soul]',
-      '',
-      'Captain, the TokenEconomizer worker is now running. Its first step is reading the repo.',
-      '',
-      '```',
-      'Asked this turn',
-      '1. (no captain request; spawn finished) - TokenEconomizer worker running',
-      '',
-      'Open with you (81)',
-      '- (none new)',
-      '',
-      'Jev asks this turn (0)',
-      'none',
-      '```',
-    ].join('\n')
-    expect(moved(economizer, reply, economizerVerdict, economizerSiblings)).toBeUndefined()
-    for (const said of [
-      'TokenEconomizer worker launched; setup done, it is reading the repo.',
-      'TokenEconomizer: worker spawned, first commit added.',
-      'The TokenEconomizer worker is still running.',
-      'TokenEconomizer worker kicked off, the brief is written.',
-    ]) {
-      expect(moved(economizer, said, economizerVerdict, economizerSiblings)).toBeUndefined()
+  test('the real finish cues no longer close an item: merged, landed, written, done', () => {
+    const economizer = { status: 'in-progress' as const, text: "I want to add this to firstmate's normal behavior https://github.com/microsoft/TokenEconomizer" }
+    for (const said of ['TokenEconomizer is merged into firstmate.', 'The TokenEconomizer worker finished and its PR is merged.', 'TokenEconomizer is done.']) {
+      expect(moved(economizer, said, verdict('finished', 0.99))).toBeUndefined()
+      expect(moved({ ...economizer, status: 'todo' }, said, verdict('finished', 0.99))).toBeUndefined()
     }
-    expect(moved({ ...economizer, status: 'todo' }, reply, economizerVerdict, economizerSiblings)).toMatchObject({ status: 'in-progress' })
-  })
-
-  test('work reported ready or with its PR open, but not merged, does not close its item', () => {
-    for (const said of [
-      'TokenEconomizer: finished, waiting on your merge word.',
-      'TokenEconomizer is implemented and the PR is open: https://github.com/KakkoiDev/firstmate/pull/9. Ready for your merge.',
-      'TokenEconomizer: tests pass, PR opened, not merged yet.',
-      "TokenEconomizer is done on its branch but hasn't landed.",
-      'Nothing on TokenEconomizer has landed yet.',
-    ]) {
-      expect(moved(economizer, said, economizerVerdict, economizerSiblings)).toBeUndefined()
-    }
-  })
-
-  test('work merged or landed closes its item', () => {
-    for (const said of [
-      'TokenEconomizer is merged into firstmate.',
-      'TokenEconomizer landed: https://github.com/KakkoiDev/firstmate/pull/9 is merged.',
-      'The TokenEconomizer worker finished and its PR is merged.',
-    ]) {
-      expect(moved(economizer, said, economizerVerdict, economizerSiblings)).toMatchObject({ status: 'done', label: 'finished' })
-    }
-  })
-
-  test('a cue only counts in a sentence about the item, and not inside the item own words', () => {
-    const counter = 'Keep a count of moves Laya declined to make'
-    expect(moved({ status: 'todo', text: counter }, 'The skipped-move counter is started and shows in the log.', verdict('finished', 0.71), [counter])).toMatchObject({ status: 'in-progress' })
-    expect(moved({ status: 'todo', text: counter }, 'The counter for skipped moves is begun; I added the field but nothing increments it.', verdict('started', 0.51), [counter])).toMatchObject({ status: 'in-progress' })
-    expect(moved(item, 'The toggle is reworked. Other thing was dropped.', verdict('finished', 0.95), [item.text, 'Other thing'])).toMatchObject({ status: 'done', label: 'finished' })
   })
 
   test('a word the items share does not count as naming one of them', () => {

@@ -182,16 +182,11 @@ an item marked `[/]` by hand with no reason reads `(paused: no reason recorded)`
   A line already judged is never asked twice, so an item you delete stays deleted.
 - At the end of every turn: Laya reads Claude's last reply against every open item (todo or in-progress) and may move
   it forward from todo to in-progress, except an item whose status you set by click or by hand: Laya never
-  moves that one. Laya never moves an item to done, finish cue or not: only you, or a linked firstmate task the bridge
-  reports done, close an item. A move needs the
+  moves that one. Laya never moves an item to done or declined, however sure: only you, or a linked firstmate task the
+  bridge reports, close or decline an item. A move needs the
   reply to share a word only that item has (two-character runs for Japanese); a link in the reply counts only for the
-  item holding that same link. A start cue ("started", "partway", "still", "but not", "spawned", "running", "PR is
-  open", "waiting on your merge word", "not merged") or a finish cue ("done", "merged", "fixed") outside quotes in the
-  reply plus Laya at 0.5 on that option decides it; a start cue wins over a finish cue. A finish decided this way is
-  dropped, not applied. With no cue Laya needs 0.9 (see How accurate it is).
-  Laya never declines an item, on a refusal
-  cue ("skipped", "won't", "dropped") or on its own however sure: only you or firstmate decline. A refusal cue also
-  keeps the other cues from counting. Done and declined items are never moved by the plugin. A move is dropped if you
+  item holding that same link. Laya must answer "started" at 0.7 or more; no word in the reply raises or lowers that
+  (see How accurate it is). Done and declined items are never moved by the plugin. A move is dropped if you
   changed that item while Laya was running.
 - Every change is logged in the notes file's `# Logs` section with who made it (see [Action log](#action-log)). A Laya
   move carries Laya's answer and its own probability. Undo one by clicking the item's marker.
@@ -478,31 +473,31 @@ describes each option. It also said "started" at 0.81 for "Docs are written." an
 Its confidence does not track its precision: for the multilingual checkpoint, over the 193 reply cases, a move at 0.6 or
 more was right 88% of the time, at 0.9 or more 93%, at 0.95 or more 89%, at 0.99 or more 80%. Raising the floor does not make it safe.
 
-What changed: reply statuses are scored by the English checkpoint, the multilingual one still judges objective lines
-(Japanese lines need it). A move needs two things from the reply:
+#### laya-bench (2026-11-06): cue words removed, Laya does not close or decline
 
-- Its own words. Words match by stem and by prefix ("naming" and "name"), words of four letters or more, and words
-  several items share ("notes", "pane") do not count, so a reply about a sibling no longer names this item.
-- A cue. Only the sentences that name the item, and the ones that carry on from them without naming another item, are read
-  for the `rejected`, `started` and `finished` regexes in `hooks/todo.ts` (checked in that order), with the item's own
-  words removed first so "the skipped-move counter" is not a refusal. The cued option gets +8 nats on Laya's log
-  probability. The result must reach 0.5 on the cued option and 0.9 on any other. A status the captain set by hand is
-  never moved (2026-10-29: the captain set Review PR #27921 back to in-progress and Laya closed it again).
-- Since the actor log change, Laya never moves an item to declined: a refusal cue lifts nothing, and rejected at any
-  probability leaves the item (the Sentry item was declined on one refusal cue with Laya at 0.05 on rejected, and the
-  editor-key item on "Dropping" in a carry-on sentence with Laya at 0.19). Start and finish cues count as before. A
-  reply word under four letters is no longer removed as the start of an item word ("not" in "notes"), so "will not be
-  written" reads as a refusal, not a finish.
-- Since 2026-10-29 (three false dones, each Laya under 0.32 on finished, lifted to 1.00 by a cue the reply did not
-  say of the item): a link in the reply names only the item holding that same link, so the owner in
-  `github.com/KakkoiDev/example/pull/45` does not name an item that says "KakkoiDev"; quoted text ("...", `...`, “...”,
-  「...」) is not read for cues, so `Pushback on "done"` closes nothing; "but not" is a start cue, so "written but not
-  posted" is partway. Same eval scores as before. Not fixed: one incidental word an item alone has ("ticket",
-  "validation") next to a finish word about something else still closes it.
+`eval/bench.py` scores Laya alone on a tune set (`fixtures.json` tune, `extra_tune.json`, `held2.json`, `real.json`
+tune: 156 replies) and a held-out set (`fixtures.json` held-out, `held3.json`, `blind.json`, `real.json` held-out: 157).
+`real.json` models the real wrong closes (17eirvr, 02jfb2n and others) as neutral rewrites: same labels and cue patterns,
+no real names, vendors, tickets or numbers; its replies are reconstructed, because reply text was never logged. Run
+`~/.laya-venv/bin/python eval/bench.py <variant> <tune|heldout> [out.json]`; `eval/variants.py` holds the 26 prompt and
+input variants tried (options described, yes/no questions, the whole `[UPDATE]` block as the task, only the reply
+sentences about the item, a stricter question, the typed-decisions and multilingual checkpoints).
+
+- Close and decline: the best variant on tune (typed-decisions checkpoint, stricter question, options described, whole
+  update, reply cut to the item's sentences) got 34 of 71 held-out cases right, with 5 wrong moves (35 of 70 and 3 before `real.json` was rewritten neutral), at the thresholds
+  that made no wrong move on tune. 100% was not reached, so Laya still never moves an item to done or declined.
+- Start: the shipped prompt, Laya's own "started" at 0.7 or more, made 16 right and 0 wrong moves on tune (16 of 37
+  starts) and 8 right, 0 wrong on held-out (8 of 38). The cue words that used to add 8 nats to an option are gone: 19 of
+  22 real closes came from a cue lifting Laya's own score under 0.5 to 1.00.
+
+#### Before laya-bench: the cue rules (removed)
+
+The tables below measured moves with the cue words on: a start, finish or refusal word in the reply's sentences about
+the item added 8 nats to that option, then a 0.5 floor on it and 0.9 on any other.
 
 Real moves that landed right, landed wrong, or did not land (right / wrong / missed):
 
-| set (real moves) | before (multilingual, 0.6 floor, word check) | PR 18 first version (English, cues on the whole reply) | now |
+| set (real moves) | before (multilingual, 0.6 floor, word check) | PR 18 first version (English, cues on the whole reply) | last cue rules |
 | --- | --- | --- | --- |
 | tune (75; chosen here) | 49 / 7 / 14 | 62 / 2 / 4 | 70 / 0 / 5 |
 | held-out (66) | 34 / 3 / 31 | 54 / 0 / 12 | 66 / 0 / 0 |
@@ -530,18 +525,10 @@ wrong counting a move to that status on a case that said anything else):
 The wrong done left is the decoy below; the other was the "not" in "notes" bug. These sets are tuning data (see above),
 so read the zeros as optimistic.
 
-The 0.9 floor for a reply with no cue is the first one that was chosen on one tune set.
-
 Limits:
 
-- A start or finish cue decides, Laya breaks ties. With one in the reply the result is near 1.0 whatever Laya said.
-  A start word near a real finish ("merged; the hook is running in every session") keeps the item open: click it.
-  Cues are read per sentence, and a sentence that follows one
-  naming the item is assumed to carry on about it ("The counter is begun. I dropped the retry." reads as a refusal).
-  The lists are short and English plus a few Japanese words; wording they miss falls back to Laya alone at 0.9.
-- A decoy that shares two or three domain words with an item and carries a cue ("The notes folder is committed after
-  every write" for "Warn when the notes folder has a remote") still moves it. Laya does not catch it either.
-- Replies Laya and the cues both miss do not land. Click them.
+- Laya alone moves few items: most starts are missed. Click them.
+- A decoy that shares two or three domain words with an item still passes the word check; Laya then decides alone.
 - Objective lines (task or background), multilingual checkpoint, 0.8 floor: 0 of 18 tasks and 5 of 20 background lines
   dropped on tune, 0 of 18 and 2 of 20 on held-out. A task-verb rule dropped 19 of 20 background lines but also 6 of
   12 tasks on the third set, so it was not adopted. Background lines that become items: delete them by hand; they stay

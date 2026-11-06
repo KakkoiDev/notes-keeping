@@ -1,0 +1,290 @@
+{
+ "note": "Cases modeled on the classifier's real wrong and right closes (2026-10-29 to 11-05). Item text, update block and replies are neutral rewrites: same status labels and cue patterns, with every name, vendor, ticket and number replaced. The replies were never logged; they are reconstructed. siblings: the other open items the list held.",
+ "tune": [
+  {
+   "real": "02jfb2n",
+   "todo": "I like this kind of reports, tells me precisely where my decisions are needed and what to do next and how tasks are going on in general. ex: Workers on the go (14):",
+   "update": "I like this kind of reports, tells me precisely where my decisions are needed and what to do next and how tasks are going on in general. ex: Workers on the go (14):\n1. gate-review: design review gate for coding tasks. Implementing.\n2. status-hook: forces todo ticking as work moves. Commit and test run pending.\n3. pool-free: frees isolated work copies reliably. Working.\n4. api-stall: detects workers stalled by an API error. Stuck on a permission prompt.\n5. filter-pr: PR is green and waits for your merge word.\n- Parked until tomorrow: copy POC, app-start. ||||| I want that type of report at every turns.",
+   "reply": "Noted: you like reports that say where your decision is needed and what comes next. I recorded that preference in data/captain.md. Workers: gate-review implementing, status-hook committed, pool-free done, api-stall still stuck on the permission prompt.",
+   "label": "started",
+   "siblings": [
+    "Add TokenSaver to the orchestrator behavior",
+    "Integrate the review model into every coding task",
+    "Review the release notes"
+   ]
+  },
+  {
+   "real": "02jfb2n",
+   "todo": "I like this kind of reports, tells me precisely where my decisions are needed and what to do next and how tasks are going on in general. ex: Workers on the go (14):",
+   "update": "I like this kind of reports, tells me precisely where my decisions are needed and what to do next and how tasks are going on in general. ex: Workers on the go (14):\n1. gate-review: design review gate for coding tasks. Implementing.\n2. status-hook: forces todo ticking as work moves. Commit and test run pending.\n- Parked until tomorrow: copy POC, app-start. ||||| I want that type of report at every turns.",
+   "reply": "The workers-on-the-go report now runs at every turn: the stop hook prints it after each reply, with decisions first and next steps per worker. Tests pass and the change is merged.",
+   "label": "finished",
+   "siblings": [
+    "Add TokenSaver to the orchestrator behavior",
+    "Integrate the review model into every coding task",
+    "Review the release notes"
+   ]
+  },
+  {
+   "real": "02jfb2n",
+   "todo": "I like this kind of reports, tells me precisely where my decisions are needed and what to do next and how tasks are going on in general. ex: Workers on the go (14):",
+   "update": "I like this kind of reports, tells me precisely where my decisions are needed and what to do next and how tasks are going on in general. ex: Workers on the go (14):\n1. gate-review: design review gate for coding tasks. Implementing.\n- Parked until tomorrow: copy POC, app-start. ||||| I want that type of report at every turns.",
+   "reply": "I won't print the full workers report at every turn: it doubles each reply's length. I'll print it only when a worker changes state, and you can ask for it any time.",
+   "label": "rejected",
+   "siblings": [
+    "Add TokenSaver to the orchestrator behavior",
+    "Integrate the review model into every coding task",
+    "Review the release notes"
+   ]
+  },
+  {
+   "real": "1xibifx",
+   "todo": "review this pr https://git.example.com/app/pull/412",
+   "reply": "Review of PR 412 is drafted: 3 findings, one blocking (the migration drops a column still read by the export). I did not post it; it waits in data/pr412-review/review.md for your read. Everything else in the fleet is unchanged.",
+   "label": "started",
+   "siblings": [
+    "Update wiki tickets and POC statuses",
+    "Move notes plugin to public repo",
+    "Verify Monday schedule"
+   ]
+  },
+  {
+   "real": "1xibifx",
+   "todo": "review this pr https://git.example.com/app/pull/412",
+   "reply": "Posted the review on PR 412 as you approved: 3 comments, request changes on the migration. Done; the author has been notified.",
+   "label": "finished",
+   "siblings": [
+    "Update wiki tickets and POC statuses",
+    "Move notes plugin to public repo",
+    "Verify Monday schedule"
+   ]
+  },
+  {
+   "real": "0an3vbz",
+   "todo": "I want to move the notes plugin to a public repo on my account",
+   "reply": "Done with the sweep: the release notes are finished and the schedule check is complete. The notes plugin public repo move is queued behind them; nothing has been created on my account yet.",
+   "label": "not-mentioned",
+   "siblings": [
+    "review this pr https://git.example.com/app/pull/412",
+    "Update wiki tickets and POC statuses",
+    "Verify Monday schedule"
+   ]
+  },
+  {
+   "real": "0an3vbz",
+   "todo": "I want to move the notes plugin to a public repo on my account",
+   "reply": "The notes plugin now lives in its own public repo, my-account/notes-plugin, with history kept; dotfiles points to it as a submodule and the install still works.",
+   "label": "finished",
+   "siblings": [
+    "review this pr https://git.example.com/app/pull/412",
+    "Update wiki tickets and POC statuses",
+    "Verify Monday schedule"
+   ]
+  },
+  {
+   "real": "0v86npk",
+   "todo": "As a thought experiment, I would like to copy in a cleanroom style our main app in this way:",
+   "update": "As a thought experiment, I would like to copy in a cleanroom style our main app in this way:\n1. one agent writes a spec from the code\n2. a second agent, who never sees the code, rebuilds it from the spec\n3. compare the two on the same tests",
+   "reply": "The cleanroom POC's first pass is done: the spec writer finished the spec for the auth module. The rebuild agent has not started, and the comparison on tests comes after it.",
+   "label": "started",
+   "siblings": [
+    "Review PR 412",
+    "Share OCR experimentation wiki page",
+    "Keyboard navigation for todo panel"
+   ]
+  },
+  {
+   "real": "0v86npk",
+   "todo": "As a thought experiment, I would like to copy in a cleanroom style our main app in this way:",
+   "update": "As a thought experiment, I would like to copy in a cleanroom style our main app in this way:\n1. one agent writes a spec from the code\n2. a second agent, who never sees the code, rebuilds it from the spec\n3. compare the two on the same tests",
+   "reply": "The cleanroom copy experiment is complete: spec written, the blind agent rebuilt the module from it, and the comparison ran: 41 of 47 tests pass on the rebuild. Report in data/cleanroom-poc2/report.md.",
+   "label": "finished",
+   "siblings": [
+    "Review PR 412",
+    "Share OCR experimentation wiki page",
+    "Keyboard navigation for todo panel"
+   ]
+  },
+  {
+   "real": "1fszkp6",
+   "todo": "tracker-noise-filter: PR 418 drop injected-script errors from the error tracker; remove the extra log-monitor copy, keep the monitor's own error event",
+   "reply": "tracker-noise-filter landed: PR 418 merged, injected-script errors no longer reach the error tracker and the duplicate log-monitor copy is gone. The monitor's own error event is kept.",
+   "label": "finished",
+   "siblings": [
+    "Reliable free isolated work copies",
+    "Worker spawn fails fast",
+    "Check dataset migration to the trace store"
+   ]
+  },
+  {
+   "real": "1fszkp6",
+   "todo": "tracker-noise-filter: PR 418 drop injected-script errors from the error tracker; remove the extra log-monitor copy, keep the monitor's own error event",
+   "reply": "tracker-noise-filter: PR 418 is green and waits for your merge word. Worker spawn fails fast is done; the copies pool is still working.",
+   "label": "started",
+   "siblings": [
+    "Reliable free isolated work copies",
+    "Worker spawn fails fast",
+    "Check dataset migration to the trace store"
+   ]
+  },
+  {
+   "real": "15q56fc",
+   "todo": "token-saver: load a pinned TokenSaver clone into claude workers (option A, tool pruning off)",
+   "reply": "token-saver is done: workers now start with the pinned TokenSaver clone loaded, option A, tool pruning off. Verified on two fresh workers.",
+   "label": "finished",
+   "siblings": [
+    "Sync todo status with worker",
+    "Trace SDK warning in file-attachment chats",
+    "Evaluate tools to improve the local harness"
+   ]
+  },
+  {
+   "real": "15q56fc",
+   "todo": "token-saver: load a pinned TokenSaver clone into claude workers (option A, tool pruning off)",
+   "reply": "token-saver: waiting on your A/B/C pick before I load anything into workers. The trace SDK warning fix is finished.",
+   "label": "not-mentioned",
+   "siblings": [
+    "Sync todo status with worker",
+    "Trace SDK warning in file-attachment chats",
+    "Evaluate tools to improve the local harness"
+   ]
+  }
+ ],
+ "heldout": [
+  {
+   "real": "17eirvr",
+   "todo": "4: [-] declined: hidden  5: [!] blocked: shown",
+   "update": "4: [-] declined: hidden  5: [!] blocked: shown\n[ ] Share solution rationale with team\n[~] Cleanroom POC project\n[~] Focus stays in mods panel\n[~] Fleet table design\n[~] Complete release notes\n[~] Plan remaining sprint work\n[~] Improve work reports integration in plugin\n[~] Link all todos to correct tasks ||||||||||||| I'm seeing that we have many ongoing tasks. I think that we should make it so that the orchestrator focuses on finishing ongoing tasks as much a possible or a least tell me why it will not be done right now. maybe we should add a new todo item state: paused [|] and the reason has to be recorded somewhere and revaluated regularly.",
+   "reply": "The todo 4: [-] declined: hidden 5: [!] blocked: shown looks like a fragment of the filter row. Which task does it belong to? The work reports integration is done and its PR is merged.",
+   "label": "not-mentioned",
+   "siblings": [
+    "Improve work reports integration in plugin",
+    "Link all todos to correct tasks",
+    "Review the report from the data team"
+   ]
+  },
+  {
+   "real": "17eirvr",
+   "todo": "4: [-] declined: hidden  5: [!] blocked: shown",
+   "update": "4: [-] declined: hidden  5: [!] blocked: shown\n[ ] Share solution rationale with team\n[~] Cleanroom POC project\n[~] Link all todos to correct tasks ||||||||||||| I'm seeing that we have many ongoing tasks. I think that we should make it so that the orchestrator focuses on finishing ongoing tasks as much a possible or a least tell me why it will not be done right now. maybe we should add a new todo item state: paused [|] and the reason has to be recorded somewhere and revaluated regularly.",
+   "reply": "The paused state is spawned as nk-paused-state: a [/] marker with a reason, re-evaluated at each prompt. The the orchestrator side, finishing ongoing tasks first, has no owner yet.",
+   "label": "started",
+   "siblings": [
+    "Improve work reports integration in plugin",
+    "Link all todos to correct tasks",
+    "Review the report from the data team"
+   ]
+  },
+  {
+   "real": "17eirvr",
+   "todo": "4: [-] declined: hidden  5: [!] blocked: shown",
+   "update": "4: [-] declined: hidden  5: [!] blocked: shown\n[ ] Share solution rationale with team\n[~] Link all todos to correct tasks ||||||||||||| I'm seeing that we have many ongoing tasks. I think that we should make it so that the orchestrator focuses on finishing ongoing tasks as much a possible or a least tell me why it will not be done right now. maybe we should add a new todo item state: paused [|] and the reason has to be recorded somewhere and revaluated regularly.",
+   "reply": "The paused state shipped: items can be [/] with a reason, the reason is re-evaluated at every prompt and after compaction, and the orchestrator now finishes ongoing tasks first or says why it will not. Both PRs merged.",
+   "label": "finished",
+   "siblings": [
+    "Improve work reports integration in plugin",
+    "Link all todos to correct tasks",
+    "Review the report from the data team"
+   ]
+  },
+  {
+   "real": "1mk11df",
+   "todo": "i want to update the wiki tickets, indicate all the closed prs and also update the status on all the poc experiments we ran",
+   "reply": "Updated 4 of the wiki tickets with their closed PRs. The POC experiment statuses are next; I have not touched those pages yet.",
+   "label": "started",
+   "siblings": [
+    "review this pr https://git.example.com/app/pull/412",
+    "I want to move the notes plugin to a public repo on my account",
+    "Verify Monday schedule"
+   ]
+  },
+  {
+   "real": "1mk11df",
+   "todo": "i want to update the wiki tickets, indicate all the closed prs and also update the status on all the poc experiments we ran",
+   "reply": "All wiki tickets now list their closed PRs, and every POC experiment page has its final status (3 shipped, 2 dropped). Nothing left on that one.",
+   "label": "finished",
+   "siblings": [
+    "review this pr https://git.example.com/app/pull/412",
+    "I want to move the notes plugin to a public repo on my account",
+    "Verify Monday schedule"
+   ]
+  },
+  {
+   "real": "0fdcz16",
+   "todo": "should we use the hosted model instead of the local classifier to manage the task statuses? would it be more accurate?",
+   "reply": "Short answer on hosted vs local: on the synthetic fixtures the hosted model scored 88/88 and the local one 56/88, so the hosted one is probably more accurate. I have not measured it on real replies; that needs a replay eval.",
+   "label": "started",
+   "siblings": [
+    "Keyboard navigation for todo panel",
+    "Add TokenSaver to the orchestrator behavior",
+    "Release completion notes"
+   ]
+  },
+  {
+   "real": "0fdcz16",
+   "todo": "should we use the hosted model instead of the local classifier to manage the task statuses? would it be more accurate?",
+   "reply": "I'm not going to swap the local classifier for the hosted model: it would send every reply to a hosted API, and you asked to keep it local. Dropping the hosted-model question.",
+   "label": "rejected",
+   "siblings": [
+    "Keyboard navigation for todo panel",
+    "Add TokenSaver to the orchestrator behavior",
+    "Release completion notes"
+   ]
+  },
+  {
+   "real": "0vxthfy",
+   "todo": "in the todo panel, I want to be able to use up and down arrows to select todo and left and right to change the status.",
+   "reply": "Up and down now move the selection in the todo panel: PR merged, tests pass. Left and right for the status are not wired yet.",
+   "label": "started",
+   "siblings": [
+    "Paused state for ongoing tasks",
+    "Link all todos to correct tasks",
+    "Release completion notes"
+   ]
+  },
+  {
+   "real": "0vxthfy",
+   "todo": "in the todo panel, I want to be able to use up and down arrows to select todo and left and right to change the status.",
+   "reply": "Todo panel keys are finished: up and down select an item, left and right step its status. Both are in the merged PR with tests.",
+   "label": "finished",
+   "siblings": [
+    "Paused state for ongoing tasks",
+    "Link all todos to correct tasks",
+    "Release completion notes"
+   ]
+  },
+  {
+   "real": "1ur2c12",
+   "todo": "release-complete: release-notes release-complete: do it now",
+   "reply": "release-notes is done and posted. release-complete starts now: the completion section still needs the deploy times from the release channel.",
+   "label": "started",
+   "siblings": [
+    "Log in to the chat tool",
+    "Improve work reports integration in plugin",
+    "Evaluate tools to improve the local harness"
+   ]
+  },
+  {
+   "real": "1w9llcz",
+   "todo": "todo-status-hook: keep notes todo status in sync with worker state",
+   "reply": "todo-status-hook: commit and test run pending. The spawn fail-fast change landed.",
+   "label": "started",
+   "siblings": [
+    "Reliable free isolated work copies",
+    "Worker spawn fails fast",
+    "Load TokenSaver into Claude workers"
+   ]
+  },
+  {
+   "real": "1w9llcz",
+   "todo": "todo-status-hook: keep notes todo status in sync with worker state",
+   "reply": "todo-status-hook landed: a worker's state change now moves its todo in the notes file within one turn. Merged, suite green.",
+   "label": "finished",
+   "siblings": [
+    "Reliable free isolated work copies",
+    "Worker spawn fails fast",
+    "Load TokenSaver into Claude workers"
+   ]
+  }
+ ]
+}

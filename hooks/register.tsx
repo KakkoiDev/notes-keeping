@@ -512,17 +512,14 @@ async function runTodo($: EngineInterface, answer: string): Promise<void> {
     const key = idOf(item)
     const verdict = laya?.statuses[keyOf(item.text)]
     const next = moved(item, answer, verdict, siblings, memory.pins.includes(key))
-    // Only a linked task that is done closes an item: a finish cue in a reply is not work done.
-    if (next === undefined || verdict === undefined || next.status === 'done') continue
+    if (next === undefined || verdict === undefined) continue
     set[key] = { from: item.status, to: next.status }
     decided[key] = { ...verdict, label: next.label, p: next.p }
   }
-  // Laya's own probability for the move, and the one the start cue lifted it to when that differs.
+  // Laya's answer and its probability for the move.
   const said = (key: string): string => {
     const verdict = decided[key]
-    if (verdict === undefined) return ''
-    const own = verdict.probs[verdict.label] ?? 0
-    return Math.abs(verdict.p - own) < 0.005 ? `${verdict.label} ${own.toFixed(2)}` : `${verdict.label} ${own.toFixed(2)}, ${verdict.p.toFixed(2)} with the ${verdict.label === 'started' ? 'start' : 'finish'} cue`
+    return verdict === undefined ? '' : `${verdict.label} ${verdict.p.toFixed(2)}`
   }
   const reported: Record<string, Status> = {}
   const reasons: Record<string, string> = {}
