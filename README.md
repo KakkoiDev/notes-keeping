@@ -384,6 +384,7 @@ pressed.
 | `a` | with an open call on it: its card in the Item view, the answer field open |
 | `v` | with a linked report: the report reader |
 | `1` `2` `3` `4` `5` `6` | show or hide the `[ ]` todo, `[~]` in-progress, `[x]` done, `[-]` declined, `[!]` blocked, `[/]` paused items |
+| `m` | filter: cycles all, `[ ]` todo, `[~]` in-progress, `[x]` done, `[-]` declined, `[!]` blocked, `[/]` paused, all. One status shows alone; the legend reads `filter: <status>` (`custom` when `1`-`6` left a mix, and `m` then starts at todo). Shares the hidden statuses with `1`-`6`; the selection moves to a shown item |
 
 The row of toggles above the list is also the marker legend: `1: [ ] todo: shown  2: [~] in-progress: shown ...`,
 the same marks and names, in the same order, as the legend Claude reads with the list (both come from `MARKS` in

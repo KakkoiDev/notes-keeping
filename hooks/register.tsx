@@ -39,7 +39,7 @@ import {
 } from './notes'
 import { EMPTY, bridgeMoves, candidateKeys, candidates, changeLine, cleanLabel, context, cycle, cycleItem, diffSnapshot, emptyUpdates, format, idFor, idOf, isBackground, items, keyOf, labelPrompt, legend, markOf, moved, parse, pausedContext, pin, reconcile, row, settle, shown, snapshotOf, sourceOf, updateOf, why, withIds, withoutIds } from './todo'
 import type { Applied, Candidate, Change, Item, Memory, Move, Status, Verdict } from './todo'
-import { TodoSlot, nextShown, rowId, rowKey, selectedOf, stepStatus } from './todos'
+import { TodoSlot, hiddenFor, nextFilter, nextShown, rowId, rowKey, selectedOf, stepStatus } from './todos'
 import type { Landing } from './todos'
 import { WorkSlot, answerText, copyText, details, unlinkedRows, nameOf, needsYou, reportHead, selectedRow, todoLines, unlinkedText, workStatus, callsShown, callHead, workerBlock, openCallOf, reportRowOf, trailLines } from './work'
 
@@ -1572,6 +1572,11 @@ export const register: Register = on => {
           }}
         />
       )
+    const hideOnly = async (now: Status[]) => {
+      const at = rows.find(item => item.id === selected)
+      const id = selectedOf(rows, now, at !== undefined && now.includes(at.status) ? (nextShown(rows, at.id, now) ?? null) : (selected ?? null))
+      await handOver(id, () => update($, hidden, () => now))
+    }
     const slot = (
       <TodoSlot
         key="todos"
@@ -1632,12 +1637,8 @@ export const register: Register = on => {
           // The engine answers {} or { deny }; `claude plugin test` has no ring and rejects.
           await $.ui.focus({ requestId: PANE, key: 'todo:pause-reason' }).catch(() => undefined)
         }}
-        onToggle={async status => {
-          const now = hide.includes(status) ? hide.filter(other => other !== status) : [...hide, status]
-          const at = rows.find(item => item.id === selected)
-          const id = selectedOf(rows, now, at !== undefined && now.includes(at.status) ? (nextShown(rows, at.id, now) ?? null) : (selected ?? null))
-          await handOver(id, () => update($, hidden, () => now))
-        }}
+        onToggle={status => hideOnly(hide.includes(status) ? hide.filter(other => other !== status) : [...hide, status])}
+        onFilter={() => hideOnly(hiddenFor(nextFilter(hide)))}
       />
     )
     const hint = (text: string) => (

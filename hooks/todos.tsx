@@ -41,6 +41,27 @@ export function nextShown(todos: readonly Todo[], id: string, hidden: readonly T
   return (todos.slice(at + 1).find(isShown) ?? todos.slice(0, Math.max(at, 0)).reverse().find(isShown))?.id
 }
 
+// The filter the hidden statuses amount to: one status alone shown, all shown, or a mix set by hand.
+export type Filter = Todo['status'] | 'all' | 'custom'
+
+export function filterOf(hidden: readonly Todo['status'][]): Filter {
+  const shown = STATUSES.filter(status => !hidden.includes(status))
+  if (shown.length === STATUSES.length) return 'all'
+  return shown.length === 1 ? (shown[0] ?? 'custom') : 'custom'
+}
+
+// The next filter: all, each status in turn, all again; a hand-set mix goes to the first status.
+export function nextFilter(hidden: readonly Todo['status'][]): Filter {
+  const at = filterOf(hidden)
+  if (at === 'all' || at === 'custom') return STATUSES[0] ?? 'all'
+  return STATUSES[STATUSES.indexOf(at) + 1] ?? 'all'
+}
+
+// The statuses hidden to show only `filter`.
+export function hiddenFor(filter: Filter): Todo['status'][] {
+  return filter === 'all' || filter === 'custom' ? [] : STATUSES.filter(status => status !== filter)
+}
+
 const SHOW: Record<Todo['status'], string> = { todo: '1', 'in-progress': '2', done: '3', declined: '4', blocked: '5', paused: '6' }
 
 // The todo list of the notes panel's Todos view. The notes-todo work owns this file and the `todos` atom in
@@ -60,6 +81,7 @@ export function TodoSlot(props: {
   onStep: (id: string, by: 1 | -1) => unknown
   onSelect: (id: string) => unknown
   onToggle: (status: Todo['status']) => unknown
+  onFilter: () => unknown
   onPause: (id: string) => unknown
   pause?: unknown
   // The lines drawn under each item, by item id.
@@ -67,7 +89,7 @@ export function TodoSlot(props: {
   // Keys drawn at the end of the key row, each only when it acts on the selected item.
   keys?: unknown
 }) {
-  const { Box, Button, Text, todos, hidden, selected, landing, onCycle, onOpen, onStep, onSelect, onToggle, onPause, pause, lines, keys } = props
+  const { Box, Button, Text, todos, hidden, selected, landing, onCycle, onOpen, onStep, onSelect, onToggle, onFilter, onPause, pause, lines, keys } = props
   const shown = todos.filter(item => !hidden.includes(item.status))
   const step = (by: 1 | -1) => () => (selected === undefined ? undefined : onStep(selected, by))
   const at = shown.findIndex(item => item.id === selected)
@@ -89,11 +111,12 @@ export function TodoSlot(props: {
             onPress={() => onToggle(status)}
           />
         ))}
+        <Button key="filter" plain hotkey="m" dimColor={filterOf(hidden) === 'all'} label={`filter: ${filterOf(hidden) === 'all' || filterOf(hidden) === 'custom' ? filterOf(hidden) : legend(filterOf(hidden) as Todo['status'])}`} onPress={onFilter} />
       </Box>
       {todos.length === 0 ? (
         <Text dimColor>(no todos yet)</Text>
       ) : shown.length === 0 ? (
-        <Text dimColor>{`(${todos.length} items, every status hidden)`}</Text>
+        <Text dimColor>{STATUSES.includes(filterOf(hidden) as Todo['status']) ? `(no ${legend(filterOf(hidden) as Todo['status'])} items)` : `(${todos.length} items, every status hidden)`}</Text>
       ) : (
         shown.flatMap(item => [
           <Box key={`row:${item.id}`} flexDirection="row" gap={1}>

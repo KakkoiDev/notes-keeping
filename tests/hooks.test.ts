@@ -1661,6 +1661,7 @@ test('the panel opens on the Todos view, t brings it back, and the other views c
     'show:declined',
     'show:blocked',
     'show:paused',
+    'filter',
     'todo:ship it',
     'open:ship it',
     'select:down',
@@ -3030,6 +3031,69 @@ test('the shown statuses stay as set when the panel is closed and opened again',
   expect((await again.find({ key: 'show:declined' }))?.props.label).toBe('[-] declined: hidden')
   expect(await again.find({ key: 'todo:four' })).toBeUndefined()
   await again.unmount()
+})
+
+test('m in the Todos view cycles the filter through all, one status at a time and back, and the legend names the filter and its key', async ($, on) => {
+  const { fs, pane } = await keynav($, on)
+  const before = fs[BOUND]
+  expect((await pane.find({ key: 'filter' }))?.props).toMatchObject({ hotkey: 'm', label: 'filter: all' })
+  const seen: unknown[] = []
+  for (let i = 0; i < 7; i++) {
+    await pane.press({ key: 'filter' })
+    await flush()
+    seen.push([(await pane.find({ key: 'filter' }))?.props.label, (await todoRows(pane)).map(row => row.id)])
+  }
+  expect(seen).toEqual([
+    ['filter: [ ] todo', ['one']],
+    ['filter: [~] in-progress', ['two']],
+    ['filter: [x] done', ['three']],
+    ['filter: [-] declined', ['four']],
+    ['filter: [!] blocked', []],
+    ['filter: [/] paused', []],
+    ['filter: all', ['one', 'two', 'three', 'four']],
+  ])
+  expect(fs[BOUND]).toBe(before)
+  const hotkeys = (await pane.findAll({ type: 'Button' })).map(button => button.props.hotkey).filter(hotkey => hotkey !== undefined)
+  expect(new Set(hotkeys).size).toBe(hotkeys.length)
+  await pane.unmount()
+})
+
+test('a filter with no item of its status says so, not that every status is hidden', async ($, on) => {
+  const { pane } = await keynav($, on)
+  for (let i = 0; i < 5; i++) await pane.press({ key: 'filter' })
+  await flush()
+  expect(await pane.find({ type: 'Text', text: '(no [!] blocked items)' })).toBeDefined()
+  await pane.unmount()
+})
+
+test('changing the filter leaves the selection on a shown item, and keeps it when it is still shown', async ($, on) => {
+  const { pane } = await keynav($, on)
+  await ring($, 'todo:three')
+  await pane.press({ key: 'filter' })
+  await flush()
+  expect(await selectedTodo(pane)).toEqual(['one'])
+  for (let i = 0; i < 6; i++) await pane.press({ key: 'filter' })
+  await flush()
+  expect((await todoRows(pane)).map(row => row.id)).toEqual(['one', 'two', 'three', 'four'])
+  expect(await selectedTodo(pane)).toEqual(['one'])
+  await ring($, 'todo:three')
+  await pane.press({ key: 'filter' })
+  await pane.press({ key: 'filter' })
+  await pane.press({ key: 'filter' })
+  await flush()
+  expect(await selectedTodo(pane)).toEqual(['three'])
+  await pane.unmount()
+})
+
+test('with statuses toggled by hand the filter reads custom, and m starts at the first status', async ($, on) => {
+  const { pane } = await keynav($, on)
+  await pane.press({ key: 'show:done' })
+  expect((await pane.find({ key: 'filter' }))?.props.label).toBe('filter: custom')
+  await pane.press({ key: 'filter' })
+  await flush()
+  expect((await pane.find({ key: 'filter' }))?.props.label).toBe('filter: [ ] todo')
+  expect((await todoRows(pane)).map(row => row.id)).toEqual(['one'])
+  await pane.unmount()
 })
 
 // One block of an assistant reply as the transcript draws it, in the row `requestId`.
