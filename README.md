@@ -34,7 +34,7 @@ Session notes in `~/.notes-keeping/<date>-<time>-<project>-<session>.md`, commit
 
 ## The panel
 
-Toggle with ctrl+q (see below), `/notes-keeping show` / `hide`, or the `Notes` button under the prompt. Esc closes it. Top to bottom:
+Toggle with ctrl+q (see below), `/notes-keeping show` / `hide`, or the `Notes` button under the prompt. Esc closes it. On a panel that is open while the prompt holds the keyboard (you clicked or typed there), ctrl+q and the `Notes` button hand the panel the keyboard instead of closing it; with a draft in the prompt Claude Code gives a panel no keyboard, so then they close it, and ctrl+x tab moves the keyboard to the panel. Top to bottom:
 
 1. A row of views and actions, keys shown on screen.
 2. The current view. The panel opens on the Todos view; no other view shows the todo list.
@@ -49,13 +49,15 @@ Toggle with ctrl+q (see below), `/notes-keeping show` / `hide`, or the `Notes` b
 | `q` | Queue view: every queued reply in its own editable field |
 | `h` | History view: earlier notes, newest first; Up and Down pick one, Enter opens a read-only preview of what it holds, `a` attaches the picked note after a `y` / `n` confirmation (same copy as `/notes-keeping history <n\|file>`, so done and declined items stay behind); the original is never written. `b` in a preview or the confirmation steps back |
 | `l` | Logs view: the `# Logs` section of the notes file, newest first, read-only: time (UTC), who, item, `from -> to` (or the text of an objective or update) |
-| `s` | Send queue: put every queued reply into the prompt box, clear the queue, record them in `# Chat`; you press Enter |
+| `s` | Send queue: put every queued reply into the prompt box, clear the queue, record them in `# Chat`; the keyboard moves to the prompt with them, so Enter sends them (ctrl+x tab returns to the panel) |
 | `w` | in the Todos view, beside the line under the list: the Work view, the work no open to-do links (see [Work view](#work-view)); drawn only while there is some |
 | `b` | Back to the Todos view (shown in every view but Todos); from a Work row's details, back to the Work view; from a report, back to where `v` was pressed |
 | `u` | in the Objectives view: opens an input; Enter appends the text as a new `[UPDATE]` under `## Updates` (while the objectives are still empty it sets them instead) |
 | `e` | in the Objectives view: opens the notes file in `$VISUAL`, else `$EDITOR`, in a tmux popup (`tmux display-popup -E`; the session must run inside tmux), then shows and commits what the editor saved and runs the todo list over it, so an `[UPDATE]` written there becomes an item as one from `u` does; an `[UPDATE]` header the editor left with no text under it makes no item, and a toast names it. Todo runs keep writing the file while the editor is open. From the update box (after `u`, once the objectives are set), where `e` is typed into the field, ctrl+e does it instead (bind `{ "context": "PaneField", "bindings": { "ctrl+e": "app:toggleDiffNoiseFilter" } }` in `~/.claude/keybindings.json`), or a click on Open in editor: it first appends `[UPDATE] <time>` under `## Updates` holding the box's text, opens the editor on the line after it (`file:line` for hx, `+line` for vi, vim, nvim, nano, emacs and kak, the top of the file otherwise), and drops that header again if the editor leaves it empty |
 
 Every row is also clickable. A click in the panel leaves the keyboard there, even when the prompt held it before, so its keys work next; a click on a todo row's marker also selects that row for `f`, `p` and `d`. In the Queue view, Tab to a reply, edit its text, Enter keeps it; `[remove]` beside a reply drops it.
+
+Any text the panel puts into the prompt box (`s`, and Enter in a Work view answer to a row with no open call; an answer to an open call is queued and leaves the keyboard in the panel) moves the keyboard to the prompt: Claude Code takes the keyboard from a panel whenever the prompt's text changes, and gives no panel the keyboard while the prompt holds a draft. ctrl+x tab moves it back to the panel (pressed again when a bar above the prompt takes it first).
 
 Under the prompt, once a reply is queued: click `[send queue: n]` (same as `s`) or `[edit queue]` (opens the panel at the queue view).
 
@@ -221,6 +223,10 @@ an item marked `[/]` by hand with no reason reads `(paused: no reason recorded)`
     `blocked` with a `"reason"` field, move to `[!]` from todo or in-progress, and the log row reads
     `<task>[, by <name>]: <reason>`. The block holds until `state/<task>.status` gets a state line written after it, or an outcome is recorded after it; the
     item then follows the status the bridge reports (in-progress, done) out of blocked.
+  - A live captain call (a captain hold in the backlog, the one the fleet shows as `!`) also reports `blocked` for every
+    item linked to the call or to its origin task, with the reason `captain call: <question>`, so the item moves to
+    `[!]`. Once no call on the task is open, the item follows what the bridge reports otherwise. An item you hold as
+    `[/]` is not reported blocked by a call.
   - `bridge pause <task> --reason <text> [--by <name>]` marks a task set aside on purpose, appended to
     `state/notes-todo-pauses.jsonl`. Its linked items report `paused` with a `"reason"` field, move to `[/]` from todo,
     in-progress or blocked with the reason written on the item, and the log row reads `<task>[, by <name>]: <reason>`.

@@ -9,6 +9,9 @@ home opted in). Five verbs are the plugin's; six are firstmate's.
                              link made with --by carries a "by" field. blocked or paused: the task's latest block or pause,
                              whichever came last, came after its last state line and no outcome record is at or after it,
                              printed with a "reason" field.
+                             blocked: over any of the below, while a live captain hold (as fleet's flag "!") has the task
+                             as its id or origin, with "reason" "captain call: <its Question: line, else its title>";
+                             not for an item <notes-file> holds as paused ([/]).
                              done: else state/<task>.pr-poll-merge-notified exists (firstmate saw its PR merge).
                              in-progress: else state/<task>.meta exists, whatever its last state line; a done line
                              (a PR opened, a branch ready to land) lands nothing.
@@ -295,15 +298,36 @@ def derive(task, block, outcome=None):
     return None, None
 
 
-def status():
+def open_calls():
+    """The question of a live captain hold per task it holds: its own id and its origin."""
+    tasks = backlog()
+    now = int(time.time())
+    out = {}
+    for task in tasks.values():
+        if is_live_hold(task, tasks, now):
+            m = HOLD_ORIGIN.search(task.get('body') or '')
+            for held in (task['id'], m.group(1) if m else None):
+                if held is not None:
+                    out.setdefault(held, call_of(task, 'open')['question'])
+    return out
+
+
+def status(notes_file):
     out = {}
     blocked = blocks()
     ended = outcomes()
     dropped = set()
+    calls = open_calls()
+    try:
+        paused = {key for i in open_list(notes_file) if i['status'] == 'paused' for key in (f"id:{i['id']}" if i['id'] else None, key_of(i['text'])) if key}
+    except OSError:
+        paused = set()
     for r in links(dropped).values():
         outcome = ended.get(r['task'])
         # An outcome older than the link belongs to an earlier task with the same id.
         state, reason = derive(r['task'], blocked.get(r['task']), outcome if outcome is not None and outcome['at'] >= r.get('at', 0) else None)
+        if r['task'] in calls and r['key'] not in paused:
+            state, reason = 'blocked', f"captain call: {calls[r['task']]}"
         extra = {**({'by': r['by']} if isinstance(r.get('by'), str) else {}), **({'reason': reason} if reason is not None else {})}
         if 'id' in r:
             out[f"id:{r['id']}"] = {'status': state, 'task': r['task'], 'id': r['id'], **extra}
@@ -897,7 +921,7 @@ def call_answer(task, release):
 def main(argv):
     verb, args = (argv[0], argv[1:]) if argv else ('', [])
     if verb == 'status' and len(args) == 1:
-        status()
+        status(args[0])
     elif verb == 'notify' and len(args) == 1:
         notify(args[0])
     elif verb == 'link' and len(args) >= 2:

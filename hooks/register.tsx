@@ -1144,9 +1144,13 @@ async function hideNotes($: EngineInterface): Promise<void> {
   await update($, isNotesOpen, () => false)
 }
 
+// An open pane the prompt holds the keyboard from takes it at the view it shows; the engine refuses that focus over a
+// draft, so then it closes.
 async function toggleNotes($: EngineInterface): Promise<void> {
-  if ((await $.ui.panes()).some(pane => pane.id === PANE)) await hideNotes($)
-  else await showNotes($)
+  const pane = (await $.ui.panes()).find(one => one.id === PANE)
+  if (pane === undefined) await showNotes($)
+  else if (!pane.isFocused && (await $.prompt.read()).text === '') await $.ui.open({ id: PANE, title: TITLE, focus: true, closeOnEscape: true })
+  else await hideNotes($)
 }
 
 const OUTCOMES = 10
