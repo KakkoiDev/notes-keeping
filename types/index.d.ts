@@ -21,7 +21,9 @@ export type Select = { mode: 'menu' | 'reply'; selection: string; row?: string; 
 export type Note = { id: string; row: string; at: number }
 
 // pasted: agent holds text the captain pasted (from source, when named) and user the notes taken on it.
-export type Pair = { agent: string; user: string; note?: Note; pasted?: { source?: string } }
+// call: the answer in user to the call task, with agent the question; it goes to firstmate through the bridge, never into the prompt.
+// release: the task is held work, not a question, so the answer resumes it. isRefused: the bridge refused it; only s sends it again.
+export type Pair = { agent: string; user: string; note?: Note; pasted?: { source?: string }; call?: { task: string; release?: true; isRefused?: true } }
 
 export type ChatNote = Note & { agent: string; user: string }
 
@@ -72,7 +74,8 @@ export type ClosedCall = { task: string; title: string; evidence: string | null 
 export type Call = { question: string; options: string[]; at: number | null; state: 'open' | 'answered' }
 
 // One line under a to-do in the Todos view; right is drawn at the row's right edge, isCall lines are never dim.
-export type SubLine = { text: string; right?: string; isCall?: true }
+// task: the call a isCall line is for.
+export type SubLine = { text: string; right?: string; isCall?: true; task?: string }
 
 // at: when the plugin read it, in clock milliseconds. calls: live captain holds tied to no row, counted only.
 // gone: worker records whose window is gone and no open item links, counted only.

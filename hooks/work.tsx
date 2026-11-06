@@ -54,7 +54,8 @@ export function prName(pr: string): string {
 
 // The lines under to-do `id` (with `status`) in the Todos view: a worker line per linked worker row, then a call line per
 // open call linked to it, then, when every linked worker finished and the to-do is still open, the hint to mark it done.
-export function todoLines(rows: readonly FleetRow[], id: string, status: Todo['status'], now: number): SubLine[] {
+// answers: the answers queued for a call, by task; its line says so and a line under it shows the answer.
+export function todoLines(rows: readonly FleetRow[], id: string, status: Todo['status'], now: number, answers: Readonly<Record<string, string>> = {}): SubLine[] {
   const on = rows.filter(row => !row.gone && row.todos.includes(id))
   const workers = on.filter(row => row.word !== 'call')
   const workerLines = workers.map(row => {
@@ -64,7 +65,12 @@ export function todoLines(rows: readonly FleetRow[], id: string, status: Todo['s
     return { text: cutWord(`      worker ${word}${age}${said === '' ? '' : ` · ${said}`}${row.pr === null || said.includes(prName(row.pr)) ? '' : ` · PR ${prName(row.pr)}`}`, ROW_COLS) }
   })
   const callLines = on.flatMap(row =>
-    row.call?.state === 'open' ? [{ text: edged(`    ! your call: ${lowered(row.call.question)}`, `open · ${ageOf(row.call.at, now)}`), isCall: true as const }]
+    row.call?.state === 'open' && answers[row.task] !== undefined
+      ? [
+          { text: edged(`    ! your call: ${lowered(row.call.question)}`, 'answer queued'), isCall: true as const, task: row.task },
+          { text: cutWord(`      you answered: ${answers[row.task]} · queued, goes out with your next message`, ROW_COLS) },
+        ]
+    : row.call?.state === 'open' ? [{ text: edged(`    ! your call: ${lowered(row.call.question)}`, `open · ${ageOf(row.call.at, now)} · a: answer`), isCall: true as const, task: row.task }]
     : row.call?.state === 'answered' ? [{ text: cutWord(answeredLine(row.trail ?? [], now), ROW_COLS) }]
     : [],
   )

@@ -224,6 +224,12 @@ an item marked `[/]` by hand with no reason reads `(paused: no reason recorded)`
   - Every five seconds an interactive session runs `bridge fleet <notes file>` for the work under the to-dos and the
     [Work view](#work-view). `bridge waiting <task> <text>` sets what a task's row waits on, held until the task writes
     its next state line; `bridge crew <task>` prints `fm-crew-state.sh` for one task (the panel no longer calls it).
+  - `bridge call-answer <task> [--release]` takes the captain's answer to a call on stdin and records it through
+    firstmate's one keyed-answer intake (`fm-captain-hold.sh answers --any-origin --source notes-keeping`), then files one
+    inbox note so firstmate routes the answer to the worker. A question closes; held work needs `--release` to resume. The
+    answer is one line of at most 512 characters, the length the record keeps: a longer one is refused, not cut. It
+    exits 1 with the reason when the intake skipped the call (already closed, unknown) or the note could not be filed,
+    and drops the 30 s `fleet` cache so the next read sees the call closed. The plugin calls it; a replay is idempotent.
 
 ### Work view
 
@@ -302,9 +308,9 @@ Every action on the objectives and the todo list is one row at the end of the no
 - 2026-10-28T09:08:00Z | captain | update | - | - | Add a logs tab
 ```
 
-Columns: UTC time, actor id, action (`status`, `added`, `objective`, `update`, `attach`), item id and label (`-` for
+Columns: UTC time, actor id, action (`status`, `added`, `objective`, `update`, `attach`, `answer`), item id and label (`-` for
 none), `from -> to` (`none -> <status>` for an added item, `-` for none), and a note (Laya's answer and probability,
-the firstmate task, the copied file). An attach from History logs one `attach` row (the source notes file), one `added` row per copied todo item naming its id, and one `objective` row per copied objective no item stands for; items left behind as done or declined are not logged. The actors are listed once in `hooks/actors.ts`:
+the firstmate task, the copied file). An attach from History logs one `attach` row (the source notes file), one `added` row per copied todo item naming its id, and one `objective` row per copied objective no item stands for; items left behind as done or declined are not logged. An answer to a call, once firstmate records it, logs one `answer` row: the task, then the answer. The actors are listed once in `hooks/actors.ts`:
 
 | id | kind | who |
 | --- | --- | --- |
@@ -339,7 +345,7 @@ text (dim unless selected; a call line never dim). A to-do with no link gets no 
 ```
 [~] PROJ-790 scope needs clarifying
       worker finished 6h ago · PROJ-790: the smallest scope the client can accept
-    ! your call: send the cut-scope proposal to the client?                    open · 6h
+    ! your call: send the cut-scope proposal to the client?       open · 6h · a: answer
 [~] Fix now task
       worker finished 34m ago · checks green · PR webapp#28276
       worker finished, to-do still in progress                          f: mark done
@@ -350,7 +356,9 @@ text (dim unless selected; a call line never dim). A to-do with no link gets no 
 
 - a worker line per linked worker: `worker <state> <age>` and the report's `Outcome:`, else its title, else the worker's
   last state line, then ` · PR <repo>#<n>` when it has one;
-- a call line per open call: its `Question:` line (else its title), `open · <age>` at the right edge;
+- a call line per open call: its `Question:` line (else its title), `open · <age> · a: answer` at the right edge; the
+  line is a button that opens the call's card with the answer field. With an answer queued it ends in `answer queued`
+  and a line under it shows `you answered: <answer> · queued, goes out with your next message`;
 - once answered, in its place: `you answered`, then `· reached the worker <age> ago` once firstmate's `Routed to:` line
   names an inbox message, and `· it read it` once that message is in `handled/`. Nothing is inferred: a missing record
   ends the line;
@@ -361,9 +369,15 @@ Under the list, while there is work no open to-do links or a call closed today w
 `Not on a to-do: <n calls>, <n workers> · <n> calls closed without you today` and `w` to show it.
 
 The Item view (`d`, Enter on the text) adds, under the item's source, a card per linked call: `! Your call · open · asked
-<age> ago`, the question, and its `Options:` lines on `1` to `9`, each filling the prompt with `<task> <key>: <n>
-<option>`; `a` opens a field that fills `<task> <key>: <text>`. An answered call shows your words and its trail, time
-first (UTC). Then a block per linked worker (state and age, report title, `Outcome:` line) and the item's last three
+<age> ago`, the question, and its `Options:` lines on `1` to `9`, each queuing `<n> <option>` as the answer; `a` opens a
+field that queues what you type. A queued answer replaces the options: the card shows `Your answer: ...` and `Queued:
+goes out with your next message, s sends it now` (`and resumes the work` for held work), with a button to change it; with two open calls the keys go on to the
+second. The answer is not put in the prompt. It goes to firstmate through `bridge call-answer` with your next message
+(Enter), or at once with `s`, and a `# Logs` row (`captain`, `answer`, `<task>: <answer>`) records it. An answer over 512 characters (the record's limit) is not queued: a toast says so and the field stays open. If the bridge
+refuses an answer (the call is already closed), a toast gives the reason and the answer stays queued, retried by `s` only, not by every message; a `/clear` keeps it,
+since the call lives in the backlog. The status line counts it (`1 answer to a call queued`) and the Queue view lists it
+as `[CALL] <question>` over an editable `[ANSWER]`, removable like a reply. An answered call shows your words and its
+trail, time first (UTC). Then a block per linked worker (state and age, report title, `Outcome:` line) and the item's last three
 status changes from `# Logs`. Its keys, each drawn only when it acts: `v` report, `e` report in the editor, `u` PR, `g`
 the worker's window, `f` and `p` status, `j` and `k` the next and previous shown to-do.
 
@@ -381,7 +395,7 @@ pressed.
 | `f` | step it forward one status; at declined it stays declined |
 | `p` | step it back one status; at todo it stays todo |
 | `z` | pause it: a field asks why; Enter writes `[/]` with the reason, logged as the captain. Enter on an empty field pauses nothing |
-| `a` | with an open call on it: its card in the Item view, the answer field open |
+| `a` | with an open call on it: its card in the Item view, the answer field open (a queued answer is in the field, to change) |
 | `v` | with a linked report: the report reader |
 | `1` `2` `3` `4` `5` `6` | show or hide the `[ ]` todo, `[~]` in-progress, `[x]` done, `[-]` declined, `[!]` blocked, `[/]` paused items |
 | `m` | filter: cycles all, `[ ]` todo, `[~]` in-progress, `[x]` done, `[-]` declined, `[!]` blocked, `[/]` paused, all. One status shows alone; the legend reads `filter: <status>` (`custom` when `1`-`6` left a mix, and `m` then starts at todo). Shares the hidden statuses with `1`-`6`; the selection moves to a shown item |

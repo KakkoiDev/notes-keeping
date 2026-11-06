@@ -2,7 +2,7 @@
 """notes-keeping-bridge - links the notes-keeping todo list to this firstmate home's tasks.
 
 The notes-keeping plugin runs this file when it exists under the session root (config/ is gitignored, so only this
-home opted in). Four verbs are the plugin's; six are firstmate's.
+home opted in). Five verbs are the plugin's; six are firstmate's.
 
   status <notes-file>        print {"<item text>": {"status": "blocked" | "paused" | "in-progress" | "done" | null, "task": "<id>"}}
                              for every linked item; an item linked by id is printed as "id:<id>" with an "id" field, and a
@@ -73,6 +73,16 @@ home opted in). Four verbs are the plugin's; six are firstmate's.
                              {"task", "title", "evidence"}.
   waiting <task-id> <text>   firstmate's Waiting-on cell for the task's row, until state/<task>.status gets another state line.
   crew <task-id>             print bin/fm-crew-state.sh <task-id> for this home.
+  call-answer <task-id> [--release]
+                             the captain's answer to a held call, on stdin: one line, at most 512 characters (what the
+                             record keeps; a longer one is refused, not cut). Fed to firstmate's keyed-answer intake, `bin/fm-captain-hold.sh answers
+                             --any-origin --source notes-keeping`, which writes the captain's words into the task and
+                             closes it (--release lifts the hold on a held work item instead, so it resumes). Then one
+                             captain inbox note, "captain answered <task>: <answer>", so firstmate routes the answer to the
+                             worker when it changes what is built, and the fleet's backlog read is dropped so the next
+                             `fleet` sees the call closed. Prints the intake's output. Exits 1 with the reason when the
+                             intake skipped the task (not held, already closed) and when the note could not be filed
+                             (the answer is then recorded; sending the same answer again records nothing twice).
 
 Links are appended to state/notes-todo-links.jsonl, blocks to state/notes-todo-blocks.jsonl, pauses to
 state/notes-todo-pauses.jsonl, waiting cells to
@@ -122,6 +132,9 @@ KIND_NOTE = re.compile(r'\(kind: ([^)]+)\)')
 DONE_NOTE = re.compile(r'\((?:done|reported) (\d{4}-\d{2}-\d{2})\)')
 TASKS_AXI = os.path.join(ROOT, 'bin', 'fm-tasks-axi.sh')
 CREW_STATE = os.path.join(ROOT, 'bin', 'fm-crew-state.sh')
+CAPTAIN_HOLD = os.path.join(ROOT, 'bin', 'fm-captain-hold.sh')
+# What fm-captain-hold.sh keeps of an answer.
+ANSWER_CHARS = 512
 CACHE = os.environ.get('NOTES_KEEPING_FLEET_CACHE') or os.path.join(tempfile.gettempdir(), 'notes-keeping-fleet')
 TASKS_S = 30
 TASKS_FIELDS = 'created,closed,hold_kind,hold_until,hold_reason,blocked_by,body'
@@ -160,7 +173,7 @@ WORD = {'needs-decision': 'decision'}
 ASKS = ('needs-decision', 'blocked', 'failed')
 USAGE = ('usage: notes-keeping-bridge status <notes-file> | notify <notes-file> | link <task-id> <item> [--by <name>] | unlink <item>'
          ' | block <task-id> --reason <text> [--by <name>] | pause <task-id> --reason <text> [--by <name>] | pending <notes-file> | answer <request> | update <notes-file> <text> --by <name> --task <task-id> | open <notes-file> | active'
-         ' | fleet <notes-file> | waiting <task-id> <text> | crew <task-id>')
+         ' | fleet <notes-file> | waiting <task-id> <text> | crew <task-id> | call-answer <task-id> [--release]')
 
 
 def die(text, code=2):
@@ -442,9 +455,13 @@ def toon_row(line):
         i += 1
 
 
+def cache_path():
+    return os.path.join(CACHE, hashlib.sha256(STATE.encode()).hexdigest()[:16] + '.json')
+
+
 def backlog():
     """The backlog's tasks by id, a "-" value read as None; one fm-tasks-axi.sh list per TASKS_S seconds."""
-    path = os.path.join(CACHE, hashlib.sha256(STATE.encode()).hexdigest()[:16] + '.json')
+    path = cache_path()
     try:
         if time.time() - os.path.getmtime(path) < TASKS_S:
             with open(path, encoding='utf-8') as f:
@@ -836,6 +853,32 @@ def crew(task):
         die(f'fm-crew-state.sh failed ({done.returncode}): {done.stderr.strip()}', 1)
 
 
+def call_answer(task, release):
+    """The captain's answer on stdin, fed to firstmate's keyed-answer intake, then one inbox note. The intake owns the record
+    and the close; this only turns the answer into its keyed line."""
+    text = ' '.join(sys.stdin.read().split())
+    if text == '':
+        die('call-answer needs the answer on stdin')
+    if len(text) > ANSWER_CHARS:
+        die(f'the answer is {len(text)} characters and the record keeps {ANSWER_CHARS}: shorten it, nothing was sent')
+    env = {**os.environ, 'FM_HOME': HOME}
+    line = f'{task}\t{text}\t' + ('\trelease' if release else '') + '\n'
+    done = subprocess.run([CAPTAIN_HOLD, 'answers', '--any-origin', '--source', 'notes-keeping'], input=line, text=True, capture_output=True, env=env)
+    if done.returncode != 0:
+        why = next((l for l in done.stdout.split('\n') if l.startswith(('skipped:', 'refused:'))), None) or done.stderr.strip() or f'exit {done.returncode}'
+        die(f'fm-captain-hold.sh answers: {why}', 1)
+    sys.stdout.write(done.stdout)
+    try:
+        os.remove(cache_path())
+    except OSError:
+        pass
+    body = f"captain answered {task}: {text}\nnotes-keeping recorded the captain's answer to the call {task} through fm-captain-hold.sh answers ({'released' if release else 'closed'}). If it changes what a worker must build, route it to that worker.\n"
+    request = 'nk-' + hashlib.sha256(f'call-answer\n{body}'.encode()).hexdigest()[:16]
+    noted = subprocess.run([INBOX, 'note', '--request-id', request, '-'], input=body, text=True, capture_output=True, env=env)
+    if noted.returncode != 0:
+        die(f'the answer is recorded, but fm-inbox.sh note failed ({noted.returncode}): {(noted.stderr or noted.stdout).strip()}; firstmate was not woken, sending the answer again files the note', 1)
+
+
 def main(argv):
     verb, args = (argv[0], argv[1:]) if argv else ('', [])
     if verb == 'status' and len(args) == 1:
@@ -897,6 +940,10 @@ def main(argv):
         if not TASK_ID.match(args[0]):
             die(f'not a task id: {args[0]}')
         crew(args[0])
+    elif verb == 'call-answer' and (len(args) == 1 or args[1:] == ['--release']):
+        if not TASK_ID.match(args[0]):
+            die(f'not a task id: {args[0]}')
+        call_answer(args[0], len(args) == 2)
     else:
         die(USAGE)
 

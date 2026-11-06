@@ -4,7 +4,7 @@ import { keyOf, shown } from './todo'
 
 // status: a todo item's status changed; added: a todo item appeared; objective, update: the objectives were set or an
 // [UPDATE] added; attach: an earlier notes file was copied in.
-export type Action = 'status' | 'added' | 'objective' | 'update' | 'attach'
+export type Action = 'status' | 'added' | 'objective' | 'update' | 'attach' | 'answer'
 export type Entry = { at: number; actor: ActorId; action: Action; item?: Item; from?: Status; to?: Status; note?: string }
 export type Row = { time: string; actor: string; action: string; item: string; change: string; note: string }
 

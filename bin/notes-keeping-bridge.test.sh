@@ -567,5 +567,80 @@ printf '# Objectives\n\n- [ ] not a todo item\n\n# Todo\n\n- [ ] Ship the bridge
 check 'open prints every item under # Todo that is not done or declined, in file order, with its id; a paused one with its reason' '[{"id": "ab12cd3", "status": "todo", "text": "Ship the bridge"}, {"id": "cc11111", "status": "in-progress", "text": "**Short**: Started one"}, {"id": null, "status": "blocked", "text": "Blocked one"}, {"id": "ee22222", "status": "paused", "text": "Paused one", "reason": "after the review"}]' "$(b open "$H/n.md")"
 check 'open on a missing notes file exits 1' '1' "$(b open "$H/none.md" 2>/dev/null; echo $?)"
 
+# call-answer: the captain's answer to a held call, fed to firstmate's keyed-answer intake, then one inbox note. Firstmate's
+# fm-captain-hold.sh and fm-inbox.sh are stubs that record how they were run.
+call_home() {
+  fleet_home
+  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" > "%s/hold.args"\necho "FM_HOME=$FM_HOME" > "%s/hold.env"\ncat > "%s/hold.stdin"\ncat "%s/hold.out" 2>/dev/null\nexit "$(cat "%s/hold.rc" 2>/dev/null || echo 0)"\n' "$H" "$H" "$H" "$H" "$H" > "$H/root/bin/fm-captain-hold.sh"
+  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" > "%s/inbox.args"\necho "FM_HOME=$FM_HOME" > "%s/inbox.env"\ncat > "%s/inbox.body"\nrc=$(cat "%s/inbox.rc" 2>/dev/null || echo 0)\n[ "$rc" = 0 ] || echo "inbox said no" >&2\nexit "$rc"\n' "$H" "$H" "$H" "$H" > "$H/root/bin/fm-inbox.sh"
+  chmod +x "$H/root/bin/fm-captain-hold.sh" "$H/root/bin/fm-inbox.sh"
+  echo 'closed: ask-q' > "$H/hold.out"
+  printf 'answers: closed=1 skipped=0\n' >> "$H/hold.out"
+}
+ca() { local text="$1"; shift; printf '%s' "$text" | f call-answer "$@"; }
+tabs() { printf '%s' "$1" | od -An -c | tr -s ' ' | tr -d '\n'; }
+
+call_home
+out=$(ca '1 Store-only batch 1' ask-q 2>&1); rc=$?
+check 'call-answer exits 0 and prints the intake output when the call closed' "0|closed: ask-q
+answers: closed=1 skipped=0" "$rc|$out"
+check 'call-answer feeds the keyed-answer intake with this channel as its source, any origin' 'answers --any-origin --source notes-keeping' "$(cat "$H/hold.args")"
+check 'call-answer pipes one keyed line: task, the answer, an empty label, no close mode (a question closes)' "$(printf 'ask-q\t1 Store-only batch 1\t')" "$(cat "$H/hold.stdin")"
+check 'call-answer runs the intake against this home' "FM_HOME=$H" "$(cat "$H/hold.env")"
+
+call_home
+ca 'ship it' work-x --release >/dev/null 2>&1
+check 'call-answer --release feeds the release close mode: a held work item resumes' "$(printf 'work-x\tship it\t\trelease')" "$(cat "$H/hold.stdin")"
+
+call_home
+ca "$(printf 'two\nlines\twith\ttabs  and   gaps')" ask-q >/dev/null 2>&1
+check 'call-answer keeps the answer on one line: line breaks, tabs and runs of spaces are one space' "$(printf 'ask-q\ttwo lines with tabs and gaps\t')" "$(cat "$H/hold.stdin")"
+
+call_home
+ca '   ' ask-q >/dev/null 2>&1; rc=$?
+check 'call-answer with an empty answer exits 2 and runs nothing' '2|no' "$rc|$([ -e "$H/hold.args" ] && echo yes || echo no)"
+ca 'x' '../x' >/dev/null 2>&1; rc=$?
+check 'call-answer with a task id holding a path exits 2 and runs nothing' '2|no' "$rc|$([ -e "$H/hold.args" ] && echo yes || echo no)"
+long=$(python3 -c 'print("a" * 513)')
+err=$(ca "$long" ask-q 2>&1 >/dev/null); rc=$?
+check 'call-answer refuses an answer the record would cut (over 512 characters), saying so, and runs nothing' "2|yes|no" "$rc|$(case "$err" in *512*) echo yes ;; *) echo no ;; esac)|$([ -e "$H/hold.args" ] && echo yes || echo no)"
+ca "$(python3 -c 'print("a" * 512)')" ask-q >/dev/null 2>&1; rc=$?
+check 'call-answer takes an answer of exactly 512 characters' '0' "$rc"
+
+call_home
+printf 'skipped: ask-q (already closed)\nanswers: closed=0 skipped=1\n' > "$H/hold.out"; echo 1 > "$H/hold.rc"
+err=$(ca 'late' ask-q 2>&1 >/dev/null); rc=$?
+check 'call-answer exits 1 naming why when the intake skipped the call, and files no note' "1|yes|no" "$rc|$(case "$err" in *'already closed'*) echo yes ;; *) echo no ;; esac)|$([ -e "$H/inbox.args" ] && echo yes || echo no)"
+
+call_home
+ca '1 Store-only batch 1' ask-q >/dev/null 2>&1
+check 'call-answer files one captain inbox note after the call closed, its first line naming the task and the answer' "note --request-id nk- -|captain answered ask-q: 1 Store-only batch 1" "$(sed -E 's/nk-[0-9a-f]{16}/nk-/' "$H/inbox.args")|$(head -1 "$H/inbox.body")"
+check 'the note asks firstmate to route the answer to the worker when it changes what is built' 'yes' "$(grep -qi 'route' "$H/inbox.body" && echo yes || echo no)"
+check 'the note is filed against this home' "FM_HOME=$H" "$(cat "$H/inbox.env")"
+
+call_home
+ca '1 Store-only batch 1' ask-q >/dev/null 2>&1
+first=$(grep -o 'nk-[0-9a-f]*' "$H/inbox.args")
+sleep 1.1
+ca '1 Store-only batch 1' ask-q >/dev/null 2>&1
+check 'the same answer sent twice files its note under one request id, so a replay does not wake firstmate again' "$first" "$(grep -o 'nk-[0-9a-f]*' "$H/inbox.args")"
+ca 'Measure first only' ask-q >/dev/null 2>&1
+check 'a different answer to the same call is its own request' 'differs' "$([ "$(grep -o 'nk-[0-9a-f]*' "$H/inbox.args")" != "$first" ] && echo differs || echo same)"
+
+call_home
+echo 1 > "$H/inbox.rc"
+err=$(ca '1 Store-only batch 1' ask-q 2>&1 >/dev/null); rc=$?
+check 'call-answer exits 1 when the note cannot be filed, saying the answer is recorded' "1|yes" "$rc|$(case "$err" in *recorded*) echo yes ;; *) echo no ;; esac)"
+
+call_home
+printf 'count: 0\ntasks[0]{id,state,kind,repo,title,created,hold_kind,hold_until,hold_reason,blocked_by,body}:\n' > "$H/tasks.txt"
+f fleet "$H/notes.md" >/dev/null
+f fleet "$H/notes.md" >/dev/null
+before=$(wc -l < "$H/tasks.runs" | tr -d ' ')
+ca 'go' ask-q >/dev/null 2>&1
+f fleet "$H/notes.md" >/dev/null
+after=$(wc -l < "$H/tasks.runs" | tr -d ' ')
+check 'a recorded answer drops the 30 s backlog cache: the next fleet read sees the call closed' '1 2' "$before $after"
+
 printf '\n' "" ; printf '%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

@@ -83,13 +83,15 @@ export function TodoSlot(props: {
   onToggle: (status: Todo['status']) => unknown
   onFilter: () => unknown
   onPause: (id: string) => unknown
+  // A call line is a button: it opens the item's card on that call, with the answer field.
+  onCall?: (id: string, task: string) => unknown
   pause?: unknown
   // The lines drawn under each item, by item id.
   lines?: Readonly<Record<string, readonly SubLine[]>>
   // Keys drawn at the end of the key row, each only when it acts on the selected item.
   keys?: unknown
 }) {
-  const { Box, Button, Text, todos, hidden, selected, landing, onCycle, onOpen, onStep, onSelect, onToggle, onFilter, onPause, pause, lines, keys } = props
+  const { Box, Button, Text, todos, hidden, selected, landing, onCycle, onOpen, onStep, onSelect, onToggle, onFilter, onPause, onCall, pause, lines, keys } = props
   const shown = todos.filter(item => !hidden.includes(item.status))
   const step = (by: 1 | -1) => () => (selected === undefined ? undefined : onStep(selected, by))
   const at = shown.findIndex(item => item.id === selected)
@@ -130,11 +132,15 @@ export function TodoSlot(props: {
             />
             <Button key={`open:${item.id}`} plain dimColor={item.id !== selected} label={item.text} onPress={() => onOpen(item.id)} />
           </Box>,
-          ...(lines?.[item.id] ?? []).map((line, i) => (
-            <Text key={`sub:${item.id}:${i}`} dimColor={!line.isCall && item.id !== selected}>
-              {line.text}
-            </Text>
-          )),
+          ...(lines?.[item.id] ?? []).map((line, i) =>
+            line.isCall && line.task !== undefined && onCall !== undefined ? (
+              <Button key={`callline:${item.id}:${i}`} plain label={line.text} onPress={() => onCall(item.id, line.task ?? '')} />
+            ) : (
+              <Text key={`sub:${item.id}:${i}`} dimColor={!line.isCall && item.id !== selected}>
+                {line.text}
+              </Text>
+            ),
+          ),
         ])
       )}
       <Box flexDirection="row" flexWrap="wrap" columnGap={2}>

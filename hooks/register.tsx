@@ -56,6 +56,8 @@ const CHORD = 'ctrl+q'
 const EDITOR_ACTION = 'app:toggleDiffNoiseFilter'
 const EDITOR_CHORD = 'ctrl+e'
 const GIT_MS = 10_000
+// The most characters of an answer the firstmate record keeps; the bridge refuses more.
+const ANSWER_CHARS = 512
 const POLL_MS = 600
 const REFRESH_MS = 5_000
 // How long a still selection the clipboard never took (copy on select off) waits before it counts as released.
@@ -805,11 +807,16 @@ async function important($: EngineInterface, text: string, tag: string): Promise
 let queued: readonly Pair[] = []
 let callCount = 0
 
-// The queue counted by kind: replies to Claude's text, and notes on pasted text.
+// The queue counted by kind: replies to Claude's text, notes on pasted text, and answers to calls.
 function queuedText(list: readonly Pair[]): string | undefined {
   const pasted = list.filter(pair => pair.pasted !== undefined).length
-  const replies = list.length - pasted
-  const parts = [replies === 0 ? '' : `${replies} repl${replies === 1 ? 'y' : 'ies'}`, pasted === 0 ? '' : `${pasted} note${pasted === 1 ? '' : 's'} on pasted text`].filter(part => part !== '')
+  const answers = list.filter(pair => pair.call !== undefined).length
+  const replies = list.length - pasted - answers
+  const parts = [
+    replies === 0 ? '' : `${replies} repl${replies === 1 ? 'y' : 'ies'}`,
+    pasted === 0 ? '' : `${pasted} note${pasted === 1 ? '' : 's'} on pasted text`,
+    answers === 0 ? '' : `${answers} answer${answers === 1 ? '' : 's'} to ${answers === 1 ? 'a call' : 'calls'}`,
+  ].filter(part => part !== '')
   return parts.length === 0 ? undefined : `notes: ${parts.join(', ')} queued, sent with your next message. Ctrl+q: edit, remove, send`
 }
 
@@ -907,19 +914,83 @@ async function queuePasted($: EngineInterface, part: string, user: string): Prom
   await showNotes($, 'paste')
 }
 
-// Moves every queued reply into the prompt box; the user presses Enter. Nothing is sent from here.
-// The queue is emptied before the fill, so a second press or an Enter during the move finds nothing left to add.
-async function sendQueue($: EngineInterface): Promise<void> {
-  let pending: Pair[] = []
-  await update($, queue, list => {
-    pending = list
-    return []
+// An answer to a call joins the queue as the one answer to that call: a second one replaces the first. A call that is not
+// a captain question is held work, and its answer resumes it.
+// False, with a toast, for an answer the record would cut.
+async function queueCall($: EngineInterface, row: FleetRow, text: string): Promise<boolean> {
+  if (!isFitting($, text)) return false
+  const pair: Pair = { agent: row.call?.question ?? row.title ?? row.task, user: text, call: row.kind === 'captain' ? { task: row.task } : { task: row.task, release: true } }
+  const next = await update($, queue, list => [...list.filter(one => one.call?.task !== row.task), pair])
+  showQueue($, next)
+  return true
+}
+
+function isFitting($: EngineInterface, text: string): boolean {
+  const chars = text.split(/\s+/).filter(word => word !== '').join(' ').length
+  if (chars <= ANSWER_CHARS) return true
+  $.ui.toast(`notes-keeping: the answer is ${chars} characters and the record keeps ${ANSWER_CHARS}. Shorten it.`)
+  return false
+}
+
+// The log row of an answer delivered to firstmate.
+async function logAnswer($: EngineInterface, task: string, text: string): Promise<void> {
+  const { path } = await bound($)
+  await locked(async () => {
+    const md = await readText($, path)
+    warn($, told('', await save($, path, await logged($, path, md, [{ at: await $.clock.now(), actor: 'captain', action: 'answer', note: `${task}: ${text}` }]), 'log')))
   })
-  if (pending.length === 0) {
+}
+
+// Delivery runs one at a time, so the Enter and `s` that both find an answer queued send it once.
+let delivering: Promise<void> = Promise.resolve()
+
+// Hands each queued answer to firstmate through the bridge. The one firstmate records leaves the queue and gets a # Logs row;
+// one it refuses stays queued, with the reason in a toast. The fleet is read again so the call shows closed.
+function deliverCalls($: EngineInterface, isRetry: boolean): Promise<void> {
+  const run = async () => {
+    const due = (await read($, queue)).filter(one => one.call !== undefined && (isRetry || one.call.isRefused !== true))
+    if (due.length === 0) return
+    const bridge = await bridgeOf($)
+    let isDelivered = false
+    for (const pair of due) {
+      const call = pair.call
+      if (call === undefined) continue
+      if (bridge === undefined) {
+        $.ui.toast(`notes-keeping: the bridge is not here, so the answer to ${call.task} stays queued.`)
+        break
+      }
+      const done = await $.process.run([bridge, 'call-answer', call.task, ...(call.release === true ? ['--release'] : [])], { stdin: pair.user, timeoutMs: BRIDGE_MS }).catch((error: unknown) => ({ exitCode: 1, stdout: '', stderr: message(error) }))
+      if (done.exitCode !== 0) {
+        $.ui.toast(`notes-keeping: ${call.task}: ${(done.stderr.trim().split('\n').pop() ?? '').replace(/^notes-keeping-bridge: /, '') || `the bridge exited ${done.exitCode}`}. The answer stays queued; s sends it again.`)
+        showQueue($, await update($, queue, list => list.map(one => (one.call?.task === call.task && one.user === pair.user ? { ...one, call: { ...call, isRefused: true as const } } : one))))
+        continue
+      }
+      isDelivered = true
+      showQueue($, await update($, queue, list => list.filter(one => one.call?.task !== call.task || one.user !== pair.user)))
+      await logAnswer($, call.task, pair.user)
+    }
+    if (isDelivered) await watchFleet($)
+  }
+  delivering = delivering.then(run, run).catch(error => void $.ui.toast(`notes-keeping: ${message(error)}`))
+  return delivering
+}
+
+// Delivers every queued answer through the bridge, then moves every queued reply into the prompt box; the user presses
+// Enter. Nothing is sent from here. The replies leave the queue before the fill, so a second press or an Enter during the
+// move finds nothing left to add; answers stay queued until the bridge takes them.
+async function sendQueue($: EngineInterface): Promise<void> {
+  if ((await read($, queue)).length === 0) {
     $.ui.toast('No replies queued.')
     return
   }
-  showQueue($, [])
+  await deliverCalls($, true)
+  let pending: Pair[] = []
+  const kept = await update($, queue, list => {
+    pending = list.filter(pair => pair.call === undefined)
+    return list.filter(pair => pair.call !== undefined)
+  })
+  if (pending.length === 0) return
+  showQueue($, kept)
   const filled = await $.prompt.fill({ text: pending.map(pair => queuedBlock(pair, false)).join('\n\n'), mode: 'insert' })
   if (!filled.isFilled) {
     showQueue($, await update($, queue, list => [...pending, ...list]))
@@ -1188,10 +1259,7 @@ export const register: Register = on => {
 
   on('session.end', async ($, e, next) => {
     if (e.reason === 'clear' || e.reason === 'resume') carried = await boundPath($)
-    if (e.reason === 'clear') {
-      await update($, queue, () => [])
-      showQueue($, [])
-    }
+    if (e.reason === 'clear') showQueue($, await update($, queue, list => list.filter(pair => pair.call !== undefined)))
     return next(e)
   })
 
@@ -1325,14 +1393,15 @@ export const register: Register = on => {
   // a managed-settings plugin has bypassed classic.SessionStart, prompt.context and session.compact for user plugins.
   on('prompt.submit', async ($, e, next) => {
     if (e.command !== undefined) return next(e)
-    const pending = e.origin.kind === 'composer' && e.isMeta !== true ? await read($, queue) : []
+    const isOwn = e.origin.kind === 'composer' && e.isMeta !== true
+    const pending = isOwn ? (await read($, queue)).filter(pair => pair.call === undefined) : []
     let text = e.text
     if (pending.length > 0) {
       text = [...pending.map(pair => queuedBlock(pair, false)), e.text].join('\n\n')
       warn($, told('', await edit($, 'reply', md => addTurn(md, pending, e.text))))
-      await update($, queue, () => [])
-      showQueue($, [])
+      showQueue($, await update($, queue, list => list.filter(pair => pair.call !== undefined)))
     }
+    if (isOwn) void deliverCalls($, false)
     const path = await boundPath($)
     const isResumed = resumed
     resumed = false
@@ -1565,7 +1634,7 @@ export const register: Register = on => {
     const selectedItem = s === undefined ? undefined : items(s.todo).find(item => keyOf(item.text) === selected)
     const reportRow = work === null || selectedItem?.id === undefined ? undefined : reportRowOf(work.rows, selectedItem.id)
     const answerRow = work === null || selectedItem?.id === undefined ? undefined : work.rows.find(row => !row.gone && row.call?.state === 'open' && row.todos.includes(selectedItem.id ?? ''))
-    if (work !== null && s !== undefined) for (const item of items(s.todo)) if (item.id !== undefined) subLines[keyOf(item.text)] = todoLines(work.rows, item.id, item.status, clockNow)
+    if (work !== null && s !== undefined) for (const item of items(s.todo)) if (item.id !== undefined) subLines[keyOf(item.text)] = todoLines(work.rows, item.id, item.status, clockNow, Object.fromEntries(list.flatMap(pair => (pair.call === undefined ? [] : [[pair.call.task, pair.user] as const]))))
     const pauseField =
       pausing === null || Input === undefined ? undefined : (
         <Input
@@ -1605,6 +1674,13 @@ export const register: Register = on => {
           await update($, todoCursor, () => id)
           // The engine answers {} or { deny }; `claude plugin test` has no ring and rejects.
           await $.ui.focus({ requestId: PANE, key: rowKey(id, landing) }).catch(() => undefined)
+        }}
+        onCall={async (id, task) => {
+          await update($, todoOpen, () => id)
+          await update($, callAnswering, () => task)
+          await update($, view, () => 'item')
+          // The engine answers {} or { deny }; `claude plugin test` has no ring and rejects.
+          await $.ui.focus({ requestId: PANE, key: 'call:reply' }).catch(() => undefined)
         }}
         pause={pauseField}
         lines={subLines}
@@ -1680,14 +1756,18 @@ export const register: Register = on => {
           <Input
             key="work:reply"
             label={target?.answer ?? target?.task}
-            placeholder="your answer; Enter puts it in the prompt, you send it"
-            submitLabel="fill"
+            placeholder={target?.call?.state === 'open' ? 'your answer; Enter queues it, it goes out with your next message' : 'your answer; Enter puts it in the prompt, you send it'}
+            submitLabel={target?.call?.state === 'open' ? 'queue' : 'fill'}
             autoFocus
             onSubmit={async (value: string) => {
               if (value.trim() === '') return
               if (target === undefined) return
-              const filled = await $.prompt.fill({ text: answerText(target, value.trim()), mode: 'insert' })
-              if (!filled.isFilled) $.ui.toast('The prompt box cannot take the answer now.')
+              if (target.call?.state === 'open') {
+                if (!(await queueCall($, target, value.trim()))) return
+              } else {
+                const filled = await $.prompt.fill({ text: answerText(target, value.trim()), mode: 'insert' })
+                if (!filled.isFilled) $.ui.toast('The prompt box cannot take the answer now.')
+              }
               await update($, workAnswering, () => false)
             }}
           />
@@ -1924,18 +2004,19 @@ export const register: Register = on => {
           {list.map((pair, i) => (
             <Box key={`queued:${i}`} flexDirection="column" marginBottom={1}>
               <Text dimColor wrap="truncate-end">
-                {pair.pasted === undefined ? AGENT_TAG : queuedBlock({ ...pair, user: '' }, false).split('\n')[0]} {pair.agent.replace(/\s+/g, ' ')}
+                {pair.call !== undefined ? '[CALL]' : pair.pasted === undefined ? AGENT_TAG : queuedBlock({ ...pair, user: '' }, false).split('\n')[0]} {pair.agent.replace(/\s+/g, ' ')}
               </Text>
               {Input === undefined ? (
-                <Text>{`${USER_TAG} ${pair.user}`}</Text>
+                <Text>{`${pair.call === undefined ? USER_TAG : '[ANSWER]'} ${pair.user}`}</Text>
               ) : (
                 <Input
                   key={`reply:${i}`}
-                  label={USER_TAG}
+                  label={pair.call === undefined ? USER_TAG : '[ANSWER]'}
                   value={pair.user}
                   submitLabel="keep"
                   onSubmit={async (value: string) => {
-                    if (value.trim() !== '') await update($, queue, rows => rows.map((row, j) => (j === i ? { ...row, user: value.trim() } : row)))
+                    if (value.trim() === '' || (pair.call !== undefined && !isFitting($, value.trim()))) return
+                    await update($, queue, rows => rows.map((row, j) => (j === i ? { ...row, user: value.trim(), ...(row.call === undefined ? {} : { call: { task: row.call.task, ...(row.call.release === true ? { release: true as const } : {}) } }) } : row)))
                   }}
                 />
               )}
@@ -1951,7 +2032,7 @@ export const register: Register = on => {
               />
             </Box>
           ))}
-          {hint('Tab to a reply, edit it, Enter keeps it. [remove] drops it. s sends all to the prompt, b goes back.')}
+          {hint('Tab to a reply, edit it, Enter keeps it. [remove] drops it. s sends answers to firstmate and replies to the prompt, b goes back.')}
         </Box>
       )
     } else if (at === 'objectives') {
@@ -2027,7 +2108,8 @@ export const register: Register = on => {
       const now = await $.clock.now()
       const linkedRows = work === null || item?.id === undefined ? [] : work.rows.filter(row => !row.gone && row.todos.includes(item.id ?? ''))
       const callRows = linkedRows.filter(row => row.call)
-      const firstOpen = callRows.find(row => row.call?.state === 'open')
+      const answered = (row: FleetRow) => list.find(pair => pair.call?.task === row.task)
+      const firstOpen = callRows.find(row => row.call?.state === 'open' && answered(row) === undefined)
       const answering = await read($, callAnswering)
       const replying = Input === undefined ? undefined : callRows.find(row => row.task === answering)
       const history = item?.id === undefined ? [] : historyOf(s?.logs ?? '', item.id, actorLabel)
@@ -2048,9 +2130,8 @@ export const register: Register = on => {
         // The engine answers {} or { deny }; `claude plugin test` has no ring and rejects.
         await $.ui.focus({ requestId: PANE, key: 'call:reply' }).catch(() => undefined)
       }
-      const fill = async (row: FleetRow, text: string) => {
-        const filled = await $.prompt.fill({ text: answerText(row, text), mode: 'insert' })
-        if (!filled.isFilled) $.ui.toast('The prompt box cannot take the answer now.')
+      const answer = async (row: FleetRow, text: string) => {
+        if (await queueCall($, row, text)) await update($, callAnswering, () => null)
       }
       content =
         item === undefined ? (
@@ -2073,7 +2154,14 @@ export const register: Register = on => {
                 <Text bold>{row.call ? callHead(row.call, now) : ''}</Text>
                 <Text>{`  ${row.call?.question ?? ''}`}</Text>
                 {row.call?.state === 'answered' ? trailLines(row.trail ?? []).map((line, i) => <Text key={`trail:${row.task}:${i}`}>{line}</Text>) : null}
-                {row.call?.state !== 'open'
+                {row.call?.state === 'open' && answered(row) !== undefined ? (
+                  <Box key={`call:${row.task}:queued`} flexDirection="column">
+                    <Text>{`  Your answer: ${answered(row)?.user ?? ''}`}</Text>
+                    <Text dimColor>{`  Queued: goes out with your next message${answered(row)?.call?.release === true ? ' and resumes the work' : ''}, s sends it now`}</Text>
+                    <Button key={`call:${row.task}:change`} plain label="change the answer" onPress={() => ask(row)} />
+                  </Box>
+                ) : null}
+                {row.call?.state !== 'open' || answered(row) !== undefined
                   ? null
                   : row.call.options.slice(0, 9).map((option, i) => (
                       <Button
@@ -2081,23 +2169,23 @@ export const register: Register = on => {
                         plain
                         hotkey={row === firstOpen ? String(i + 1) : undefined}
                         label={option}
-                        onPress={() => fill(row, `${i + 1} ${option}`)}
+                        onPress={() => answer(row, `${i + 1} ${option}`)}
                       />
                     ))}
-                {row.call?.state === 'open' && row !== firstOpen ? <Button key={`call:${row.task}:answer`} plain label="write an answer" onPress={() => ask(row)} /> : null}
+                {row.call?.state === 'open' && answered(row) === undefined && row !== firstOpen ? <Button key={`call:${row.task}:answer`} plain label="write an answer" onPress={() => ask(row)} /> : null}
               </Box>
             ))}
             {replying === undefined || Input === undefined ? null : (
               <Input
                 key="call:reply"
                 label={replying.answer ?? replying.task}
-                placeholder="your answer; Enter puts it in the prompt, you send it"
-                submitLabel="fill"
+                value={answered(replying)?.user}
+                placeholder="your answer; Enter queues it, it goes out with your next message"
+                submitLabel="queue"
                 autoFocus
                 onSubmit={async (value: string) => {
                   if (value.trim() === '') return
-                  await fill(replying, value.trim())
-                  await update($, callAnswering, () => null)
+                  await answer(replying, value.trim())
                 }}
               />
             )}
@@ -2118,6 +2206,7 @@ export const register: Register = on => {
                 ))}
               </Box>
             )}
+            {firstOpen === undefined ? null : hint(`${firstOpen.call?.options.length === 0 ? '' : '1-9 pick an option · '}a write your own · your answer goes out with your next message, s sends it now · b back`)}
             <Box key="item-keys" flexDirection="row" flexWrap="wrap" columnGap={2}>
               {firstOpen === undefined ? null : <Button key="call:answer" plain hotkey="a" label="write an answer" onPress={() => ask(firstOpen)} />}
               {itemReport === undefined ? null : (
