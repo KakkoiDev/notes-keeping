@@ -400,7 +400,9 @@ Under the list, while there is work no open to-do links or a call closed today w
 
 The Item view (`d`, Enter on the text) adds, under the item's source, a card per linked call: `! Your call · open · asked
 <age> ago`, the question, and its `Options:` lines on `1` to `9`, each sending `<n> <option>` as the answer; `a` opens a
-field that sends what you type. The answer never enters the queue and is not put in the prompt: it goes to firstmate at
+field that sends what you type. The open field is drawn at the top of the panel, above the view tabs, so a badge, card
+or worker row that comes or goes while you type does not move the keyboard off it; each call has its own field, empty
+until you type in it. The answer never enters the queue and is not put in the prompt: it goes to firstmate at
 once through `bridge call-answer` (with `--release` for held work, so it resumes), and a `# Logs` row (`captain`,
 `recorded`, `<request> answer <task>: <answer>`) records it. The fleet is then read again, so the card shows the call
 answered and, with two open calls, the keys go on to the second. An answer over 512 characters (the record's limit) is
