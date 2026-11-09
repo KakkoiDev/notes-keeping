@@ -22,9 +22,7 @@ export type Note = { id: string; row: string; at: number }
 
 // pasted: agent holds text the captain pasted (from source, when named) and user the notes taken on it; whole, when agent
 // is a part of it, holds the whole pasted text.
-// call: the answer in user to the call task, with agent the question; it goes to firstmate through the bridge, never into the prompt.
-// release: the task is held work, not a question, so the answer resumes it. isRefused: the bridge refused it; only s sends it again.
-export type Pair = { agent: string; user: string; note?: Note; pasted?: { source?: string; whole?: string }; call?: { task: string; release?: true; isRefused?: true } }
+export type Pair = { agent: string; user: string; note?: Note; pasted?: { source?: string; whole?: string } }
 
 export type ChatNote = Note & { agent: string; user: string }
 
