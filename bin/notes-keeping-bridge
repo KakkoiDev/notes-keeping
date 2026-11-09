@@ -15,8 +15,9 @@ home opted in). The plugin runs status, notify, pending, answer, fleet, call-ans
                              done: else state/<task>.pr-poll-merge-notified exists (firstmate saw its PR merge).
                              in-progress: else state/<task>.meta exists, whatever its last state line; a done line
                              (a PR opened, a branch ready to land) lands nothing.
-                             done: else the task's latest outcome record, appended by firstmate's cleanup as
-                             {"task", "outcome", "at"} with no key, is done and not older than the link.
+                             done or in-progress: else the task's latest outcome record, {"task", "outcome", "at"}
+                             with no key, is done (appended by firstmate's cleanup) or in-progress (appended when a
+                             captain hold on a task with no live worker is released) and not older than the link.
                              null: anything else; the plugin leaves the item where it is.
                              A state/<task>.meta holding todo=id:<id> links that item from spawn, printed with no "by"
                              field, unless a link or an unlink was recorded for the item.
@@ -289,7 +290,8 @@ def outcomes():
 
 def derive(task, block, outcome=None):
     """The task's status and, while it is blocked or paused, the reason. A block or pause holds while the status file has
-    no state line written after it and no outcome is recorded at or after it. With no meta, a done outcome reports done."""
+    no state line written after it and no outcome is recorded at or after it. With no meta, a done or in-progress outcome
+    reports itself."""
     if not TASK_ID.match(task):
         return None, None
     if block is not None and len(state_lines(task)) <= block['lines'] and (outcome is None or outcome['at'] < block.get('at', 0)):
@@ -298,8 +300,8 @@ def derive(task, block, outcome=None):
         return 'done', None
     if os.path.exists(os.path.join(STATE, f'{task}.meta')):
         return 'in-progress', None
-    if outcome is not None and outcome['outcome'] == 'done':
-        return 'done', None
+    if outcome is not None and outcome['outcome'] in ('done', 'in-progress'):
+        return outcome['outcome'], None
     return None, None
 
 

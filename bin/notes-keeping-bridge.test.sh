@@ -313,6 +313,27 @@ rm "$H/state/egm.meta" "$H/state/egm.status"
 printf '{"task": "egm", "outcome": "done", "at": %d}\n' "$(( $(date +%s) + 1 ))" >> "$H/state/notes-todo-links.jsonl"
 check 'step 4: a block superseded before cleanup does not return once the status is gone; the done outcome reports done' 'done' "$(st)"
 
+# A captain hold released on a task with no live worker: firstmate records an in-progress outcome, no meta is written.
+home
+b link promo-h1 id:13kdged --by firstmate
+b block promo-h1 --reason 'captain call: apply?' --by firstmate
+check 'a blocked task with no meta stays blocked before the release' 'blocked' "$(st)"
+printf '{"task": "promo-h1", "outcome": "in-progress", "at": %d}\n' "$(( $(date +%s) + 1 ))" >> "$H/state/notes-todo-links.jsonl"
+check 'an in-progress outcome after the block reports in-progress with no meta' 'in-progress' "$(st)"
+printf '{"task": "promo-h1", "outcome": "done", "at": %d}\n' "$(( $(date +%s) + 2 ))" >> "$H/state/notes-todo-links.jsonl"
+check 'a later done outcome reports done' 'done' "$(st)"
+
+home
+b link promo-h2 id:12a8smv --by firstmate
+b block promo-h2 --reason 'set blocked' --by firstmate
+printf '{"task": "promo-h2", "outcome": "done", "at": %d}\n' "$(( $(date +%s) + 1 ))" >> "$H/state/notes-todo-links.jsonl"
+check 'a done outcome after the block reports done with no meta' 'done' "$(st)"
+
+home
+printf '{"task": "promo-h3", "outcome": "in-progress", "at": 1}\n' >> "$H/state/notes-todo-links.jsonl"
+b link promo-h3 id:ab12cd3 --by firstmate
+check 'an in-progress outcome older than the link reports null' 'None' "$(st)"
+
 home
 b block spawn-x --by firstmate 2>/dev/null
 check 'block without --reason is refused' '2' "$?"
