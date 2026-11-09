@@ -206,7 +206,9 @@ an item marked `[/]` by hand with no reason reads `(paused: no reason recorded)`
     task; an item linked by id (`bridge link <task> id:<id>`) is printed as `"id:<id>"` with an `"id"` field and
     matched by id, an item linked by text (older links) by its text. A linked item follows that status forward and Laya is never asked about it; a null status leaves it where it
     is. `done` comes only from a landing: firstmate saw the task's PR merge (`state/<task>.pr-poll-merge-notified`), or
-    its cleanup recorded a done outcome; a task whose last
+    its cleanup recorded a done outcome. A task with no meta reports `in-progress` from an in-progress outcome
+    (`{"task", "outcome": "in-progress", "at"}`, newer than the link), which firstmate records when it releases a
+    captain hold on a task with no live worker; a task whose last
     state line is `done` (a PR opened, a branch ready to land) is still `in-progress`. The move is logged as `firstmate` with the task id. `bridge link <task> <item> --by <name>` records who made
     the link (firstmate, a crewmate); `status` then prints a `"by"` field and the log row names it. A status you set on
     a linked item stays until the bridge reports a different one.
