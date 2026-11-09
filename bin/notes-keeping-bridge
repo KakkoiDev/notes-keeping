@@ -2,7 +2,7 @@
 """notes-keeping-bridge - links the notes-keeping todo list to this firstmate home's tasks.
 
 The notes-keeping plugin runs this file when it exists under the session root (config/ is gitignored, so only this
-home opted in). Five verbs are the plugin's; six are firstmate's.
+home opted in). The plugin runs status, notify, pending, answer, fleet, call-answer and picked; firstmate the rest.
 
   status <notes-file>        print {"<item text>": {"status": "blocked" | "paused" | "in-progress" | "done" | null, "task": "<id>"}}
                              for every linked item; an item linked by id is printed as "id:<id>" with an "id" field, and a
@@ -24,7 +24,10 @@ home opted in). Five verbs are the plugin's; six are firstmate's.
                              The note's first line is the first change, with who made it, and "(+N more)" when there are
                              several. A change line ends in [id:<id>] when the item has one. An added item's line is
                              followed by the whole [UPDATE] block it came from, each line indented four spaces, when
-                             that block holds more than the item's text.
+                             that block holds more than the item's text. Prints request_id=<request>, the note's request id.
+  picked <request>...        read-only: print {"<request>": "<UTC time>" | null} for each request id notify or call-answer
+                             printed: the time firstmate acknowledged that note (fm-inbox.sh drain --ack, which moves it
+                             to state/inbox/handled/), read from the note's ctime; null while it is not acknowledged.
   link <task-id> <item> [--by <name>]
                              link the item to the task; the latest link for an item wins. <item> is id:<id> (the id a
                              change line names; it survives edits to the item's text) or the item text. --by names who
@@ -85,7 +88,8 @@ home opted in). Five verbs are the plugin's; six are firstmate's.
                              closes it (--release lifts the hold on a held work item instead, so it resumes). Then one
                              captain inbox note, "captain answered <task>: <answer>", so firstmate routes the answer to the
                              worker when it changes what is built, and the fleet's backlog read is dropped so the next
-                             `fleet` sees the call closed. Prints the intake's output. Exits 1 with the reason when the
+                             `fleet` sees the call closed. Prints the intake's output, then request_id=<request>, the
+                             note's request id. Exits 1 with the reason when the
                              intake skipped the task (not held, already closed) and when the note could not be filed
                              (the answer is then recorded; sending the same answer again records nothing twice).
 
@@ -122,6 +126,7 @@ INBOX = os.path.join(ROOT, 'bin', 'fm-inbox.sh')
 ACTIVE_S = 15
 POLL_S = 0.2
 REQUEST = re.compile(r'^[0-9a-f]{16}$')
+PICKED = re.compile(r'^nk-[0-9a-f]{16}$')
 STATES = ('working', 'needs-decision', 'blocked', 'paused', 'done', 'failed')
 STATE_LINE = re.compile(r'^(%s)(?: \[[^\]]*\])*:' % '|'.join(re.escape(s) for s in STATES))
 ADDED = re.compile(r'^\+ \[.\] ')
@@ -178,7 +183,7 @@ WORD = {'needs-decision': 'decision'}
 ASKS = ('needs-decision', 'blocked', 'failed')
 USAGE = ('usage: notes-keeping-bridge status <notes-file> | notify <notes-file> | link <task-id> <item> [--by <name>] | unlink <item>'
          ' | block <task-id> --reason <text> [--by <name>] | pause <task-id> --reason <text> [--by <name>] | pending <notes-file> | answer <request> | update <notes-file> <text> --by <name> --task <task-id> | open <notes-file> | active'
-         ' | fleet <notes-file> | waiting <task-id> <text> | crew <task-id> | call-answer <task-id> [--release]')
+         ' | fleet <notes-file> | waiting <task-id> <text> | crew <task-id> | call-answer <task-id> [--release] | picked <request>...')
 
 
 def die(text, code=2):
@@ -363,6 +368,23 @@ def notify(notes_file):
     done = subprocess.run([INBOX, 'note', '--request-id', request, '-'], input=body, text=True, capture_output=True, env={**os.environ, 'FM_HOME': HOME})
     if done.returncode != 0:
         die(f'fm-inbox.sh note failed ({done.returncode}): {(done.stderr or done.stdout).strip()}', 1)
+    print(f'request_id={request}')
+
+
+def picked(requests):
+    """When firstmate acknowledged the note each request filed: fm-inbox.sh records the request's note id in
+    inbox/.requests/<request>, and drain --ack moves that note to inbox/handled/, which sets its ctime."""
+    out = {}
+    for request in requests:
+        try:
+            with open(os.path.join(STATE, 'inbox', '.requests', request), encoding='utf-8') as f:
+                note = f.readline().strip()
+            at = os.stat(os.path.join(STATE, 'inbox', 'handled', f'{note}.note')).st_ctime
+        except OSError:
+            out[request] = None
+            continue
+        out[request] = datetime.fromtimestamp(int(at), timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+    print(json.dumps(out, ensure_ascii=False))
 
 
 def option(rest, name):
@@ -916,6 +938,7 @@ def call_answer(task, release):
     noted = subprocess.run([INBOX, 'note', '--request-id', request, '-'], input=body, text=True, capture_output=True, env=env)
     if noted.returncode != 0:
         die(f'the answer is recorded, but fm-inbox.sh note failed ({noted.returncode}): {(noted.stderr or noted.stdout).strip()}; firstmate was not woken, sending the answer again files the note', 1)
+    print(f'request_id={request}')
 
 
 def main(argv):
@@ -924,6 +947,10 @@ def main(argv):
         status(args[0])
     elif verb == 'notify' and len(args) == 1:
         notify(args[0])
+    elif verb == 'picked' and len(args) >= 1:
+        if not all(PICKED.match(one) for one in args):
+            die('picked takes request ids nk-<hex>')
+        picked(args)
     elif verb == 'link' and len(args) >= 2:
         task, rest = args[0], args[1:]
         name, rest = option(rest, '--by')

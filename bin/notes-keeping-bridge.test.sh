@@ -165,6 +165,22 @@ home
 printf '+ [ ] Pasted filter row [id:ab12cd3]\n    Pasted filter row\n    - [ ] Review the plan\n    [~] Link todos ||||| the ask after the paste\nC: todo -> declined (captain)\n' | b notify /notes/a.md
 check 'the indented lines of an update block are not counted as changes' 'Pasted filter row (+1 more)' "$(first)"
 check 'the note carries the update block whole' '1' "$(grep -c '    \[~\] Link todos ||||| the ask after the paste' "$H"/state/inbox/*.note)"
+# picked: whether firstmate acknowledged the inbox note a request filed, read from its own records (the request's
+# reservation names the note; firstmate's drain --ack moves the note to handled/).
+home
+out=$(printf 'Review: todo -> done (captain)\n' | b notify /notes/a.md)
+request=${out#request_id=}
+check 'notify prints the request id of the note it filed' 'yes' "$(case "$out" in request_id=nk-*) echo yes ;; *) echo no ;; esac)"
+check 'that request id is the one the note carries' '1' "$(grep -c "^request_id=$request\$" "$H"/state/inbox/*.note)"
+check 'picked: a note firstmate has not acknowledged is null' "{\"$request\": null}" "$(b picked "$request")"
+note_id=$(cat "$H/state/inbox/.requests/$request")
+FM_HOME="$H" "$FM_ROOT/bin/fm-inbox.sh" drain --ack "$note_id" --no-dispatch 'bridge test' >/dev/null
+at=$(python3 -c 'import os,sys; from datetime import datetime, timezone; print(datetime.fromtimestamp(int(os.stat(sys.argv[1]).st_ctime), timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))' "$H/state/inbox/handled/$note_id.note")
+check 'picked: once drain --ack moved the note to handled/, the UTC time of that move' "{\"$request\": \"$at\"}" "$(b picked "$request")"
+check 'picked: a request with no reservation is null, and several requests are answered at once' "{\"$request\": \"$at\", \"nk-0000000000000000\": null}" "$(b picked "$request" nk-0000000000000000)"
+b picked ../x >/dev/null 2>&1
+check 'picked: a request id that is not nk-<hex> is refused' '2' "$?"
+
 home
 b active >/dev/null 2>&1
 check 'active with no session draining fails' '1' "$?"
@@ -623,8 +639,9 @@ tabs() { printf '%s' "$1" | od -An -c | tr -s ' ' | tr -d '\n'; }
 
 call_home
 out=$(ca '1 Store-only batch 1' ask-q 2>&1); rc=$?
-check 'call-answer exits 0 and prints the intake output when the call closed' "0|closed: ask-q
-answers: closed=1 skipped=0" "$rc|$out"
+check 'call-answer exits 0 and prints the intake output when the call closed, then the request id of its note' "0|closed: ask-q
+answers: closed=1 skipped=0
+request_id=nk-" "$rc|$(printf '%s' "$out" | sed -E 's/nk-[0-9a-f]{16}/nk-/')"
 check 'call-answer feeds the keyed-answer intake with this channel as its source, any origin' 'answers --any-origin --source notes-keeping' "$(cat "$H/hold.args")"
 check 'call-answer pipes one keyed line: task, the answer, an empty label, no close mode (a question closes)' "$(printf 'ask-q\t1 Store-only batch 1\t')" "$(cat "$H/hold.stdin")"
 check 'call-answer runs the intake against this home' "FM_HOME=$H" "$(cat "$H/hold.env")"
