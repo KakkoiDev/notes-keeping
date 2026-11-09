@@ -47,6 +47,10 @@ import { WorkSlot, ageOf, answerText, copyText, details, unlinkedRows, nameOf, n
 
 const NAME = 'notes-keeping'
 const PANE = 'notes-keeping'
+// The answer field's key, one per call and per Work row: the engine keeps a field's text by key, so a shared key would
+// open the next call's field with the text left in the last one.
+const callReplyKey = (task: string): string => `call:reply:${task}`
+const workReplyKey = (task: string): string => `work:reply:${task}`
 const SELECT = 'notes-keeping-select'
 const TITLE = 'Notes'
 const DIR = '.notes-keeping'
@@ -1768,7 +1772,7 @@ export const register: Register = on => {
           await update($, callAnswering, () => task)
           await update($, view, () => 'item')
           // The engine answers {} or { deny }; `claude plugin test` has no ring and rejects.
-          await $.ui.focus({ requestId: PANE, key: 'call:reply' }).catch(() => undefined)
+          await $.ui.focus({ requestId: PANE, key: callReplyKey(task) }).catch(() => undefined)
         }}
         pause={pauseField}
         lines={subLines}
@@ -1784,7 +1788,7 @@ export const register: Register = on => {
                 await update($, callAnswering, () => answerRow.task)
                 await update($, view, () => 'item')
                 // The engine answers {} or { deny }; `claude plugin test` has no ring and rejects.
-                await $.ui.focus({ requestId: PANE, key: 'call:reply' }).catch(() => undefined)
+                await $.ui.focus({ requestId: PANE, key: callReplyKey(answerRow.task) }).catch(() => undefined)
               }}
             />
           ),
@@ -1825,6 +1829,8 @@ export const register: Register = on => {
       </Box>
     )
     let content
+    // An open answer field, drawn first in the pane (see the return below).
+    let field: unknown = null
     if ((at === 'work' || at === 'work-item' || at === 'work-report') && work !== null) {
       const now = await $.clock.now()
       const labels = labelsOf(current)
@@ -1839,13 +1845,13 @@ export const register: Register = on => {
       const item = row === undefined || row.todos[0] === undefined || s === undefined ? undefined : items(s.todo).find(one => one.id === row.todos[0])
       const reportText =
         at !== 'work-report' || row === undefined || row.report === null ? undefined : clipReport(await readText($, await reportPath($, row.report)).catch(() => undefined))
-      const actions =
-        row === undefined ? null : isAnswering && Input !== undefined ? (
+      field =
+        row === undefined || !isAnswering || target === undefined || Input === undefined ? null : (
           <Input
-            key="work:reply"
-            label={target?.answer ?? target?.task}
-            placeholder={target?.call?.state === 'open' ? 'your answer; Enter sends it to firstmate' : 'your answer; Enter puts it in the prompt, you send it'}
-            submitLabel={target?.call?.state === 'open' ? 'send' : 'fill'}
+            key={workReplyKey(target.task)}
+            label={target.answer ?? target.task}
+            placeholder={target.call?.state === 'open' ? 'your answer; Enter sends it to firstmate' : 'your answer; Enter puts it in the prompt, you send it'}
+            submitLabel={target.call?.state === 'open' ? 'send' : 'fill'}
             autoFocus
             onSubmit={async (value: string) => {
               if (value.trim() === '') return
@@ -1859,7 +1865,9 @@ export const register: Register = on => {
               await update($, workAnswering, () => false)
             }}
           />
-        ) : (
+        )
+      const actions =
+        row === undefined || field !== null ? null : (
           <Box key="work-actions" flexDirection="row" flexWrap="wrap" columnGap={2}>
             {target === undefined ? null : <Button
                 key="work:answer"
@@ -1869,7 +1877,7 @@ export const register: Register = on => {
                 onPress={async () => {
                   await update($, workAnswering, () => true)
                   // The engine answers {} or { deny }; `claude plugin test` has no ring and rejects.
-                  await $.ui.focus({ requestId: PANE, key: 'work:reply' }).catch(() => undefined)
+                  await $.ui.focus({ requestId: PANE, key: workReplyKey(target.task) }).catch(() => undefined)
                 }}
               />}
             {at === 'work' ? null : <Button
@@ -2223,11 +2231,25 @@ export const register: Register = on => {
       const ask = async (row: FleetRow) => {
         await update($, callAnswering, () => row.task)
         // The engine answers {} or { deny }; `claude plugin test` has no ring and rejects.
-        await $.ui.focus({ requestId: PANE, key: 'call:reply' }).catch(() => undefined)
+        await $.ui.focus({ requestId: PANE, key: callReplyKey(row.task) }).catch(() => undefined)
       }
       const answer = async (row: FleetRow, text: string) => {
         if (await answerCall($, row, text)) await update($, callAnswering, () => null)
       }
+      field =
+        item === undefined || replying === undefined || Input === undefined ? null : (
+          <Input
+            key={callReplyKey(replying.task)}
+            label={replying.answer ?? replying.task}
+            placeholder="your answer; Enter sends it to firstmate"
+            submitLabel="send"
+            autoFocus
+            onSubmit={async (value: string) => {
+              if (value.trim() === '') return
+              await answer(replying, value.trim())
+            }}
+          />
+        )
       content =
         item === undefined ? (
           <Box key="content" flexDirection="column">
@@ -2263,19 +2285,6 @@ export const register: Register = on => {
                 {row.call?.state === 'open' && row !== firstOpen ? <Button key={`call:${row.task}:answer`} plain label="write an answer" onPress={() => ask(row)} /> : null}
               </Box>
             ))}
-            {replying === undefined || Input === undefined ? null : (
-              <Input
-                key="call:reply"
-                label={replying.answer ?? replying.task}
-                placeholder="your answer; Enter sends it to firstmate"
-                submitLabel="send"
-                autoFocus
-                onSubmit={async (value: string) => {
-                  if (value.trim() === '') return
-                  await answer(replying, value.trim())
-                }}
-              />
-            )}
             {linkedRows.filter(row => !row.call).map(row => (
               <Box key={`worker:${row.task}`} flexDirection="column" marginTop={1}>
                 {workerBlock(row, now).map((line, i) => (
@@ -2352,8 +2361,12 @@ export const register: Register = on => {
         </Box>
       )
     }
+    // The engine's keyboard ring is a position among the pane's Buttons and Inputs, kept through a redraw. Drawn first,
+    // the answer field keeps position 0 while the unread badge, a call card or a worker row comes or goes above where
+    // it would stand, so the ring stays on it and its keys never press a Button.
     return (
       <Box flexDirection="column">
+        {field}
         {nav}
         {content}
       </Box>

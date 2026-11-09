@@ -3590,7 +3590,7 @@ async function linkedWith($: Engine, on: On, rows: Record<string, unknown>[], ex
   await clock.advance(5_000)
   await flush()
   await run($, 'show')
-  return { pane: await $.ui.mount({ ...NOTES_PANE, surface: 'terminal' }), ui, fs }
+  return { pane: await $.ui.mount({ ...NOTES_PANE, surface: 'terminal' }), ui, fs, clock }
 }
 
 async function linked($: Engine, on: On, rows: Record<string, unknown>[]) {
@@ -3647,12 +3647,12 @@ test('a on the Item view opens the answer field for its call; Enter sends the an
   await openItem(pane)
   expect((await pane.find({ key: 'call:answer' }))?.props).toMatchObject({ hotkey: 'a' })
   await pane.press({ key: 'call:answer' })
-  expect((await pane.find({ key: 'call:reply' }))?.type).toBe('Input')
-  await pane.input({ key: 'call:reply', text: 'post it' })
+  expect((await pane.find({ key: 'call:reply:decide-x' }))?.type).toBe('Input')
+  await pane.input({ key: 'call:reply:decide-x', text: 'post it' })
   await flush()
   expect(ui.fills).toEqual([])
   expect(bridge.callAnswers).toEqual([{ argv: ['decide-x'], stdin: 'post it' }])
-  expect(await pane.find({ key: 'call:reply' })).toBeUndefined()
+  expect(await pane.find({ key: 'call:reply:decide-x' })).toBeUndefined()
   await pane.unmount()
 })
 
@@ -3691,7 +3691,7 @@ test('v on a to-do reads its worker report: no line starts with a path, the head
   expect(texts).toContain(`${'! Needs you: Pick the table layout.'.padEnd(89 - 'a: answer'.length)}a: answer`)
   expect((await pane.find({ key: 'work:report-text' }))?.props).toMatchObject({ text: '# OpenUI POC\n\nOutcome: table built, PR open\n' })
   await pane.press({ key: 'work:answer' })
-  await pane.input({ key: 'work:reply', text: 'the wide one' })
+  await pane.input({ key: 'work:reply:decide-x', text: 'the wide one' })
   await flush()
   expect(ui.fills).toEqual([])
   expect(bridge.callAnswers.map(one => one.stdin)).toEqual(['the wide one'])
@@ -3749,7 +3749,7 @@ test('a on a to-do with an open call opens its card with the answer field', asyn
   expect((await pane.find({ key: 'todo:answer' }))?.props).toMatchObject({ hotkey: 'a' })
   await pane.press({ key: 'todo:answer' })
   expect(await pane.find({ type: 'Text', text: '! Your call · open · asked 2h ago' })).toBeDefined()
-  await pane.input({ key: 'call:reply', text: 'post it' })
+  await pane.input({ key: 'call:reply:decide-x', text: 'post it' })
   await flush()
   expect(ui.fills).toEqual([])
   expect(bridge.callAnswers.map(one => one.stdin)).toEqual(['post it'])
@@ -3806,16 +3806,16 @@ test('an answer the bridge refuses is neither queued nor recorded: a toast gives
   await openItem(pane)
   bridge.callFails = 'fm-captain-hold.sh answers: skipped: decide-x (already closed)'
   await pane.press({ key: 'call:answer' })
-  await pane.input({ key: 'call:reply', text: 'post it' })
+  await pane.input({ key: 'call:reply:decide-x', text: 'post it' })
   await flush()
   const told = ui.toasts.filter(text => text.includes('decide-x'))
   expect(told).toHaveLength(1)
   expect(told[0]).toContain('already closed')
-  expect((await pane.find({ key: 'call:reply' }))?.type).toBe('Input')
+  expect((await pane.find({ key: 'call:reply:decide-x' }))?.type).toBe('Input')
   expect((await pane.find({ key: 'view:queue' }))?.props).toMatchObject({ label: 'Queue (0)' })
   expect(logsOf(fs[BOUND]).filter(row => row.includes('| recorded |'))).toEqual([])
   bridge.callFails = undefined
-  await pane.input({ key: 'call:reply', text: 'post it' })
+  await pane.input({ key: 'call:reply:decide-x', text: 'post it' })
   await flush()
   expect(bridge.callAnswers).toHaveLength(2)
   expect(logsOf(fs[BOUND]).filter(row => row.includes('| recorded |'))).toHaveLength(1)
@@ -3834,11 +3834,11 @@ test('an answer past the 512 characters the record keeps is not sent: a toast sa
   const { pane, ui } = await linkedWith($, on, [OPTIONS])
   await openItem(pane)
   await pane.press({ key: 'call:answer' })
-  await pane.input({ key: 'call:reply', text: 'x'.repeat(513) })
+  await pane.input({ key: 'call:reply:decide-x', text: 'x'.repeat(513) })
   expect(ui.toasts.filter(text => text.includes('513 characters') && text.includes('512'))).toHaveLength(1)
   expect(bridge.callAnswers).toEqual([])
-  expect((await pane.find({ key: 'call:reply' }))?.type).toBe('Input')
-  await pane.input({ key: 'call:reply', text: 'y'.repeat(512) })
+  expect((await pane.find({ key: 'call:reply:decide-x' }))?.type).toBe('Input')
+  await pane.input({ key: 'call:reply:decide-x', text: 'y'.repeat(512) })
   await flush()
   expect(bridge.callAnswers.map(one => one.stdin)).toEqual(['y'.repeat(512)])
   await pane.unmount()
@@ -3862,6 +3862,77 @@ test('with two open calls on a to-do, answering the first hands the option keys 
   await pane.unmount()
 })
 
+// Claude Code's terminal keeps an Input's text by its key, across redraws and after the field is gone (2.1.319), so a
+// field one call shares with another opens holding what was typed into the other.
+test('each call has its own answer field: after answering one call, the next call opens a field under another key', async ($, on) => {
+  const { pane } = await linkedWith($, on, [OPTIONS, SECOND])
+  await openItem(pane)
+  await pane.press({ key: 'call:answer' })
+  const first = (await pane.find({ type: 'Input' }))?.key
+  expect(first).toBeDefined()
+  await pane.input({ key: String(first), text: 'post it' })
+  await flush()
+  expect(bridge.callAnswers).toEqual([{ argv: ['decide-x'], stdin: 'post it' }])
+  await pane.press({ key: 'call:answer' })
+  const second = (await pane.find({ type: 'Input' }))?.key
+  expect(second).toBeDefined()
+  expect(second).not.toBe(first)
+  await pane.input({ key: String(second), text: 'merge it' })
+  await flush()
+  expect(bridge.callAnswers.map(one => one.argv[0])).toEqual(['decide-x', 'decide-y'])
+  await pane.unmount()
+})
+
+test('each Work view row has its own answer field: the next row opens a field under another key', async ($, on) => {
+  await work($, on)
+  await run($, 'show')
+  const pane = await $.ui.mount({ ...NOTES_PANE, surface: 'terminal' })
+  await pane.press({ key: 'view:work' })
+  await ring($, 'work:ask')
+  await pane.press({ key: 'work:answer' })
+  const first = (await pane.find({ type: 'Input' }))?.key
+  expect(first).toBeDefined()
+  await pane.input({ key: String(first), text: 'ship the new body' })
+  await ring($, 'work:decide-x')
+  await pane.press({ key: 'work:answer' })
+  const second = (await pane.find({ type: 'Input' }))?.key
+  expect(second).toBeDefined()
+  expect(second).not.toBe(first)
+  await pane.unmount()
+})
+
+// Claude Code's pane keyboard ring is a position among the pane's Buttons, Inputs and Selects, kept through a redraw
+// (2.1.319): a focusable added or dropped before the field moves the ring off it, onto a Button whose hotkey or Enter
+// then acts in place of the field.
+async function focusables(pane: Awaited<ReturnType<typeof linked>>): Promise<string[]> {
+  return (await pane.findAll({})).filter(one => one.type === 'Button' || one.type === 'Input' || one.type === 'Select').map(one => String(one.key))
+}
+const THIRD = fleetRow('decide-z', {
+  kind: 'captain', title: 'Third call', word: 'call', at: SECONDS - 60, flag: '!', waiting: 'you: D3', window: null, live: false, answer: 'origin-x decide-z', origin: 'origin-x', todos: ['ab12cd3'],
+  call: { question: 'Close it?', options: ['Yes', 'No'], at: SECONDS - 60, state: 'open' },
+})
+
+test('an open answer field keeps its place among the focusables while firstmate changes the panel: the unread badge comes, a new call opens', async ($, on) => {
+  const { pane, clock } = await linkedWith($, on, [OPTIONS, SECOND])
+  await openItem(pane)
+  await pane.press({ key: 'call:decide-x:1' })
+  await flush()
+  await pane.press({ key: 'call:answer' })
+  const field = String((await pane.find({ type: 'Input' }))?.key)
+  const at = (await focusables(pane)).indexOf(field)
+  expect(at).toBeGreaterThan(-1)
+  await clock.advance(5 * 60_000)
+  await flush()
+  expect(await pane.find({ key: 'unread' })).toBeDefined()
+  expect((await focusables(pane)).indexOf(field)).toBe(at)
+  bridge.fleet = { ...bridge.fleet, rows: [...bridge.fleet.rows, THIRD] }
+  await clock.advance(5_000)
+  await flush()
+  expect(await pane.find({ key: 'call:decide-z:1' })).toBeDefined()
+  expect((await focusables(pane)).indexOf(field)).toBe(at)
+  await pane.unmount()
+})
+
 test('the Item view names its keys while a call waits: options, a and b, and that the answer goes to firstmate at once', async ($, on) => {
   const { pane } = await linkedWith($, on, [OPTIONS])
   await openItem(pane)
@@ -3876,8 +3947,8 @@ test('the call line in the Todos list opens the call card with the answer field;
   expect(line).toBeDefined()
   await pane.press({ key: String(line?.key) })
   expect(await pane.find({ type: 'Text', text: '! Your call · open · asked 2h ago' })).toBeDefined()
-  expect((await pane.find({ key: 'call:reply' }))?.type).toBe('Input')
-  await pane.input({ key: 'call:reply', text: 'post it' })
+  expect((await pane.find({ key: 'call:reply:decide-x' }))?.type).toBe('Input')
+  await pane.input({ key: 'call:reply:decide-x', text: 'post it' })
   await flush()
   expect(bridge.callAnswers.map(one => one.stdin)).toEqual(['post it'])
   await pane.press({ key: 'view:todos' })
@@ -4060,8 +4131,8 @@ test('a on a ? row fills the prompt with "<task> <key>: <text>" for the captain 
   expect((await pane.find({ key: 'work:answer' }))?.props).toMatchObject({ hotkey: 'a' })
   await pane.press({ key: 'work:answer' })
   // A key not drawn before, which the plugin's $.ui.focus waits for; the fake engine has no ring to check that on.
-  expect((await pane.find({ key: 'work:reply' }))?.type).toBe('Input')
-  await pane.input({ key: 'work:reply', text: 'ship the new body' })
+  expect((await pane.find({ key: 'work:reply:ask' }))?.type).toBe('Input')
+  await pane.input({ key: 'work:reply:ask', text: 'ship the new body' })
   expect(ui.fills).toEqual([{ text: 'ask pr-body: ship the new body', mode: 'insert' }])
   expect(bridge.calls.filter(verb => !['fleet', 'status', 'pending', 'notify'].includes(verb))).toEqual([])
   await pane.unmount()
