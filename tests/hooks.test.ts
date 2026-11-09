@@ -22,6 +22,7 @@ const tag = (text: string) => `${text} <!-- id:${idFor(text, new Set())} -->`
 const UTC = new Date(2026, 9, 26, 10, 58).toISOString().replace(/\.\d{3}Z$/, 'Z')
 // The same after one refresh tick.
 const TICK = new Date(2026, 9, 26, 10, 58, 5).toISOString().replace(/\.\d{3}Z$/, 'Z')
+const TICK2 = new Date(2026, 9, 26, 10, 58, 10).toISOString().replace(/\.\d{3}Z$/, 'Z')
 const cell = (text: string) => `id:${idFor(text, new Set())} ${text}`
 const logsOf = (md: string | undefined) => sections(md ?? '').logs.split('\n').filter(line => line !== '')
 const bare = (text: string | undefined) => withoutIds(text ?? '')
@@ -45,7 +46,12 @@ const bridge: {
   callFails: string | undefined
   // When set, status exits 1 with this on stderr.
   statusError: string | undefined
-} = { links: {}, notified: [], calls: [], argv: [], pending: [], answers: [], fleet: { rows: [], calls: 0 }, crew: '', callAnswers: [], callFails: undefined, statusError: undefined }
+  // The request ids notify and call-answer printed, in order; when firstmate acknowledged each (UTC), for picked.
+  requests: string[]
+  picked: Record<string, string>
+} = { links: {}, notified: [], calls: [], argv: [], pending: [], answers: [], fleet: { rows: [], calls: 0 }, crew: '', callAnswers: [], callFails: undefined, statusError: undefined, requests: [], picked: {} }
+// The request id the fake bridge prints for its nth note.
+const requestOf = (n: number) => `nk-${String(n).padStart(16, '0')}`
 // What the fake Laya answers; left undefined, the call fails.
 const laya: { answer: ((ask: Ask) => unknown) | undefined; asks: Ask[] } = { answer: undefined, asks: [] }
 // What the fake label model answers per prompt; left undefined, the call fails as an API error.
@@ -101,6 +107,8 @@ function engine(
   bridge.callAnswers = []
   bridge.callFails = undefined
   bridge.statusError = undefined
+  bridge.requests = []
+  bridge.picked = {}
   model.answer = undefined
   model.asks = []
   clipboard.text = undefined
@@ -153,6 +161,17 @@ function engine(
       if (e.argv[1] === 'call-answer') {
         bridge.callAnswers.push({ argv: e.argv.slice(2), stdin: e.init?.stdin ?? '' })
         if (bridge.callFails !== undefined) return { value: { exitCode: 1, stdout: '', stderr: `notes-keeping-bridge: ${bridge.callFails}\n`, isStdoutTruncated: false, isStderrTruncated: false } }
+        // As firstmate's intake does: the call is answered, and the next fleet read says so.
+        bridge.fleet = { ...bridge.fleet, rows: bridge.fleet.rows.map(row => (row.task === e.argv[2] && typeof row.call === 'object' ? { ...row, call: { ...(row.call as object), state: 'answered' } } : row)) }
+      }
+      if (e.argv[1] === 'notify' || e.argv[1] === 'call-answer') {
+        bridge.requests.push(requestOf(bridge.requests.length + 1))
+        const intake = e.argv[1] === 'call-answer' ? `closed: ${e.argv[2]}\nanswers: closed=1 skipped=0\n` : ''
+        return { value: { exitCode: 0, stdout: `${intake}request_id=${bridge.requests.at(-1)}\n`, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+      }
+      if (e.argv[1] === 'picked') {
+        const stdout = JSON.stringify(Object.fromEntries(e.argv.slice(2).map(request => [request, bridge.picked[request] ?? null])))
+        return { value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
       }
       if (e.argv[1] === 'status' && bridge.statusError !== undefined) return { value: { exitCode: 1, stdout: '', stderr: bridge.statusError, isStdoutTruncated: false, isStderrTruncated: false } }
       const stdout =
@@ -2310,6 +2329,92 @@ test('the bridge is told of new items and of every status change with who made i
   await pane.unmount()
 })
 
+test('a todo note that adds an item is recorded: an update gets one recorded row with the request id notify printed; Laya, firstmate and captain status moves get none', async ($, on) => {
+  const fs: Fs = { [BOUND]: setTodoFile('- [ ] Add a ctrl+q toggle\n- [ ] Review this pr'), [PYTHON]: '', [BRIDGE]: '' }
+  engine(on, fs, { ...SESSION_BOUND })
+  fakeLaya({ 'add a ctrl+q toggle': { label: 'started', p: 0.9 } })
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: false })
+  await flush()
+  const recorded = () => logsOf(fs[BOUND]).filter(row => row.includes('| recorded |'))
+  await complete($, 'Started on the ctrl+q toggle.')
+  await flush()
+  bridge.links = { 'review this pr': { status: 'in-progress', task: 'pr-review' } }
+  await complete($, 'Nothing.')
+  await flush()
+  expect(bare(fs[BOUND])).toContain('- [~] Review this pr')
+  expect(recorded()).toEqual([])
+
+  await run($, 'update Ship the bridge')
+  await flush()
+  expect(recorded()).toEqual([`- ${UTC} | plugin | recorded | - | - | ${bridge.requests.at(-1)} Ship the bridge`])
+
+  await run($, 'show')
+  const pane = await $.ui.mount({ ...NOTES_PANE, surface: 'terminal' })
+  await pane.press({ key: 'todo:ship the bridge' })
+  await flush()
+  expect(bridge.notified.at(-1)).toContain('(captain)')
+  expect(recorded()).toHaveLength(1)
+  await pane.unmount()
+})
+
+// A recorded row written `minutes` before the fake clock's start.
+const R1 = 'nk-00000000000000a1'
+const R2 = 'nk-00000000000000a2'
+const recordedAgo = (minutes: number, request: string, summary: string) =>
+  `- ${new Date(new Date(2026, 9, 26, 10, 58).getTime() - minutes * 60_000).toISOString().replace(/\.\d{3}Z$/, 'Z')} | captain | recorded | - | - | ${request} ${summary}`
+const withLogs = (rows: string[]) => `${setTodoFile('- [ ] **Build the table**: build the fleet table <!-- id:ab12cd3 -->')}\n# Logs\n\n${rows.join('\n')}\n`
+
+test('a picked-up row lands once firstmate acknowledged a recorded note: "picked up by firstmate HH:MM", once, and the bridge is asked only about rows not picked up', async ($, on) => {
+  const { clock, fs } = await work($, on, undefined, { [BOUND]: withLogs([recordedAgo(1, R1, 'answer decide-x: yes')]) })
+  expect(bridge.argv.filter(argv => argv[1] === 'picked').at(-1)).toEqual([BRIDGE, 'picked', R1])
+  expect(logsOf(fs[BOUND]).filter(row => row.includes('| picked-up |'))).toEqual([])
+  bridge.picked[R1] = '2026-10-26T01:59:30Z'
+  await clock.advance(5_000)
+  await flush()
+  expect(logsOf(fs[BOUND]).filter(row => row.includes('| picked-up |'))).toEqual([`- ${TICK2} | firstmate | picked-up | - | - | ${R1} picked up by firstmate 01:59`])
+  const asked = bridge.argv.filter(argv => argv[1] === 'picked').length
+  await clock.advance(5_000)
+  await flush()
+  expect(logsOf(fs[BOUND]).filter(row => row.includes('| picked-up |'))).toHaveLength(1)
+  expect(bridge.argv.filter(argv => argv[1] === 'picked').length).toBe(asked)
+})
+
+test('the panel header shows "N unread by firstmate" beside the queue count once a recorded item waited 5 minutes without its picked-up row, not before', async ($, on) => {
+  const { clock } = await work($, on, undefined, { [BOUND]: withLogs([recordedAgo(4, R1, 'answer decide-x: yes'), recordedAgo(10, R2, 'Ship the bridge')]) })
+  await run($, 'show')
+  const pane = await $.ui.mount({ ...NOTES_PANE, surface: 'terminal' })
+  const nav = async () => (await pane.findAll({ type: 'Button' })).map(found => String(found.key))
+  expect((await pane.find({ key: 'unread' }))?.props).toMatchObject({ label: '1 unread by firstmate' })
+  expect((await nav()).indexOf('unread')).toBe((await nav()).indexOf('view:queue') + 1)
+  await clock.advance(60_000)
+  await flush()
+  expect((await pane.find({ key: 'unread' }))?.props).toMatchObject({ label: '2 unread by firstmate' })
+  bridge.picked[R1] = '2026-10-26T02:00:00Z'
+  bridge.picked[R2] = '2026-10-26T02:00:00Z'
+  await clock.advance(5_000)
+  await flush()
+  expect(await pane.find({ key: 'unread' })).toBeUndefined()
+  await pane.unmount()
+})
+
+test('the Queue view opens on a "Not picked up" group listing each item past 5 minutes with its age since recorded; an item leaves once its picked-up row lands', async ($, on) => {
+  const { clock } = await work($, on, undefined, { [BOUND]: withLogs([recordedAgo(12, R1, 'answer decide-x: yes'), recordedAgo(2, R2, 'Ship the bridge')]) })
+  await run($, 'show')
+  const pane = await $.ui.mount({ ...NOTES_PANE, surface: 'terminal' })
+  await pane.press({ key: 'unread' })
+  const texts = async () => (await pane.findAll({ type: 'Text' })).map(found => found.text ?? '')
+  const at = (await texts()).indexOf('Not picked up by firstmate (1)')
+  expect(at).toBeGreaterThan(-1)
+  expect((await texts())[at + 1]).toBe('  answer decide-x: yes · recorded 12m ago')
+  expect((await texts()).indexOf('Queued replies (0)')).toBeGreaterThan(at)
+  expect((await texts()).some(text => text.includes('Ship the bridge'))).toBe(false)
+  bridge.picked[R1] = '2026-10-26T02:00:00Z'
+  await clock.advance(5_000)
+  await flush()
+  expect((await texts()).some(text => text.startsWith('Not picked up'))).toBe(false)
+  await pane.unmount()
+})
+
 // Audit todo-drop-audit 2026-11-05, M1 and M4: the captain pasted the panel's list into an update and wrote the ask after
 // a ||||| separator; the item, the inbox note and the per-prompt context carried only the first line, and Laya closed the
 // item on a finish cue in firstmate's reply with no task done.
@@ -2370,6 +2475,7 @@ test('a hand edit made between turns reaches the bridge within one refresh', asy
   expect(logsOf(fs[BOUND])).toEqual([
     `- ${TICK} | unknown | status | ${cell('Add a ctrl+q toggle')} | todo -> done`,
     `- ${TICK} | unknown | added | Typed by hand | none -> todo`,
+    `- ${TICK} | plugin | recorded | - | - | ${bridge.requests.at(-1)} Add a ctrl+q toggle: todo -> done (unknown) (+1 more)`,
   ])
   // Writing the log rows is not itself a change: the next ticks send and log nothing and write nothing.
   const written = fs[BOUND]
@@ -3517,7 +3623,7 @@ async function openItem(pane: Awaited<ReturnType<typeof linked>>) {
 
 const OPTIONS = { ...LINKED_CALL, call: { question: 'Send the proposal to the client?', options: ['Store-only batch 1 (recommended)', 'Measure first only'], at: SECONDS - 7200, state: 'open' } }
 
-test('the Item view of a to-do carries its call card, numbered options on 1-9, and its worker block; 1 queues "1 <option>" as the answer', async ($, on) => {
+test('the Item view of a to-do carries its call card, numbered options on 1-9, and its worker block; 1 sends "1 <option>" to firstmate at once', async ($, on) => {
   const { pane, ui } = await linkedWith($, on, [OPTIONS, LINKED_WORKER])
   await openItem(pane)
   const texts = (await pane.findAll({ type: 'Text' })).map(found => found.text)
@@ -3529,21 +3635,23 @@ test('the Item view of a to-do carries its call card, numbered options on 1-9, a
   expect(texts.slice(worker, worker + 3)).toEqual(['Worker · working 1m', '  OpenUI POC', '  Outcome: table built, PR open'])
   expect(texts.some(text => /run-a|report\.md|PR none|no linked todo/.test(text ?? ''))).toBe(false)
   await pane.press({ key: 'call:decide-x:1' })
+  await flush()
   expect(ui.fills).toEqual([])
-  expect(bridge.callAnswers).toEqual([])
-  expect(ui.status.at(-1)).toContain(QUEUED)
+  expect(bridge.callAnswers).toEqual([{ argv: ['decide-x'], stdin: '1 Store-only batch 1 (recommended)' }])
+  expect(ui.status.at(-1) ?? '').not.toContain('queued')
   await pane.unmount()
 })
 
-test('a on the Item view opens the answer field for its call; Enter queues the answer, it does not fill the prompt', async ($, on) => {
+test('a on the Item view opens the answer field for its call; Enter sends the answer to firstmate at once, it does not fill the prompt', async ($, on) => {
   const { pane, ui } = await linkedWith($, on, [LINKED_CALL])
   await openItem(pane)
   expect((await pane.find({ key: 'call:answer' }))?.props).toMatchObject({ hotkey: 'a' })
   await pane.press({ key: 'call:answer' })
   expect((await pane.find({ key: 'call:reply' }))?.type).toBe('Input')
   await pane.input({ key: 'call:reply', text: 'post it' })
+  await flush()
   expect(ui.fills).toEqual([])
-  expect(ui.status.at(-1)).toContain(QUEUED)
+  expect(bridge.callAnswers).toEqual([{ argv: ['decide-x'], stdin: 'post it' }])
   expect(await pane.find({ key: 'call:reply' })).toBeUndefined()
   await pane.unmount()
 })
@@ -3584,8 +3692,9 @@ test('v on a to-do reads its worker report: no line starts with a path, the head
   expect((await pane.find({ key: 'work:report-text' }))?.props).toMatchObject({ text: '# OpenUI POC\n\nOutcome: table built, PR open\n' })
   await pane.press({ key: 'work:answer' })
   await pane.input({ key: 'work:reply', text: 'the wide one' })
+  await flush()
   expect(ui.fills).toEqual([])
-  expect(ui.status.at(-1)).toContain(QUEUED)
+  expect(bridge.callAnswers.map(one => one.stdin)).toEqual(['the wide one'])
   await pane.press({ key: 'view:back' })
   expect(await pane.find({ key: 'todo:report' })).toBeDefined()
   await pane.unmount()
@@ -3641,39 +3750,43 @@ test('a on a to-do with an open call opens its card with the answer field', asyn
   await pane.press({ key: 'todo:answer' })
   expect(await pane.find({ type: 'Text', text: '! Your call · open · asked 2h ago' })).toBeDefined()
   await pane.input({ key: 'call:reply', text: 'post it' })
+  await flush()
   expect(ui.fills).toEqual([])
-  expect(ui.status.at(-1)).toContain(QUEUED)
+  expect(bridge.callAnswers.map(one => one.stdin)).toEqual(['post it'])
   await pane.unmount()
 })
 
-const QUEUED = 'notes: 1 answer to a call queued, sent with your next message. Ctrl+q: edit, remove, send'
-const ANSWER_ROW = /^- \S+ \| captain \| answer \| - \| - \| decide-x: 1 Store-only batch 1 \(recommended\)$/
+const RECORDED_ROW = /^- \S+ \| captain \| recorded \| - \| - \| nk-[0-9a-f]{16} answer decide-x: 1 Store-only batch 1 \(recommended\)$/
 const SECOND = fleetRow('decide-y', {
   kind: 'captain', title: 'Second call', word: 'call', at: SECONDS - 3600, flag: '!', waiting: 'you: D2', window: null, live: false, answer: 'origin-x decide-y', origin: 'origin-x', todos: ['ab12cd3'],
   call: { question: 'Merge it now?', options: ['Now', 'Later'], at: SECONDS - 3600, state: 'open' },
 })
 
-test('a queued answer goes out through the bridge with the next message, which carries none of it: one # Logs row, the queue empty, the fleet read again', async ($, on) => {
+test('an answer to a call never enters the queue: it goes to firstmate at once, one recorded row with the request id of its note, the fleet read again; the next message carries none of it', async ($, on) => {
   const sent = submitting(on)
   const { pane, ui, fs } = await linkedWith($, on, [OPTIONS])
   await openItem(pane)
-  await pane.press({ key: 'call:decide-x:1' })
-  expect(bridge.callAnswers).toEqual([])
   const fleets = bridge.calls.filter(verb => verb === 'fleet').length
+  await pane.press({ key: 'call:decide-x:1' })
+  await flush()
+  expect(bridge.callAnswers).toEqual([{ argv: ['decide-x'], stdin: '1 Store-only batch 1 (recommended)' }])
+  expect((await pane.find({ key: 'view:queue' }))?.props).toMatchObject({ label: 'Queue (0)' })
+  expect(ui.status.at(-1) ?? '').not.toContain('queued')
+  const rows = logsOf(fs[BOUND]).filter(row => row.includes('| recorded |'))
+  expect(rows).toHaveLength(1)
+  expect(rows[0]).toMatch(RECORDED_ROW)
+  expect(rows[0]).toContain(bridge.requests.at(-1) ?? 'none')
+  expect(logsOf(fs[BOUND]).filter(row => row.includes('| answer |'))).toEqual([])
+  expect(bridge.calls.filter(verb => verb === 'fleet').length).toBeGreaterThan(fleets)
   await submit($, 'carry on')
   await flush()
   expect(sent.at(-1)?.text).toBe('carry on')
   expect(ui.fills).toEqual([])
-  expect(bridge.callAnswers).toEqual([{ argv: ['decide-x'], stdin: '1 Store-only batch 1 (recommended)' }])
-  expect(logsOf(fs[BOUND]).filter(row => row.includes('| answer |'))).toHaveLength(1)
-  expect(logsOf(fs[BOUND]).at(-1)).toMatch(ANSWER_ROW)
+  expect(bridge.callAnswers).toHaveLength(1)
   expect(sections(fs[BOUND] ?? '').chat).not.toContain('Store-only')
-  expect(ui.status.at(-1) ?? '').not.toContain('queued')
-  expect(bridge.calls.filter(verb => verb === 'fleet').length).toBeGreaterThan(fleets)
   await pane.unmount()
 })
-
-test('replies and an answer queued together: the replies ride in the prompt and # Chat, the answer goes to the bridge only', async ($, on) => {
+test('a queued reply and an answer to a call: the reply rides in the prompt and # Chat, the answer goes to the bridge only, once', async ($, on) => {
   const sent = submitting(on)
   const { pane, fs } = await linkedWith($, on, [OPTIONS], {}, () => 'brown fox')
   await run($, 'reply Too slow')
@@ -3688,106 +3801,46 @@ test('replies and an answer queued together: the replies ride in the prompt and 
   await pane.unmount()
 })
 
-test('s sends a queued answer at once through the bridge and fills nothing into the prompt', async ($, on) => {
+test('an answer the bridge refuses is neither queued nor recorded: a toast gives the reason and the answer field stays open', async ($, on) => {
   const { pane, ui, fs } = await linkedWith($, on, [OPTIONS])
   await openItem(pane)
-  await pane.press({ key: 'call:decide-x:1' })
-  await pane.press({ key: 'send' })
-  await flush()
-  expect(ui.fills).toEqual([])
-  expect(ui.toasts.filter(text => text.includes('No replies'))).toEqual([])
-  expect(bridge.callAnswers).toEqual([{ argv: ['decide-x'], stdin: '1 Store-only batch 1 (recommended)' }])
-  expect(logsOf(fs[BOUND]).at(-1)).toMatch(ANSWER_ROW)
-  await pane.unmount()
-})
-
-test('an answer the bridge refuses stays queued with its reason in a toast, the prompt still goes out, and nothing is logged', async ($, on) => {
-  const sent = submitting(on)
-  const { pane, ui, fs } = await linkedWith($, on, [OPTIONS])
-  await openItem(pane)
-  await pane.press({ key: 'call:decide-x:1' })
   bridge.callFails = 'fm-captain-hold.sh answers: skipped: decide-x (already closed)'
-  await submit($, 'carry on')
+  await pane.press({ key: 'call:answer' })
+  await pane.input({ key: 'call:reply', text: 'post it' })
   await flush()
-  expect(sent.at(-1)?.text).toBe('carry on')
   const told = ui.toasts.filter(text => text.includes('decide-x'))
   expect(told).toHaveLength(1)
   expect(told[0]).toContain('already closed')
-  expect(told[0]).toContain('stays queued')
-  expect(ui.status.at(-1)).toContain(QUEUED)
-  expect(logsOf(fs[BOUND]).filter(row => row.includes('| answer |'))).toEqual([])
-  await submit($, 'and another')
-  await flush()
-  expect(bridge.callAnswers).toHaveLength(1)
-  expect(ui.toasts.filter(text => text.includes('decide-x'))).toHaveLength(1)
+  expect((await pane.find({ key: 'call:reply' }))?.type).toBe('Input')
+  expect((await pane.find({ key: 'view:queue' }))?.props).toMatchObject({ label: 'Queue (0)' })
+  expect(logsOf(fs[BOUND]).filter(row => row.includes('| recorded |'))).toEqual([])
   bridge.callFails = undefined
-  await pane.press({ key: 'send' })
+  await pane.input({ key: 'call:reply', text: 'post it' })
   await flush()
   expect(bridge.callAnswers).toHaveLength(2)
-  expect(ui.status.at(-1) ?? '').not.toContain('queued')
+  expect(logsOf(fs[BOUND]).filter(row => row.includes('| recorded |'))).toHaveLength(1)
   await pane.unmount()
 })
-
 test('an answer to a held work item, not a question, goes with --release so the work resumes', async ($, on) => {
   const { pane } = await linkedWith($, on, [{ ...OPTIONS, kind: 'ship' }])
   await openItem(pane)
   await pane.press({ key: 'call:decide-x:1' })
-  await pane.press({ key: 'send' })
   await flush()
   expect(bridge.callAnswers.map(one => one.argv)).toEqual([['decide-x', '--release']])
   await pane.unmount()
 })
 
-test('an answer past the 512 characters the record keeps is not queued: a toast says so and the field stays open; 512 queues', async ($, on) => {
+test('an answer past the 512 characters the record keeps is not sent: a toast says so and the field stays open; 512 is sent', async ($, on) => {
   const { pane, ui } = await linkedWith($, on, [OPTIONS])
   await openItem(pane)
   await pane.press({ key: 'call:answer' })
   await pane.input({ key: 'call:reply', text: 'x'.repeat(513) })
   expect(ui.toasts.filter(text => text.includes('513 characters') && text.includes('512'))).toHaveLength(1)
-  expect(ui.status.at(-1) ?? '').not.toContain('answer to a call')
+  expect(bridge.callAnswers).toEqual([])
   expect((await pane.find({ key: 'call:reply' }))?.type).toBe('Input')
   await pane.input({ key: 'call:reply', text: 'y'.repeat(512) })
-  expect(ui.status.at(-1)).toContain(QUEUED)
-  await pane.unmount()
-})
-
-test('editing a queued answer in the Queue view past 512 characters keeps the answer as it was and says why', async ($, on) => {
-  const { pane, ui } = await linkedWith($, on, [OPTIONS])
-  await openItem(pane)
-  await pane.press({ key: 'call:decide-x:1' })
-  await pane.press({ key: 'view:queue' })
-  await pane.input({ key: 'reply:0', text: 'z'.repeat(600) })
-  expect(ui.toasts.filter(text => text.includes('600 characters'))).toHaveLength(1)
-  await pane.press({ key: 'send' })
   await flush()
-  expect(bridge.callAnswers.map(one => one.stdin)).toEqual(['1 Store-only batch 1 (recommended)'])
-  await pane.unmount()
-})
-
-test('the card of a queued answer to held work says that sending it resumes the work', async ($, on) => {
-  const { pane } = await linkedWith($, on, [{ ...OPTIONS, kind: 'ship' }])
-  await openItem(pane)
-  await pane.press({ key: 'call:decide-x:1' })
-  const texts = (await pane.findAll({ type: 'Text' })).map(found => found.text ?? '')
-  expect(texts).toContain('  Queued: goes out with your next message and resumes the work, s sends it now')
-  await pane.unmount()
-})
-
-test('the card of a queued answer shows it and that it is queued, drops its option keys and offers to change it', async ($, on) => {
-  const { pane } = await linkedWith($, on, [OPTIONS])
-  await openItem(pane)
-  await pane.press({ key: 'call:decide-x:1' })
-  const texts = (await pane.findAll({ type: 'Text' })).map(found => found.text ?? '')
-  expect(texts).toContain('  Your answer: 1 Store-only batch 1 (recommended)')
-  expect(texts).toContain('  Queued: goes out with your next message, s sends it now')
-  expect(await pane.find({ key: 'call:decide-x:1' })).toBeUndefined()
-  expect(await pane.find({ key: 'call:answer' })).toBeUndefined()
-  await pane.press({ key: 'call:decide-x:change' })
-  expect((await pane.find({ key: 'call:reply' }))?.props).toMatchObject({ value: '1 Store-only batch 1 (recommended)' })
-  await pane.input({ key: 'call:reply', text: 'Measure first only' })
-  await pane.press({ key: 'send' })
-  await flush()
-  expect(bridge.callAnswers.map(one => one.stdin)).toEqual(['Measure first only'])
+  expect(bridge.callAnswers.map(one => one.stdin)).toEqual(['y'.repeat(512)])
   await pane.unmount()
 })
 
@@ -3797,10 +3850,10 @@ test('with two open calls on a to-do, answering the first hands the option keys 
   expect((await pane.find({ key: 'call:decide-x:1' }))?.props).toMatchObject({ hotkey: '1' })
   expect((await pane.find({ key: 'call:decide-y:1' }))?.props.hotkey).toBeUndefined()
   await pane.press({ key: 'call:decide-x:1' })
+  await flush()
   expect((await pane.find({ key: 'call:decide-y:1' }))?.props).toMatchObject({ hotkey: '1' })
   expect((await pane.find({ key: 'call:answer' }))?.props).toMatchObject({ hotkey: 'a' })
   await pane.press({ key: 'call:decide-y:2' })
-  await pane.press({ key: 'send' })
   await flush()
   expect(bridge.callAnswers).toEqual([
     { argv: ['decide-x'], stdin: '1 Store-only batch 1 (recommended)' },
@@ -3809,15 +3862,15 @@ test('with two open calls on a to-do, answering the first hands the option keys 
   await pane.unmount()
 })
 
-test('the Item view names its keys while a call waits: options, a, s and b, and that the answer goes out with the next message', async ($, on) => {
+test('the Item view names its keys while a call waits: options, a and b, and that the answer goes to firstmate at once', async ($, on) => {
   const { pane } = await linkedWith($, on, [OPTIONS])
   await openItem(pane)
   const texts = (await pane.findAll({ type: 'Text' })).map(found => found.text ?? '')
-  expect(texts).toContain('1-9 pick an option · a write your own · your answer goes out with your next message, s sends it now · b back')
+  expect(texts).toContain('1-9 pick an option · a write your own · your answer goes to firstmate at once · b back')
   await pane.unmount()
 })
 
-test('the call line in the Todos list opens the call card with the answer field, and draws a queued answer under it', async ($, on) => {
+test('the call line in the Todos list opens the call card with the answer field; the answer goes at once and no line says it is queued', async ($, on) => {
   const { pane } = await linkedWith($, on, [OPTIONS])
   const line = (await pane.findAll({ type: 'Button' })).find(button => String(button.key).startsWith('callline:'))
   expect(line).toBeDefined()
@@ -3825,51 +3878,25 @@ test('the call line in the Todos list opens the call card with the answer field,
   expect(await pane.find({ type: 'Text', text: '! Your call · open · asked 2h ago' })).toBeDefined()
   expect((await pane.find({ key: 'call:reply' }))?.type).toBe('Input')
   await pane.input({ key: 'call:reply', text: 'post it' })
+  await flush()
+  expect(bridge.callAnswers.map(one => one.stdin)).toEqual(['post it'])
   await pane.press({ key: 'view:todos' })
   const texts = (await pane.findAll({ type: 'Text' })).map(found => found.text ?? '')
   const buttons = (await pane.findAll({ type: 'Button' })).map(found => String(found.props.label ?? ''))
-  expect(buttons.some(label => label.includes('! your call: send the proposal to the client?') && label.endsWith('answer queued'))).toBe(true)
-  expect(texts).toContain('      you answered: post it · queued, goes out with your next message')
+  expect([...texts, ...buttons].filter(text => text.includes('queued'))).toEqual([])
   await pane.unmount()
 })
-
-test('the Queue view lists a queued answer under its question, editable and removable, and an edit is what goes out', async ($, on) => {
+test('the Queue view holds no answer to a call: answered, the queue stays empty', async ($, on) => {
   const { pane } = await linkedWith($, on, [OPTIONS])
   await openItem(pane)
   await pane.press({ key: 'call:decide-x:1' })
-  await pane.press({ key: 'view:queue' })
-  expect((await pane.find({ key: 'view:queue' }))?.props).toMatchObject({ label: 'Queue (1)' })
-  const texts = (await pane.findAll({ type: 'Text' })).map(found => found.text ?? '')
-  expect(texts).toContain('[CALL] Send the proposal to the client?')
-  expect((await pane.find({ key: 'reply:0' }))?.props).toMatchObject({ value: '1 Store-only batch 1 (recommended)', label: '[ANSWER]' })
-  await pane.input({ key: 'reply:0', text: 'Measure first only' })
-  await pane.press({ key: 'send' })
   await flush()
-  expect(bridge.callAnswers.map(one => one.stdin)).toEqual(['Measure first only'])
-  await pane.unmount()
-})
-
-test('removing a queued answer from the Queue view sends nothing', async ($, on) => {
-  const { pane } = await linkedWith($, on, [OPTIONS])
-  await openItem(pane)
-  await pane.press({ key: 'call:decide-x:1' })
   await pane.press({ key: 'view:queue' })
-  await pane.press({ key: 'remove:0' })
-  await pane.press({ key: 'send' })
-  await flush()
-  expect(bridge.callAnswers).toEqual([])
+  expect((await pane.find({ key: 'view:queue' }))?.props).toMatchObject({ label: 'Queue (0)' })
+  expect(await pane.find({ type: 'Text', text: /^\[CALL\]/ })).toBeUndefined()
+  expect(await pane.find({ key: 'reply:0' })).toBeUndefined()
   await pane.unmount()
 })
-
-test('a /clear keeps a queued answer: the call lives in the backlog, not in the conversation that is gone', async ($, on) => {
-  const { pane, ui } = await linkedWith($, on, [OPTIONS])
-  await openItem(pane)
-  await pane.press({ key: 'call:decide-x:1' })
-  await $.session.end({ reason: 'clear', sessionId: SESSION, resume: { id: SESSION } })
-  expect(ui.status.at(-1)).toContain(QUEUED)
-  await pane.unmount()
-})
-
 const ANSWERED = fleetRow('ans-a', {
   kind: 'captain', title: 'Send the proposal?', word: 'call', at: null, flag: '', window: null, live: false, answer: 't ans-a', origin: 't', todos: ['ab12cd3'],
   call: { question: 'Send the cut-scope proposal to the client?', options: ['Store-only batch 1'], at: null, state: 'answered' },

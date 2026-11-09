@@ -97,16 +97,6 @@ describe('lines from real fleet output', () => {
     const [line] = todoLines([callOn('Post the reply?')], 't1', 'todo', NOW)
     expect(line).toEqual({ text: `${'    ! your call: post the reply?'.padEnd(89 - 'open · 1h · a: answer'.length)}open · 1h · a: answer`, isCall: true, task: 'c' })
   })
-  test('a call with an answer queued says so at the right edge and shows the answer under it', () => {
-    const lines = todoLines([callOn('Post the reply?')], 't1', 'todo', NOW, { c: '1 Store-only' })
-    expect(lines).toEqual([
-      { text: `${'    ! your call: post the reply?'.padEnd(89 - 'answer queued'.length)}answer queued`, isCall: true, task: 'c' },
-      { text: '      you answered: 1 Store-only · queued, goes out with your next message' },
-    ])
-  })
-  test('an answer queued for another call changes nothing', () => {
-    expect(todoLines([callOn('Post the reply?')], 't1', 'todo', NOW, { other: 'x' })).toEqual(todoLines([callOn('Post the reply?')], 't1', 'todo', NOW))
-  })
   test('a worker line names a PR link in its text as <repo>#<n>', () => {
     const done = row('w', { word: 'done', todos: ['t1'], waiting: 'PR https://github.com/acme/webapp/pull/28276', live: false })
     expect(todoLines([done], 't1', 'done', NOW)[0].text).toBe('      worker finished 1m ago · PR webapp#28276')

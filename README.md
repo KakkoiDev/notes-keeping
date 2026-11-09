@@ -46,7 +46,7 @@ Toggle with ctrl+q (see below), `/notes-keeping show` / `hide`, or the `Notes` b
 | `o` | Objectives view: objectives and updates |
 | `i` | Important view |
 | `c` | Chat view |
-| `q` | Queue view: every queued reply in its own editable field |
+| `q` | Queue view: under a `Not picked up by firstmate` group (see [Picked up by firstmate](#picked-up-by-firstmate)), every queued reply in its own editable field. The queue holds only what you send by hand: replies and notes on pasted text. An answer to a call never enters it |
 | `h` | History view: earlier notes, newest first; Up and Down pick one, Enter opens a read-only preview of what it holds, `a` attaches the picked note after a `y` / `n` confirmation (same copy as `/notes-keeping history <n\|file>`, so done and declined items stay behind); the original is never written. `b` in a preview or the confirmation steps back |
 | `l` | Logs view: the `# Logs` section of the notes file, newest first, read-only: time (UTC), who, item, `from -> to` (or the text of an objective or update) |
 | `s` | Send queue: put every queued reply into the prompt box, clear the queue, record them in `# Chat`; the keyboard moves to the prompt with them, so Enter sends them (ctrl+x tab returns to the panel) |
@@ -57,7 +57,7 @@ Toggle with ctrl+q (see below), `/notes-keeping show` / `hide`, or the `Notes` b
 
 Every row is also clickable. A click in the panel leaves the keyboard there, even when the prompt held it before, so its keys work next; a click on a todo row's marker also selects that row for `f`, `p` and `d`. In the Queue view, Tab to a reply, edit its text, Enter keeps it; `[remove]` beside a reply drops it.
 
-Any text the panel puts into the prompt box (`s`, and Enter in a Work view answer to a row with no open call; an answer to an open call is queued and leaves the keyboard in the panel) moves the keyboard to the prompt: Claude Code takes the keyboard from a panel whenever the prompt's text changes, and gives no panel the keyboard while the prompt holds a draft. ctrl+x tab moves it back to the panel (pressed again when a bar above the prompt takes it first).
+Any text the panel puts into the prompt box (`s`, and Enter in a Work view answer to a row with no open call; an answer to an open call goes to firstmate at once and leaves the keyboard in the panel) moves the keyboard to the prompt: Claude Code takes the keyboard from a panel whenever the prompt's text changes, and gives no panel the keyboard while the prompt holds a draft. ctrl+x tab moves it back to the panel (pressed again when a bar above the prompt takes it first).
 
 Under the prompt, once a reply is queued: click `[send queue: n]` (same as `s`) or `[edit queue]` (opens the panel at the queue view).
 
@@ -257,6 +257,10 @@ an item marked `[/]` by hand with no reason reads `(paused: no reason recorded)`
     answer is one line of at most 512 characters, the length the record keeps: a longer one is refused, not cut. It
     exits 1 with the reason when the intake skipped the call (already closed, unknown) or the note could not be filed,
     and drops the 30 s `fleet` cache so the next read sees the call closed. The plugin calls it; a replay is idempotent.
+  - `notify` and `call-answer` print `request_id=<request>`, the request id of the inbox note they filed.
+    `bridge picked <request>...`, read-only, prints `{"<request>": "<UTC time>" | null}`: the time firstmate
+    acknowledged that note (`fm-inbox.sh drain --ack` moves it to `state/inbox/handled/`; the time is the note's ctime
+    there, found through the request's reservation in `state/inbox/.requests/`), null while it is not acknowledged.
 
 ### Work view
 
@@ -291,7 +295,7 @@ queued-replies line when there is one); `?` firstmate's move, a last state line 
 | Key | Does |
 | --- | --- |
 | Up, Down, Enter | select a row; Enter opens its details: the report summary, the last line and its age, PR, report path, linked todo item (`d` opens it); there `y` copies the PR link, else the report path, `e` opens the report in the editor, `u` the PR, `g` goes to the worker's window |
-| `a` | on a `!` or `?` row: an input; Enter fills the prompt with `<task> <key>: <text>`, and you press Enter to send it to firstmate. The plugin closes nothing itself |
+| `a` | on a `!` or `?` row: an input. On an open call Enter sends the answer to firstmate at once, as the Item view does; on any other row Enter fills the prompt with `<task> <key>: <text>`, and you press Enter to send it to firstmate |
 | `v` | read the report (see the report reader under [In the pane](#in-the-pane)) |
 | `6` | show or hide the gone workers |
 | `x` | show or hide the calls closed today without you |
@@ -335,9 +339,9 @@ Every action on the objectives and the todo list is one row at the end of the no
 - 2026-10-28T09:08:00Z | captain | update | - | - | Add a logs tab
 ```
 
-Columns: UTC time, actor id, action (`status`, `added`, `objective`, `update`, `attach`, `answer`), item id and label (`-` for
+Columns: UTC time, actor id, action (`status`, `added`, `objective`, `update`, `attach`, `recorded`, `picked-up`), item id and label (`-` for
 none), `from -> to` (`none -> <status>` for an added item, `-` for none), and a note (Laya's answer and probability,
-the firstmate task, the copied file). An attach from History logs one `attach` row (the source notes file), one `added` row per copied todo item naming its id, and one `objective` row per copied objective no item stands for; items left behind as done or declined are not logged. An answer to a call, once firstmate records it, logs one `answer` row: the task, then the answer. The actors are listed once in `hooks/actors.ts`:
+the firstmate task, the copied file). An attach from History logs one `attach` row (the source notes file), one `added` row per copied todo item naming its id, and one `objective` row per copied objective no item stands for; items left behind as done or declined are not logged. An answer to a call, once firstmate records it, logs one `recorded` row (see [Picked up by firstmate](#picked-up-by-firstmate)); files from before it hold an `answer` row instead. The actors are listed once in `hooks/actors.ts`:
 
 | id | kind | who |
 | --- | --- | --- |
@@ -384,8 +388,7 @@ text (dim unless selected; a call line never dim). A to-do with no link gets no 
 - a worker line per linked worker: `worker <state> <age>` and the report's `Outcome:`, else its title, else the worker's
   last state line, then ` · PR <repo>#<n>` when it has one;
 - a call line per open call: its `Question:` line (else its title), `open · <age> · a: answer` at the right edge; the
-  line is a button that opens the call's card with the answer field. With an answer queued it ends in `answer queued`
-  and a line under it shows `you answered: <answer> · queued, goes out with your next message`;
+  line is a button that opens the call's card with the answer field;
 - once answered, in its place: `you answered`, then `· reached the worker <age> ago` once firstmate's `Routed to:` line
   names an inbox message, and `· it read it` once that message is in `handled/`. Nothing is inferred: a missing record
   ends the line;
@@ -396,14 +399,13 @@ Under the list, while there is work no open to-do links or a call closed today w
 `Not on a to-do: <n calls>, <n workers> · <n> calls closed without you today` and `w` to show it.
 
 The Item view (`d`, Enter on the text) adds, under the item's source, a card per linked call: `! Your call · open · asked
-<age> ago`, the question, and its `Options:` lines on `1` to `9`, each queuing `<n> <option>` as the answer; `a` opens a
-field that queues what you type. A queued answer replaces the options: the card shows `Your answer: ...` and `Queued:
-goes out with your next message, s sends it now` (`and resumes the work` for held work), with a button to change it; with two open calls the keys go on to the
-second. The answer is not put in the prompt. It goes to firstmate through `bridge call-answer` with your next message
-(Enter), or at once with `s`, and a `# Logs` row (`captain`, `answer`, `<task>: <answer>`) records it. An answer over 512 characters (the record's limit) is not queued: a toast says so and the field stays open. If the bridge
-refuses an answer (the call is already closed), a toast gives the reason and the answer stays queued, retried by `s` only, not by every message; a `/clear` keeps it,
-since the call lives in the backlog. The status line counts it (`1 answer to a call queued`) and the Queue view lists it
-as `[CALL] <question>` over an editable `[ANSWER]`, removable like a reply. An answered call shows your words and its
+<age> ago`, the question, and its `Options:` lines on `1` to `9`, each sending `<n> <option>` as the answer; `a` opens a
+field that sends what you type. The answer never enters the queue and is not put in the prompt: it goes to firstmate at
+once through `bridge call-answer` (with `--release` for held work, so it resumes), and a `# Logs` row (`captain`,
+`recorded`, `<request> answer <task>: <answer>`) records it. The fleet is then read again, so the card shows the call
+answered and, with two open calls, the keys go on to the second. An answer over 512 characters (the record's limit) is
+not sent: a toast says so and the field stays open. If the bridge refuses an answer (the call is already closed), a toast
+gives the reason, nothing is recorded, and the field stays open. An answered call shows your words and its
 trail, time first (UTC). Then a block per linked worker (state and age, report title, `Outcome:` line) and the item's last three
 status changes from `# Logs`. Its keys, each drawn only when it acts: `v` report, `e` report in the editor, `u` PR, `g`
 the worker's window, `f` and `p` status, `j` and `k` the next and previous shown to-do.
@@ -423,7 +425,7 @@ pressed.
 | `p` | step it back one status; at todo it stays todo |
 | Left, Right | step it back or forward one status, as `p` and `f` do. Only after a click on the dim `left, right: previous, next status` strip at the end of the key row, which gives that strip the keyboard (Up and Down need no click); Esc returns the keyboard to the pane. Not drawn on mobile or vscode |
 | `z` | pause it: a field asks why; Enter writes `[/]` with the reason, logged as the captain. Enter on an empty field pauses nothing |
-| `a` | with an open call on it: its card in the Item view, the answer field open (a queued answer is in the field, to change) |
+| `a` | with an open call on it: its card in the Item view, the answer field open |
 | `v` | with a linked report: the report reader |
 | `1` `2` `3` `4` `5` `6` | show or hide the `[ ]` todo, `[~]` in-progress, `[x]` done, `[-]` declined, `[!]` blocked, `[/]` paused items |
 | `m` | filter: cycles all, `[ ]` todo, `[~]` in-progress, `[x]` done, `[-]` declined, `[!]` blocked, `[/]` paused, all. One status shows alone; the legend reads `filter: <status>` (`custom` when `1`-`6` left a mix, and `m` then starts at todo). Shares the hidden statuses with `1`-`6`; the selection moves to a shown item |
@@ -436,6 +438,26 @@ A hidden status is drawn dim and its items are skipped by `j`, `k`, Up and Down;
 next shown item, or to the one before when it was the last. A step that leaves the status as it was (`f` at declined,
 `p` at todo) writes nothing and notifies nothing. The shown statuses are kept for the session: closing and opening
 the panel keeps them, a new Claude session starts with all shown.
+
+### Picked up by firstmate
+
+Some items reach firstmate on their own, without you sending them: an answer to a call, and a todo note that adds an
+item (an update or objective that makes one, an item written in the list by hand). Neither enters the queue. Each is
+recorded in `# Logs` once the bridge filed its inbox note, and a second row lands once firstmate acknowledged that note
+(`fm-inbox.sh drain --ack`), read with `bridge picked` on every five-second refresh:
+
+```
+- 2026-11-09T00:12:14Z | captain | recorded | - | - | nk-fec66289fe53ff06 answer cleanroom-sec-slack-scope: yes
+- 2026-11-09T00:15:12Z | firstmate | picked-up | - | - | nk-fec66289fe53ff06 picked up by firstmate 00:15
+```
+
+The time in `picked up by firstmate HH:MM` is when firstmate acknowledged the note (UTC); the row's own time is when the
+plugin saw it. Status changes alone (a click, a Laya or firstmate move) are still sent to firstmate but not recorded.
+
+An item recorded 5 minutes ago or more with no `picked-up` row is not picked up: firstmate may have crashed. The panel
+header shows `N unread by firstmate` beside `Queue (n)` (a click opens the Queue view), and the Queue view opens on a
+`Not picked up by firstmate (N)` group, one line per item: what it holds, then `recorded <age> ago`. An item leaves both
+once its `picked-up` row lands.
 
 ### `/notes-keeping todo [sync]`
 

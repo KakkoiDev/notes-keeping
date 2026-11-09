@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'claude-code/testing'
 
 import { ACTORS, actorLabel } from '../hooks/actors'
-import { importLegacy, logRow, readRows } from '../hooks/logs'
+import { PICKUP_MS, addsItem, importLegacy, logRow, overdue, pickedEntry, readRows, recordedEntry, unpicked } from '../hooks/logs'
 import { addChat, addLogs, addUpdate, create, inject, injectPrevious, logsHint, sections, setTodo } from '../hooks/notes'
 
 const AT = Date.UTC(2026, 9, 29, 1, 12, 43, 512)
@@ -66,6 +66,44 @@ describe('log rows', () => {
       `- ${at(18, 0)} | firstmate | status | Review this pr | todo -> in-progress | pr-review, from todo-changes.log`,
       `- ${at(18, 1)} | unknown | status | A / B | todo -> done | from todo-changes.log`,
     ])
+  })
+})
+
+describe('recorded and picked up', () => {
+  const R1 = 'nk-0123456789abcdef'
+  const R2 = 'nk-fedcba9876543210'
+
+  test('an item handed to firstmate is one recorded row: who made it, the request id of its inbox note, then what it holds', () => {
+    expect(logRow(recordedEntry(AT, 'captain', R1, 'answer decide-x: 1 Store-only'))).toBe(
+      `- 2026-10-29T01:12:43Z | captain | recorded | - | - | ${R1} answer decide-x: 1 Store-only`,
+    )
+  })
+
+  test('its pickup is a second row by firstmate: "picked up by firstmate HH:MM", the UTC time firstmate acknowledged the note', () => {
+    expect(logRow(pickedEntry(AT, R1, Date.UTC(2026, 9, 29, 1, 9, 59)))).toBe(`- 2026-10-29T01:12:43Z | firstmate | picked-up | - | - | ${R1} picked up by firstmate 01:09`)
+  })
+
+  test('the items not picked up are the recorded rows with no picked-up row for their request, oldest first, with their time', () => {
+    const logs = [
+      logRow(recordedEntry(AT, 'captain', R1, 'answer decide-x: yes')),
+      logRow({ at: AT, actor: 'captain', action: 'status', item: { status: 'done', text: 'A' }, from: 'todo', to: 'done' }),
+      logRow(recordedEntry(AT + 1000, 'plugin', R2, 'Ship it (+1 more)')),
+      logRow(pickedEntry(AT + 2000, R1, AT + 1500)),
+    ].join('\n')
+    expect(unpicked(logs)).toEqual([{ request: R2, summary: 'Ship it (+1 more)', at: Date.UTC(2026, 9, 29, 1, 12, 44) }])
+    expect(unpicked('')).toEqual([])
+  })
+
+  test('the badge counts an item once it waited about 5 minutes: at 4:59 it is not counted, at 5:00 it is', () => {
+    const list = [{ request: R1, summary: 'x', at: AT }]
+    expect(PICKUP_MS).toBe(5 * 60_000)
+    expect(overdue(list, AT + PICKUP_MS - 1000)).toEqual([])
+    expect(overdue(list, AT + PICKUP_MS)).toEqual(list)
+  })
+
+  test('a todo note is recorded when it adds an item; status changes alone, by anyone, are not', () => {
+    expect(addsItem(['Review: todo -> done (captain)', '+ [ ] Ship it [id:ab12cd3]'])).toBe(true)
+    expect(addsItem(['Review: todo -> done (captain) [id:ab12cd3]', 'Review: todo -> in-progress (laya)', 'Ship: todo -> done (firstmate run-a)'])).toBe(false)
   })
 })
 

@@ -3,8 +3,9 @@ import type { Item, Status } from './todo'
 import { keyOf, shown } from './todo'
 
 // status: a todo item's status changed; added: a todo item appeared; objective, update: the objectives were set or an
-// [UPDATE] added; attach: an earlier notes file was copied in.
-export type Action = 'status' | 'added' | 'objective' | 'update' | 'attach' | 'answer'
+// [UPDATE] added; attach: an earlier notes file was copied in; recorded: an inbox note for firstmate was filed (an answer to
+// a call, a todo change); picked-up: firstmate acknowledged that note.
+export type Action = 'status' | 'added' | 'objective' | 'update' | 'attach' | 'recorded' | 'picked-up'
 export type Entry = { at: number; actor: ActorId; action: Action; item?: Item; from?: Status; to?: Status; note?: string }
 export type Row = { time: string; actor: string; action: string; item: string; change: string; note: string }
 
@@ -69,4 +70,39 @@ export function importLegacy(log: string, file: string, list: readonly Item[]): 
     const item = byText.get(keyOf(text)) ?? { status: m[9] as Status, text }
     return [logRow({ at, actor, action: 'status', item, from: m[8] as Status, to: m[9] as Status, note: notes.join(', ') })]
   })
+}
+
+// A recorded item counts as not picked up once it waited this long.
+export const PICKUP_MS = 5 * 60_000
+const REQUEST = /^(nk-[0-9a-f]{16}) (.*)$/
+
+export type Unpicked = { request: string; summary: string; at: number }
+
+export function recordedEntry(at: number, actor: ActorId, request: string, summary: string): Entry {
+  return { at, actor, action: 'recorded', note: `${request} ${summary}` }
+}
+
+// pickedAt: when firstmate acknowledged the note, written HH:MM in UTC.
+export function pickedEntry(at: number, request: string, pickedAt: number): Entry {
+  return { at, actor: 'firstmate', action: 'picked-up', note: `${request} picked up by firstmate ${utc(pickedAt).slice(11, 16)}` }
+}
+
+// The recorded rows whose request has no picked-up row, oldest first.
+export function unpicked(logs: string): Unpicked[] {
+  const rows = readRows(logs)
+  const done = new Set(rows.filter(row => row.action === 'picked-up').map(row => REQUEST.exec(row.note)?.[1]))
+  return rows.flatMap(row => {
+    const m = row.action === 'recorded' ? REQUEST.exec(row.note) : null
+    if (m === null || done.has(m[1])) return []
+    return [{ request: m[1] ?? '', summary: m[2] ?? '', at: Date.parse(row.time) }]
+  })
+}
+
+export function overdue(list: readonly Unpicked[], now: number): Unpicked[] {
+  return list.filter(one => now - one.at >= PICKUP_MS)
+}
+
+// Whether a todo note's change lines add an item: an update or objective made one, or a hand edit wrote one.
+export function addsItem(lines: readonly string[]): boolean {
+  return lines.some(line => line.startsWith('+ ['))
 }
