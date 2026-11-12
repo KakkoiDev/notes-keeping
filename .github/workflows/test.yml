@@ -1,0 +1,36 @@
+name: test
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  plugin:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install Claude Code
+        run: npm install -g @anthropic-ai/claude-code@2.1.322
+      - name: Validate the plugin
+        run: claude plugin validate .
+      - name: Plugin tests
+        run: claude plugin test .
+
+  bridge:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check out firstmate for fm-inbox.sh
+        uses: actions/checkout@v4
+        with:
+          repository: KakkoiDev/firstmate
+          path: firstmate
+      - name: Bridge tests
+        run: FM_ROOT="$GITHUB_WORKSPACE/firstmate" bin/notes-keeping-bridge.test.sh
