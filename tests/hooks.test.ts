@@ -44,12 +44,14 @@ const bridge: {
   // The argv after `call-answer` and the answer on stdin, each time; callFails: why the bridge refuses them, when it does.
   callAnswers: { argv: string[]; stdin: string }[]
   callFails: string | undefined
+  // When set, call-answer answers only once this settles: the write is still in flight until then.
+  callHold: Promise<void> | undefined
   // When set, status exits 1 with this on stderr.
   statusError: string | undefined
   // The request ids notify and call-answer printed, in order; when firstmate acknowledged each (UTC), for picked.
   requests: string[]
   picked: Record<string, string>
-} = { links: {}, notified: [], calls: [], argv: [], pending: [], answers: [], fleet: { rows: [], calls: 0 }, crew: '', callAnswers: [], callFails: undefined, statusError: undefined, requests: [], picked: {} }
+} = { links: {}, notified: [], calls: [], argv: [], pending: [], answers: [], fleet: { rows: [], calls: 0 }, crew: '', callAnswers: [], callFails: undefined, callHold: undefined, statusError: undefined, requests: [], picked: {} }
 // The request id the fake bridge prints for its nth note.
 const requestOf = (n: number) => `nk-${String(n).padStart(16, '0')}`
 // What the fake Laya answers; left undefined, the call fails.
@@ -106,6 +108,7 @@ function engine(
   bridge.crew = ''
   bridge.callAnswers = []
   bridge.callFails = undefined
+  bridge.callHold = undefined
   bridge.statusError = undefined
   bridge.requests = []
   bridge.picked = {}
@@ -143,7 +146,7 @@ function engine(
       .filter(path => path.startsWith(`${e.path}/`))
       .map(path => ({ name: path.slice(e.path.length + 1), kind: 'file' as const, size: 0, mtimeMs: 0, isLink: false })),
   }))
-  on('process.run', (_$, e) => {
+  on('process.run', async (_$, e) => {
     if (e.argv[0] === PYTHON) {
       const ask = JSON.parse(e.init?.stdin ?? '{}') as Ask
       laya.asks.push(ask)
@@ -160,6 +163,7 @@ function engine(
       if (e.argv[1] === 'answer') bridge.answers.push({ request: e.argv[2] ?? '', answer: JSON.parse(e.init?.stdin ?? '') })
       if (e.argv[1] === 'call-answer') {
         bridge.callAnswers.push({ argv: e.argv.slice(2), stdin: e.init?.stdin ?? '' })
+        await bridge.callHold
         if (bridge.callFails !== undefined) return { value: { exitCode: 1, stdout: '', stderr: `notes-keeping-bridge: ${bridge.callFails}\n`, isStdoutTruncated: false, isStderrTruncated: false } }
         // As firstmate's intake does: the call is answered, and the next fleet read says so.
         bridge.fleet = { ...bridge.fleet, rows: bridge.fleet.rows.map(row => (row.task === e.argv[2] && typeof row.call === 'object' ? { ...row, call: { ...(row.call as object), state: 'answered' } } : row)) }
@@ -3819,6 +3823,67 @@ test('an answer the bridge refuses is neither queued nor recorded: a toast gives
   await flush()
   expect(bridge.callAnswers).toHaveLength(2)
   expect(logsOf(fs[BOUND]).filter(row => row.includes('| recorded |'))).toHaveLength(1)
+  await pane.unmount()
+})
+// A call-answer the fake bridge holds until the returned release runs.
+function holdCallAnswer(): () => void {
+  let release = () => {}
+  bridge.callHold = new Promise<void>(resolve => {
+    release = resolve
+  })
+  return release
+}
+
+test('a picked option or a typed answer shows the call answered at once, before the bridge has written it', async ($, on) => {
+  const { pane } = await linkedWith($, on, [OPTIONS, SECOND])
+  await openItem(pane)
+  const release = holdCallAnswer()
+  const picked = pane.press({ key: 'call:decide-x:1' })
+  await flush()
+  expect(bridge.callAnswers).toHaveLength(1)
+  expect(await pane.find({ key: 'call:decide-x:1' })).toBeUndefined()
+  expect(await pane.find({ type: 'Text', text: /^! Your call · answered/ })).toBeDefined()
+  expect((await pane.find({ key: 'call:decide-y:1' }))?.props).toMatchObject({ hotkey: '1' })
+  await pane.press({ key: 'call:answer' })
+  const typed = pane.input({ key: 'call:reply:decide-y', text: 'merge it' })
+  await flush()
+  expect(bridge.callAnswers).toHaveLength(1)
+  expect(await pane.find({ key: 'call:reply:decide-y' })).toBeUndefined()
+  expect(await pane.find({ key: 'call:decide-y:1' })).toBeUndefined()
+  release()
+  await picked
+  await typed
+  await flush()
+  expect(bridge.callAnswers.map(one => one.stdin)).toEqual(['1 Store-only batch 1 (recommended)', 'merge it'])
+  expect(await pane.find({ key: 'call:decide-x:1' })).toBeUndefined()
+  expect(await pane.find({ key: 'call:decide-y:1' })).toBeUndefined()
+  await pane.unmount()
+})
+
+test('an answer the bridge refuses after it was shown sent rolls back: the call is open again, a typed answer is back in its field, a toast names the error', async ($, on) => {
+  const { pane, ui } = await linkedWith($, on, [OPTIONS])
+  await openItem(pane)
+  bridge.callFails = 'fm-captain-hold.sh answers: skipped: decide-x (already closed)'
+  let release = holdCallAnswer()
+  const picked = pane.press({ key: 'call:decide-x:1' })
+  await flush()
+  expect(await pane.find({ key: 'call:decide-x:1' })).toBeUndefined()
+  release()
+  await picked
+  await flush()
+  expect((await pane.find({ key: 'call:decide-x:1' }))?.props).toMatchObject({ hotkey: '1' })
+  expect(ui.toasts.filter(text => text.includes('decide-x') && text.includes('already closed'))).toHaveLength(1)
+  release = holdCallAnswer()
+  await pane.press({ key: 'call:answer' })
+  const typed = pane.input({ key: 'call:reply:decide-x', text: 'post it' })
+  await flush()
+  expect(await pane.find({ key: 'call:reply:decide-x' })).toBeUndefined()
+  release()
+  await typed
+  await flush()
+  expect((await pane.find({ key: 'call:reply:decide-x' }))?.props).toMatchObject({ value: 'post it' })
+  expect((await pane.find({ key: 'call:decide-x:1' }))?.props).toMatchObject({ hotkey: '1' })
+  expect(ui.toasts.filter(text => text.includes('decide-x') && text.includes('already closed'))).toHaveLength(2)
   await pane.unmount()
 })
 test('an answer to a held work item, not a question, goes with --release so the work resumes', async ($, on) => {
