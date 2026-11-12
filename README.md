@@ -406,10 +406,11 @@ field that sends what you type. The open field is drawn at the top of the panel,
 or worker row that comes or goes while you type does not move the keyboard off it; each call has its own field, empty
 until you type in it. The answer never enters the queue and is not put in the prompt: it goes to firstmate at
 once through `bridge call-answer` (with `--release` for held work, so it resumes), and a `# Logs` row (`captain`,
-`recorded`, `<request> answer <task>: <answer>`) records it. The fleet is then read again, so the card shows the call
-answered and, with two open calls, the keys go on to the second. An answer over 512 characters (the record's limit) is
-not sent: a toast says so and the field stays open. If the bridge refuses an answer (the call is already closed), a toast
-gives the reason, nothing is recorded, and the field stays open. An answered call shows your words and its
+`recorded`, `<request> answer <task>: <answer>`) records it. The card shows the call answered, and the field closes, as
+soon as you pick or press Enter, before the bridge has written it; with two open calls the keys go on to the second at
+once. The fleet is then read again. An answer over 512 characters (the record's limit) is not sent: a toast says so and
+the field stays open. If the bridge refuses an answer (the call is already closed), a toast gives the reason, nothing is
+recorded, the call shows open again, and a typed answer is back in its open field. An answered call shows your words and its
 trail, time first (UTC). Then a block per linked worker (state and age, report title, `Outcome:` line) and the item's last three
 status changes from `# Logs`. Its keys, each drawn only when it acts: `v` report, `e` report in the editor, `u` PR, `g`
 the worker's window, `f` and `p` status, `j` and `k` the next and previous shown to-do.

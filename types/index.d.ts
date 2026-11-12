@@ -111,6 +111,8 @@ declare module 'claude-code' {
       workOpen: string | null
       workAnswering: boolean
       callAnswering: string | null
+      callSending: Record<string, string>
+      callTyped: Record<string, string>
       reportFrom: View
     }
   }

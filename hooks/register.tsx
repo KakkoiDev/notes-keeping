@@ -142,6 +142,10 @@ const workOpen = atom({ plugin: 'notes-keeping', key: 'workOpen' } as const, nul
 const workAnswering = atom({ plugin: 'notes-keeping', key: 'workAnswering' } as const, false)
 // The call, by task id, whose answer field the Item view shows.
 const callAnswering = atom({ plugin: 'notes-keeping', key: 'callAnswering' } as const, null as string | null)
+// Answers the Item view shows sent while the bridge still writes them, by task id: their calls draw answered.
+const callSending = atom({ plugin: 'notes-keeping', key: 'callSending' } as const, {} as Record<string, string>)
+// Typed answers the bridge refused, by task id: the call's answer field opens holding the text again.
+const callTyped = atom({ plugin: 'notes-keeping', key: 'callTyped' } as const, {} as Record<string, string>)
 // The view v was pressed in, where b goes back to from the report reader.
 const reportFrom = atom({ plugin: 'notes-keeping', key: 'reportFrom' } as const, 'work-item' as View)
 
@@ -1014,15 +1018,14 @@ async function queuePasted($: EngineInterface, part: string, user: string): Prom
 }
 
 // An answer to a call goes to firstmate at once through the bridge and never enters the queue. A call that is not a
-// captain question is held work, and its answer resumes it. False, with a toast, for an answer the record would cut or
-// one the bridge refuses; then nothing is recorded. Recorded, it gets its # Logs row and the fleet is read again so the
-// call shows closed. Answers go one at a time, so a second answer to the same call reaches the intake after the first
+// captain question is held work, and its answer resumes it. False, with a toast, for an answer the bridge refuses; then
+// nothing is recorded. Callers check the length with isFitting first. Recorded, it gets its # Logs row and the fleet is
+// read again so the call shows closed. Answers go one at a time, so a second answer to the same call reaches the intake after the first
 // closed it, and is refused there.
 let answering: Promise<boolean> = Promise.resolve(true)
 
 function answerCall($: EngineInterface, row: FleetRow, text: string): Promise<boolean> {
   const run = async (): Promise<boolean> => {
-    if (!isFitting($, text)) return false
     const bridge = await bridgeOf($)
     if (bridge === undefined) {
       $.ui.toast(`notes-keeping: the bridge is not here, so the answer to ${row.task} was not sent.`)
@@ -1042,6 +1045,10 @@ function answerCall($: EngineInterface, row: FleetRow, text: string): Promise<bo
     return false
   })
   return answering
+}
+
+function without(record: Record<string, string>, key: string): Record<string, string> {
+  return Object.fromEntries(Object.entries(record).filter(([one]) => one !== key))
 }
 
 function isFitting($: EngineInterface, text: string): boolean {
@@ -1857,7 +1864,7 @@ export const register: Register = on => {
               if (value.trim() === '') return
               if (target === undefined) return
               if (target.call?.state === 'open') {
-                if (!(await answerCall($, target, value.trim()))) return
+                if (!isFitting($, value.trim()) || !(await answerCall($, target, value.trim()))) return
               } else {
                 const filled = await $.prompt.fill({ text: answerText(target, value.trim()), mode: 'insert' })
                 if (!filled.isFilled) $.ui.toast('The prompt box cannot take the answer now.')
@@ -2211,7 +2218,9 @@ export const register: Register = on => {
       const from = s === undefined || item === undefined ? undefined : sourceOf(s, item)
       const now = await $.clock.now()
       const linkedRows = work === null || item?.id === undefined ? [] : work.rows.filter(row => !row.gone && row.todos.includes(item.id ?? ''))
-      const callRows = linkedRows.filter(row => row.call)
+      const sending = await read($, callSending)
+      const typedBack = await read($, callTyped)
+      const callRows = linkedRows.filter(row => row.call).map(row => (row.call?.state === 'open' && row.task in sending ? { ...row, call: { ...row.call, state: 'answered' as const } } : row))
       const firstOpen = callRows.find(row => row.call?.state === 'open')
       const answering = await read($, callAnswering)
       const replying = Input === undefined ? undefined : callRows.find(row => row.task === answering)
@@ -2233,8 +2242,18 @@ export const register: Register = on => {
         // The engine answers {} or { deny }; `claude plugin test` has no ring and rejects.
         await $.ui.focus({ requestId: PANE, key: callReplyKey(row.task) }).catch(() => undefined)
       }
-      const answer = async (row: FleetRow, text: string) => {
-        if (await answerCall($, row, text)) await update($, callAnswering, () => null)
+      // Shown answered at once; a refused answer puts the call back open, and a typed one back in its field.
+      const answer = async (row: FleetRow, text: string, isTyped: boolean) => {
+        if (!isFitting($, text)) return
+        await update($, callSending, sent => ({ ...sent, [row.task]: text }))
+        await update($, callAnswering, task => (task === row.task ? null : task))
+        const isSent = await answerCall($, row, text)
+        await update($, callSending, sent => without(sent, row.task))
+        if (isSent) await update($, callTyped, typed => without(typed, row.task))
+        else if (isTyped) {
+          await update($, callTyped, typed => ({ ...typed, [row.task]: text }))
+          await ask(row)
+        }
       }
       field =
         item === undefined || replying === undefined || Input === undefined ? null : (
@@ -2242,11 +2261,12 @@ export const register: Register = on => {
             key={callReplyKey(replying.task)}
             label={replying.answer ?? replying.task}
             placeholder="your answer; Enter sends it to firstmate"
+            value={typedBack[replying.task]}
             submitLabel="send"
             autoFocus
             onSubmit={async (value: string) => {
               if (value.trim() === '') return
-              await answer(replying, value.trim())
+              await answer(replying, value.trim(), true)
             }}
           />
         )
@@ -2279,7 +2299,7 @@ export const register: Register = on => {
                         plain
                         hotkey={row === firstOpen ? String(i + 1) : undefined}
                         label={option}
-                        onPress={() => answer(row, `${i + 1} ${option}`)}
+                        onPress={() => answer(row, `${i + 1} ${option}`, false)}
                       />
                     ))}
                 {row.call?.state === 'open' && row !== firstOpen ? <Button key={`call:${row.task}:answer`} plain label="write an answer" onPress={() => ask(row)} /> : null}
