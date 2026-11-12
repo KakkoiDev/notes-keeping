@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'claude-code/testing'
 
 import type { FleetRow } from '../types'
-import { details, reportHead, reportLines, todoLines, unlinkedRows, waitingText } from '../hooks/work'
+import { ageOf, callsShown, details, needsYou, reportHead, reportLines, selectedRow, todoLines, unlinkedRows, unlinkedText, waitingText, workStatus } from '../hooks/work'
 
 const NOW = Date.UTC(2026, 10, 5, 2, 0, 0)
 const S = Math.floor(NOW / 1000)
@@ -112,5 +112,65 @@ describe('lines from real fleet output', () => {
   })
   test('the reader head leaves out a kind the row does not have', () => {
     expect(reportHead(row('w', { kind: null, summary: CLEANROOM }), NOW, { label: 'Fix it', mark: '[~]' })[1]).toBe('to-do: Fix it [~]')
+  })
+})
+
+describe('ages', () => {
+  test('an age is the largest whole unit: s under a minute, m under an hour, h under a day, then d; no time is -, a time ahead is 0s', () => {
+    expect(ageOf(null, NOW)).toBe('-')
+    expect(ageOf(S, NOW)).toBe('0s')
+    expect(ageOf(S + 30, NOW)).toBe('0s')
+    expect(ageOf(S - 59, NOW)).toBe('59s')
+    expect(ageOf(S - 60, NOW)).toBe('1m')
+    expect(ageOf(S - 3599, NOW)).toBe('59m')
+    expect(ageOf(S - 3600, NOW)).toBe('1h')
+    expect(ageOf(S - 86399, NOW)).toBe('23h')
+    expect(ageOf(S - 86400, NOW)).toBe('1d')
+  })
+})
+
+describe('calls that need the captain', () => {
+  const rows = [
+    row('free-call', { flag: '!', word: 'call', live: false }),
+    row('shown-call', { flag: '!', word: 'call', live: false, todos: ['ab12cd3'] }),
+    row('hidden-call', { flag: '!', word: 'call', live: false, todos: ['zz99zz9'] }),
+    row('ask', { flag: '?' }),
+    row('run'),
+  ]
+
+  test('only ! rows need the captain; no fleet needs nothing', () => {
+    expect(needsYou(null)).toEqual([])
+    expect(needsYou({ rows, calls: 3, at: S }).map(r => r.task)).toEqual(['free-call', 'shown-call', 'hidden-call'])
+  })
+
+  test('the Todos tab counts calls linked to a shown to-do or to none, not those whose to-dos are all hidden', () => {
+    expect(callsShown(null, new Set())).toBe(0)
+    expect(callsShown({ rows, calls: 3, at: S }, new Set(['ab12cd3']))).toBe(2)
+    expect(callsShown({ rows, calls: 3, at: S }, new Set())).toBe(1)
+  })
+
+  test('the status line names the count, singular or plural, and is gone at zero', () => {
+    expect(workStatus(0)).toBeUndefined()
+    expect(workStatus(1)).toBe('calls: 1 needs you · ctrl+q')
+    expect(workStatus(2)).toBe('calls: 2 need you · ctrl+q')
+  })
+})
+
+describe('the line under the Todos list', () => {
+  test('counts the calls and live workers no to-do links, and the calls closed today without the captain; none of them, no line', () => {
+    expect(unlinkedText({ rows: [row('linked', { todos: ['ab12cd3'] })], calls: 0, at: S })).toBeUndefined()
+    expect(unlinkedText({ rows: [row('c', { word: 'call', flag: '!', live: false }), row('w'), row('w2'), row('ended', { word: 'finished', live: false }), row('old', { gone: true })], calls: 1, at: S })).toBe('Not on a to-do: 1 call, 2 workers')
+    expect(unlinkedText({ rows: [row('w')], calls: 0, at: S, closedToday: 2 })).toBe('Not on a to-do: 1 worker · 2 calls closed without you today')
+    expect(unlinkedText({ rows: [], calls: 0, at: S, closedToday: 1 })).toBe('Not on a to-do: nothing live · 1 call closed without you today')
+  })
+})
+
+describe('selection in the Work view', () => {
+  test('the ring stays on its row while shown, else the first row; no rows, none', () => {
+    const rows = [row('a'), row('b')]
+    expect(selectedRow(rows, 'b')).toBe('b')
+    expect(selectedRow(rows, 'gone')).toBe('a')
+    expect(selectedRow(rows, null)).toBe('a')
+    expect(selectedRow([], 'a')).toBeUndefined()
   })
 })

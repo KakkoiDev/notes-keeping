@@ -85,6 +85,8 @@ type Ui = {
   draft: string
   notices: { text: string; title: string | undefined }[]
   copied: string[]
+  // When set, ui.copy copies nothing and answers this reason.
+  copyRefused: 'no-surface' | 'no-clipboard' | 'refused' | undefined
   rows: Record<string, number | undefined>
 }
 
@@ -123,7 +125,7 @@ function engine(
   mock.env(on, { HOME, ...shell.vars })
   shell.vars = {}
   const git: Git = { calls: [], remotes: '' }
-  const ui: Ui = { panes: new Map(), shown: undefined, opened: [], closed: [], status: [], toasts: [], isPlaced: true, isFocusable: true, fills: [], isFillable: true, draft: '', notices: [], copied: [], rows: {} }
+  const ui: Ui = { panes: new Map(), shown: undefined, opened: [], closed: [], status: [], toasts: [], isPlaced: true, isFocusable: true, fills: [], isFillable: true, draft: '', notices: [], copied: [], copyRefused: undefined, rows: {} }
   on('session.start', (_$, e) => ({ cwd: e.cwd }))
   on('session.end', (_$, e) => ({ sessionId: e.sessionId }))
   on('command.register', (_$, e) => ({ value: { command: e.name } }))
@@ -254,6 +256,7 @@ function engine(
     return { value: { isSent: true as const, channel: 'terminal_bell' as const } }
   })
   on('ui.copy', (_$, e) => {
+    if (ui.copyRefused !== undefined) return { value: { isCopied: false as const, reason: ui.copyRefused } }
     ui.copied.push(e.text)
     return { value: { isCopied: true as const } }
   })
@@ -4314,5 +4317,109 @@ test('j and k in the Item view open the next and previous shown to-do', async ($
   expect((await pane.find({ key: 'item:up' }))?.props).toMatchObject({ hotkey: 'k' })
   await pane.press({ key: 'item:up' })
   expect(await pane.find({ type: 'Text', text: 'Build the table' })).toBeDefined()
+  await pane.unmount()
+})
+
+test('a command missing what it needs says so and writes nothing: reply with no selection or no text, important with neither, note with no text', async ($, on) => {
+  let selection: string | undefined
+  const fs: Fs = {}
+  const { git } = engine(on, fs, {}, () => selection)
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: false })
+  expect((await run($, 'reply too slow')).text).toBe('Select the text to reply to first.')
+  expect((await run($, 'important')).text).toBe('Nothing to keep: give text or select some first.')
+  expect((await run($, 'note')).text).toBe('Usage: /notes-keeping note <text>')
+  selection = 'Agent says merge?'
+  expect((await run($, 'reply')).text).toBe('Usage: /notes-keeping reply <your reply>')
+  expect(fs).toEqual({})
+  expect(commits(git)).toEqual([])
+  expect((await run($, 'replies')).text).toBeUndefined()
+  const pane = await $.ui.mount({ ...NOTES_PANE, surface: 'terminal' })
+  expect((await pane.find({ key: 'view:queue' }))?.props).toMatchObject({ label: 'Queue (0)' })
+  await pane.unmount()
+})
+
+test('history with no other notes says so; a pick that matches none says so and attaches nothing; past 20 notes the rest are counted', async ($, on) => {
+  const fs: Fs = { [BOUND]: NOTES }
+  engine(on, fs, { ...SESSION_BOUND })
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: false })
+  expect((await run($, 'history')).text).toBe('No earlier notes.')
+  for (let day = 1; day <= 22; day++) fs[`${DIR}/2026-09-${String(day).padStart(2, '0')}-09-00-firstmate-${String(day).padStart(8, '0')}.md`] = `# Objectives\n\nPlan ${day}\n`
+  const list = (await run($, 'history')).text?.split('\n') ?? []
+  expect(list[0]).toBe(' 1. 2026-09-22 09:00  firstmate  00000022  Plan 22')
+  expect(list[19]).toBe('20. 2026-09-03 09:00  firstmate  00000003  Plan 3')
+  expect(list[20]).toBe('(2 older not listed)')
+  await flush()
+  const before = fs[BOUND]
+  expect((await run($, 'history 23')).text).toBe('No earlier notes match "23".')
+  expect((await run($, 'history nope')).text).toBe('No earlier notes match "nope".')
+  expect(fs[BOUND]).toBe(before)
+})
+
+test('an answer to a call while the bridge file is gone is not sent: one toast says so, nothing is recorded', async ($, on) => {
+  const { pane, ui, fs } = await linkedWith($, on, [OPTIONS])
+  await openItem(pane)
+  delete fs[BRIDGE]
+  await pane.press({ key: 'call:decide-x:1' })
+  await flush()
+  expect(bridge.callAnswers).toEqual([])
+  expect(ui.toasts.filter(text => text === 'notes-keeping: the bridge is not here, so the answer to decide-x was not sent.')).toHaveLength(1)
+  expect(logsOf(fs[BOUND]).filter(row => row.includes('| recorded |'))).toEqual([])
+  await pane.unmount()
+})
+
+test('a refused answer toast ends in "Nothing was sent."', async ($, on) => {
+  const { pane, ui } = await linkedWith($, on, [OPTIONS])
+  await openItem(pane)
+  bridge.callFails = 'no intake'
+  await pane.press({ key: 'call:decide-x:1' })
+  await flush()
+  expect(ui.toasts).toContain('notes-keeping: decide-x: no intake. Nothing was sent.')
+  await pane.unmount()
+})
+
+test('y in the Work details says why when the copy does not take, and copies nothing', async ($, on) => {
+  const { ui } = await work($, on)
+  await run($, 'show')
+  const pane = await $.ui.mount({ ...NOTES_PANE, surface: 'terminal' })
+  await pane.press({ key: 'view:work' })
+  await pane.press({ key: 'work:ask' })
+  ui.copyRefused = 'no-clipboard'
+  await pane.press({ key: 'work:copy' })
+  expect(ui.copied).toEqual([])
+  expect(ui.toasts).toContain('notes-keeping: the copy did not take (no-clipboard)')
+  ui.copyRefused = undefined
+  await pane.press({ key: 'work:copy' })
+  expect(ui.toasts).toContain('Copied https://x/pull/27970')
+  await pane.unmount()
+})
+
+test('an answer on a ? row the prompt box refuses is told by a toast; nothing goes to the bridge', async ($, on) => {
+  const { ui } = await work($, on)
+  await run($, 'show')
+  const pane = await $.ui.mount({ ...NOTES_PANE, surface: 'terminal' })
+  await pane.press({ key: 'view:work' })
+  await ring($, 'work:ask')
+  await pane.press({ key: 'work:answer' })
+  ui.isFillable = false
+  await pane.input({ key: 'work:reply:ask', text: 'ship the new body' })
+  expect(ui.toasts).toContain('The prompt box cannot take the answer now.')
+  expect(bridge.callAnswers).toEqual([])
+  await pane.unmount()
+})
+
+test('send with a prompt box that refuses the fill keeps every reply queued and says so', async ($, on) => {
+  const fs: Fs = { [BOUND]: NOTES }
+  const { ui } = engine(on, fs, { [`session:${SESSION}`]: BOUND }, () => 'Question one')
+  engineDraws(on)
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: false })
+  await run($, 'reply one')
+  const pane = await $.ui.mount({ ...NOTES_PANE, surface: 'terminal' })
+  await pane.press({ key: 'view:queue' })
+  ui.isFillable = false
+  await pane.press({ key: 'send' })
+  expect(ui.toasts).toContain('The prompt box cannot take the replies now; they stay queued.')
+  expect((await pane.find({ key: 'reply:0' }))?.props).toMatchObject({ value: 'one' })
+  expect((await pane.find({ key: 'view:queue' }))?.props).toMatchObject({ label: 'Queue (1)' })
+  expect(sections(fs[BOUND] ?? '').chat).not.toContain('Question one')
   await pane.unmount()
 })
