@@ -627,6 +627,14 @@ function entry(item: Item, s: Pick<Sections, 'objectives' | 'updates'> | undefin
   return [`- [${MARKS[item.status]}] ${update[0] ?? ''}${why(item)}`, ...update.slice(1).map(one => `${UPDATE_INDENT}${one}`)].join('\n')
 }
 
+// Who keeps the statuses current, and the one path Claude has: the firstmate bridge reports a linked task's recorded
+// outcome, and the plugin moves the item to done from it.
+const UPKEEP = [
+  "Keeping these statuses current is your job, not the captain's: never ask the captain to set, change or clear a marker.",
+  'You cannot edit the notes file (its Edit and Write are denied). With firstmate, link each item to the task doing it (notes-keeping-bridge link <task-id> <item text>); when that task is finished, record its outcome (fm-todo-guard.sh record-outcome <task-id>, or record-close <task-id> for a task ended with no worker) and the bridge moves the item to done, out of [!] and [/] too.',
+  'Without the firstmate bridge you have no path to change a status.',
+]
+
 // What Claude reads each turn: the list, and to work every open item at once. s: the objectives and updates the items came from.
 export function context(body: string, s?: Pick<Sections, 'objectives' | 'updates'>): string | undefined {
   const list = items(body)
@@ -640,8 +648,8 @@ export function context(body: string, s?: Pick<Sections, 'objectives' | 'updates
   const closed = list.filter(isClosed).length
   const more = closed > 0 ? [`${closed} done/declined items are not listed; read the notes file's # Todo section if you need them.`] : []
   const blocked = list.some(item => item.status === 'blocked')
-    ? ['Blocked ([!]): could not be started. Open your reply by telling the captain which items are blocked and why.']
+    ? ["Blocked ([!]): could not be started. Open your reply by telling the captain which items are blocked, why, and what you are doing to unblock each; clearing the marker is yours, not the captain's."]
     : []
   const paused = pausedContext(body)
-  return [`Todo list kept by notes-keeping (${STATUSES.map(legend).join(', ')}). The captain and the plugin set them; you never edit the notes file.`, head, ...blocked, ...shown, ...more, ...(paused === undefined ? [] : [paused])].join('\n')
+  return [`Todo list kept by notes-keeping (${STATUSES.map(legend).join(', ')}).`, ...UPKEEP, head, ...blocked, ...shown, ...more, ...(paused === undefined ? [] : [paused])].join('\n')
 }
