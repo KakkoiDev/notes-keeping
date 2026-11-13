@@ -448,10 +448,20 @@ describe('context for Claude', () => {
     expect(context('- [x] a')).not.toContain('in parallel')
   })
 
-  test('a blocked item is listed with its marker and Claude is told to report it to the captain first', () => {
+  test('keeping statuses current is Claude\'s job, through the bridge path that works, never the captain\'s', () => {
+    const text = context('- [ ] a') ?? ''
+    expect(text).toContain("Keeping these statuses current is your job, not the captain's: never ask the captain to set, change or clear a marker.")
+    expect(text).toContain('You cannot edit the notes file (its Edit and Write are denied).')
+    expect(text).toContain('With firstmate, link each item to the task doing it (notes-keeping-bridge link <task-id> <item text>);')
+    expect(text).toContain('when that task is finished, record its outcome (fm-todo-guard.sh record-outcome <task-id>, or record-close <task-id> for a task ended with no worker) and the bridge moves the item to done, out of [!] and [/] too.')
+    expect(text).toContain('Without the firstmate bridge you have no path to change a status.')
+    expect(text).not.toContain('The captain and the plugin set them')
+  })
+
+  test('a blocked item is listed with its marker; Claude reports it first and clears it itself', () => {
     const text = context('- [!] Spawn the review\n- [x] c') ?? ''
     expect(text).toContain('- [!] Spawn the review')
-    expect(text).toContain('Blocked ([!]): could not be started. Open your reply by telling the captain which items are blocked and why.')
+    expect(text).toContain("Blocked ([!]): could not be started. Open your reply by telling the captain which items are blocked, why, and what you are doing to unblock each; clearing the marker is yours, not the captain's.")
     expect(text).toContain('Nothing is open.')
     expect(context('- [ ] a')).not.toContain('Blocked ([!])')
   })

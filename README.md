@@ -308,8 +308,11 @@ queued-replies line when there is one); `?` firstmate's move, a last state line 
 
 Every prompt carries every item that is not done or declined, in file order with no cap, and one line counting the done
 and declined items it leaves out, which points to the notes file's `# Todo` section (each item with its marker, `[~]` for in-progress, and an instruction to start every
-open item now, in parallel, not waiting on one answer before starting another independent one; when an item is `[!]`
-blocked, an instruction to open the reply by telling the captain which items are blocked and why), each item as `label: text` with the text cut to 120 characters, or the cut text alone when it has no
+open item now, in parallel, not waiting on one answer before starting another independent one; that keeping the
+statuses current is Claude's job, never the captain's, through the one path Claude has: link the item to its firstmate
+task and record the task's outcome when it finishes (`fm-todo-guard.sh record-outcome`, or `record-close`), which the
+bridge reports as done; when an item is `[!]` blocked, an instruction to open the reply by telling the captain which
+items are blocked, why, and what Claude is doing to unblock each, the marker being Claude's to clear), each item as `label: text` with the text cut to 120 characters, or the cut text alone when it has no
 label, a paused item followed by `(paused: <reason>)`. An item made from an `[UPDATE]` block that holds more than the
 item's text is shown as that block instead, whole and uncut, its first line on the item's line and the rest indented
 under it. A prompt that already
