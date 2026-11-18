@@ -11,13 +11,17 @@ permissions:
 jobs:
   plugin:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        claude-code: ['2.1.322', '2.1.327']
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
       - name: Install Claude Code
-        run: npm install -g @anthropic-ai/claude-code@2.1.322
+        run: npm install -g @anthropic-ai/claude-code@${{ matrix.claude-code }}
       - name: Validate the plugin
         run: claude plugin validate .
       - name: Plugin tests

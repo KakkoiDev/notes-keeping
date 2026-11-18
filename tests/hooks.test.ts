@@ -3022,8 +3022,9 @@ const KEYNAV = '# Objectives\n\nSessions: s\n\n## Updates\n\n# Todo\n\n- [ ] One
 async function keynav($: Engine, on: On, extra: Fs = {}) {
   const fs: Fs = { [BOUND]: KEYNAV, ...extra }
   const { git } = engine(on, fs, { ...SESSION_BOUND })
-  // Answers the ring helper's $.ui.focus; the plugin's own $.ui.focus never reaches a test hook.
-  on('ui.focus', () => ({ value: {} }) as never)
+  // Answers the ring helper's $.ui.focus. The event names the plugin notes-keeping, which a test hook answers only
+  // under { plugin: '*' } from Claude Code 2.1.327.
+  on('ui.focus', { plugin: '*' }, () => ({ value: {} }) as never)
   await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: false })
   await flush()
   await run($, 'show')
@@ -3372,7 +3373,7 @@ test('a toggle, or a status change that hides a row, draws the selected row unde
 test('a click in the notes pane while the prompt holds the keyboard hands the keyboard to the pane', async ($, on) => {
   const fs: Fs = { [BOUND]: KEYNAV }
   const { ui } = engine(on, fs, { ...SESSION_BOUND })
-  on('ui.focus', () => ({ value: {} }) as never)
+  on('ui.focus', { plugin: '*' }, () => ({ value: {} }) as never)
   await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: false })
   await flush()
   await run($, 'show')
@@ -3605,7 +3606,7 @@ const FLEET = {
 async function work($: Engine, on: On, selection: () => string | undefined = () => undefined, extra: Fs = {}) {
   const fs: Fs = { [BOUND]: setTodoFile('- [ ] **Build the table**: build the fleet table <!-- id:ab12cd3 -->'), [PYTHON]: '', [BRIDGE]: '', ...extra }
   const { clock, git, ui } = engine(on, fs, { ...SESSION_BOUND }, selection)
-  on('ui.focus', () => ({ value: {} }) as never)
+  on('ui.focus', { plugin: '*' }, () => ({ value: {} }) as never)
   fakeLaya()
   bridge.fleet = FLEET
   await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
