@@ -128,6 +128,8 @@ A reply to text selected inside one block of Claude's reply is a note anchored t
 
 In `# Chat` the anchor follows the quoted text: `[AI_AGENT] brown fox <!-- note:13y3ouz row:<message id> at:0 -->`. `row` is the transcript row the text was selected in and `at` which occurrence of the text in that row; leave the comment in place when you edit the file. The prompt Claude receives carries the pair without it.
 
+A reply on text that already holds a pair (a note on a note) keeps the quoted tags apart from the pair's own: a line of quoted or pasted text that opens with `[AI_AGENT] ` or `[USER] ` gets a backslash, `\[USER] show me`, as a heading line does. The note reads back with the text as selected.
+
 Limits:
 
 - Only Claude's reply text is marked; your own prompts, tool rows and a selection over several rows (which has no row) keep a note without a mark.

@@ -14,6 +14,7 @@ import {
   nameParts,
   newestFirst,
   projectName,
+  queuedBlock,
   sections,
   setContinuation,
   setObjectives,
@@ -287,6 +288,24 @@ describe('section writer', () => {
       { id: 'k3x9', row: note.row, at: 1, agent: 'Look:\n\nthe second line', user: 'Why?' },
       { id: 'p7q2', row: note.row, at: 0, agent: 'Push?', user: 'No' },
     ])
+  })
+
+  test('a reply on text holding tags escapes a tag that opens a quoted line, so only the pair opens with its own', () => {
+    const quoted = '[AI_AGENT] P2P call POC: done, branch ready.\n  [USER] show me'
+    expect(queuedBlock({ agent: quoted, user: 'make me a public repo for this' }, false)).toBe(
+      '[AI_AGENT] \\[AI_AGENT] P2P call POC: done, branch ready.\n  \\[USER] show me\n[USER] make me a public repo for this',
+    )
+  })
+
+  test('a note on pasted text escapes a tag that opens a line of it', () => {
+    expect(queuedBlock({ agent: '[USER] ship it\nok', user: 'why', pasted: {} }, false)).toBe('[PASTED]\n\\[USER] ship it\nok\n[USER] why')
+  })
+
+  test('a note on text whose line opens with a tag reads back with the text as selected', () => {
+    const note = { id: 'a1', row: '2cc6721d-79e7-4487-9aaa-a9ef47567336', at: 0 }
+    const quoted = '[AI_AGENT] P2P call POC: done, branch ready.\n[USER] show me'
+    const md = addChat(create('Plan', ID), quoted, 'make me a public repo for this', note)
+    expect(chatNotes(sections(md).chat)).toEqual([{ ...note, agent: quoted, user: 'make me a public repo for this' }])
   })
 
   test('a file missing sections gets them back on the next write', () => {
