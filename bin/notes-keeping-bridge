@@ -4,7 +4,7 @@
 The notes-keeping plugin runs this file when it exists under the session root (config/ is gitignored, so only this
 home opted in). The plugin runs status, notify, pending, answer, fleet, call-answer and picked; firstmate the rest.
 
-  status <notes-file>        print {"<item text>": {"status": "blocked" | "paused" | "in-progress" | "done" | null, "task": "<id>"}}
+  status <notes-file>        print {"<item text>": {"status": "todo" | "blocked" | "paused" | "in-progress" | "done" | null, "task": "<id>"}}
                              for every linked item; an item linked by id is printed as "id:<id>" with an "id" field, and a
                              link made with --by carries a "by" field. blocked or paused: the task's latest block or pause,
                              whichever came last, came after its last state line and no outcome record is at or after it,
@@ -130,6 +130,7 @@ REQUEST = re.compile(r'^[0-9a-f]{16}$')
 PICKED = re.compile(r'^nk-[0-9a-f]{16}$')
 STATES = ('working', 'needs-decision', 'blocked', 'paused', 'done', 'failed')
 STATE_LINE = re.compile(r'^(%s)(?: \[[^\]]*\])*:' % '|'.join(re.escape(s) for s in STATES))
+RESOLVED_LINE = re.compile(r'^resolved(?: \[[^\]]*\])*:')
 ADDED = re.compile(r'^\+ \[.\] ')
 ID_TAG = re.compile(r' \[id:[a-z0-9]+\]$')
 ITEM_ID = re.compile(r'^id:([a-z0-9]+)$')
@@ -230,7 +231,7 @@ def links(dropped=None):
 
 
 def state_lines(task):
-    """The task's state names in state/<task>.status, in order."""
+    """The task's state and resolved lines in state/<task>.status, in order."""
     out = []
     try:
         with open(os.path.join(STATE, f'{task}.status'), encoding='utf-8', errors='replace') as f:
@@ -238,6 +239,8 @@ def state_lines(task):
                 m = STATE_LINE.match(line)
                 if m:
                     out.append(m.group(1))
+                elif RESOLVED_LINE.match(line):
+                    out.append('resolved')
     except FileNotFoundError:
         pass
     return out
@@ -294,7 +297,8 @@ def derive(task, block, outcome=None):
     reports itself."""
     if not TASK_ID.match(task):
         return None, None
-    if block is not None and len(state_lines(task)) <= block['lines'] and (outcome is None or outcome['at'] < block.get('at', 0)):
+    states = state_lines(task)
+    if block is not None and len(states) <= block['lines'] and (outcome is None or outcome['at'] < block.get('at', 0)):
         return block['state'], block['reason']
     if os.path.exists(os.path.join(STATE, f'{task}.pr-poll-merge-notified')):
         return 'done', None
@@ -302,6 +306,8 @@ def derive(task, block, outcome=None):
         return 'in-progress', None
     if outcome is not None and outcome['outcome'] in ('done', 'in-progress'):
         return outcome['outcome'], None
+    if states and states[-1] == 'resolved':
+        return 'todo', None
     return None, None
 
 
@@ -326,15 +332,21 @@ def status(notes_file):
     dropped = set()
     calls = open_calls()
     try:
-        paused = {key for i in open_list(notes_file) if i['status'] == 'paused' for key in (f"id:{i['id']}" if i['id'] else None, key_of(i['text'])) if key}
+        open_items = open_list(notes_file)
+        paused = {key for i in open_items if i['status'] == 'paused' for key in (f"id:{i['id']}" if i['id'] else None, key_of(i['text'])) if key}
+        stale_blocked = {key for i in open_items if i['status'] == 'blocked' for key in (f"id:{i['id']}" if i['id'] else None, key_of(i['text'])) if key}
     except OSError:
         paused = set()
+        stale_blocked = set()
     for r in links(dropped).values():
         outcome = ended.get(r['task'])
         # An outcome older than the link belongs to an earlier task with the same id.
         state, reason = derive(r['task'], blocked.get(r['task']), outcome if outcome is not None and outcome['at'] >= r.get('at', 0) else None)
         if r['task'] in calls and r['key'] not in paused:
             state, reason = 'blocked', f"captain call: {calls[r['task']]}"
+        elif state is None and r['key'] in stale_blocked:
+            # A bridge-owned block whose call/block has cleared must not stick in the notes file.
+            state = 'todo'
         extra = {**({'by': r['by']} if isinstance(r.get('by'), str) else {}), **({'reason': reason} if reason is not None else {})}
         if 'id' in r:
             out[f"id:{r['id']}"] = {'status': state, 'task': r['task'], 'id': r['id'], **extra}

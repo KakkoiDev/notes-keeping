@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
 import type { ChatNote, Fleet, FleetRow, Notes, Opened, Pair, Select, SubLine, Todo, View, WorkShown } from '../types'
-import { hrefOf, marked, noteOf } from './anchor'
+import { markedParts } from './anchor'
 import type { ActorId } from './actors'
 import { actorLabel } from './actors'
 import type { Entry } from './logs'
@@ -41,7 +41,7 @@ import {
 } from './notes'
 import { EMPTY, bridgeMoves, candidateKeys, candidates, changeLine, cleanLabel, context, cycle, cycleItem, diffSnapshot, emptyUpdates, format, idFor, idOf, isBackground, items, keyOf, labelPrompt, legend, markOf, moved, parse, pausedContext, pin, reconcile, row, settle, shown, snapshotOf, sourceOf, updateOf, why, withIds, withoutIds } from './todo'
 import type { Applied, Candidate, Change, Item, Memory, Move, Status, Verdict } from './todo'
-import { TodoSlot, hiddenFor, nextFilter, nextShown, rowId, rowKey, selectedOf, stepStatus } from './todos'
+import { TodoSlot, blockedFirst, hiddenFor, isShown, nextFilter, nextShown, rowId, rowKey, selectedOf, stepStatus } from './todos'
 import type { Landing } from './todos'
 import { WorkSlot, ageOf, answerText, copyText, details, unlinkedRows, nameOf, needsYou, reportHead, selectedRow, todoLines, unlinkedText, workStatus, callsShown, callHead, workerBlock, openCallOf, reportRowOf, trailLines } from './work'
 
@@ -190,6 +190,9 @@ let ticks = 0
 let lastTick = 0
 const outcomes: { at: number; text: string }[] = []
 let landing: Landing | undefined
+// Current pane order. External todo changes rebuild it; a marker click updates its source so that click redraws in place.
+// Module reload drops it, causing a fresh blocked-first build.
+let todoLayout: { path: string; source: string; order: string[] } | undefined
 // Steps the selected to-do of the last Todos draw; the key strip's Left and Right reach it through ui.message.
 let stepSelected: ((by: 1 | -1) => unknown) | undefined
 
@@ -327,7 +330,7 @@ async function linked($: EngineInterface, bridge: string, path: string): Promise
   const raw = JSON.parse(await runBridge($, bridge, 'status', path)) as Record<string, { status?: unknown; task?: unknown; id?: unknown; by?: unknown; reason?: unknown }>
   const links: Record<string, Link> = {}
   for (const [text, link] of Object.entries(raw)) {
-    const status = link.status === 'in-progress' || link.status === 'done' || link.status === 'blocked' || link.status === 'paused' ? link.status : undefined
+    const status = link.status === 'todo' || link.status === 'in-progress' || link.status === 'done' || link.status === 'blocked' || link.status === 'paused' ? link.status : undefined
     const task = typeof link.task === 'string' ? link.task : ''
     links[typeof link.id === 'string' ? link.id : keyOf(text)] = {
       status,
@@ -700,6 +703,7 @@ async function clickItem($: EngineInterface, key: string, change: (status: Statu
   const path = await boundPath($)
   if (path === undefined) return
   const bridge = await bridgeOf($)
+  let unblocked: string | undefined
   const changes = await locked(async () => {
     const md = await readText($, path)
     const before = items(sections(md).todo)
@@ -709,6 +713,8 @@ async function clickItem($: EngineInterface, key: string, change: (status: Statu
     const isIt = (item: Item) => idOf(item) === key || keyOf(item.text) === key
     const was = before.find(isIt)
     const now = after.find(isIt)
+    if (was?.status === 'blocked' && now?.status !== 'blocked') unblocked = shown(now ?? was)
+    if (todoLayout?.path === path) todoLayout = { ...todoLayout, source: body }
     await $.store.set(memoryKey(path), pin(await readMemory($, path), key))
     const found = await snapshot($, path, before, after)
     const at = await $.clock.now()
@@ -722,6 +728,7 @@ async function clickItem($: EngineInterface, key: string, change: (status: Statu
     return lines
   })
   if (bridge !== undefined) await notify($, bridge, path, changes)
+  if (unblocked !== undefined) $.ui.toast(`${unblocked} is no longer blocked.`)
 }
 
 function told(text: string, said: readonly string[]): string {
@@ -1035,6 +1042,7 @@ async function queueReply($: EngineInterface, agent: string, user: string, row?:
   const note = row === undefined ? undefined : { id: idFor(`${row}\n${agent}\n${user}`, new Set(held.map(one => one.id))), row, at: held.filter(one => one.row === row && one.agent === agent).length }
   const next = await update($, queue, list => [...list, note === undefined ? { agent, user } : { agent, user, note }])
   showQueue($, next)
+  $.ui.invalidate('ui.render')
   await finish($, agent)
 }
 
@@ -1595,23 +1603,21 @@ export const register: Register = on => {
     if (!isDrawn(e.surface) || e.props.isSummary === true) return next(e)
     const here = (await allNotes($)).filter(note => note.row === e.requestId)
     if (here.length === 0) return next(e)
-    const text = marked(e.props.text, here)
-    if (text === e.props.text) return next(e)
-    const { Box, Markdown, Text } = $.ui.resolve(e)
+    const parts = markedParts(e.props.text, here)
+    if (!parts.some(part => part.note !== undefined)) return next(e)
+    const { Box, Button, Markdown, Text } = $.ui.resolve(e)
     // The tree replaces the engine's drawing of the row, its two-column gutter and the bullet opening a reply included.
     return (
       <Box flexDirection="row">
         <Text color="text">{e.props.isFirstOfReply ? BULLET : '  '}</Text>
-        <Box flexGrow={1}>
-          <Markdown
-            key="notes"
-            text={text}
-            pressableLinks={here.map(note => hrefOf(note.id))}
-            onLinkPress={link => {
-              const id = noteOf(link.href)
-              if (id !== undefined) return openNote($, id)
-            }}
-          />
+        <Box flexGrow={1} flexDirection="row" flexWrap="wrap">
+          {parts.map((part, i) => part.note === undefined ? (
+            <Markdown key={`note-text:${i}`} text={part.text} />
+          ) : (
+            <Button key={`note:${part.note}:${i}`} plain label={part.text} onPress={() => openNote($, part.note ?? '')}>
+              <Text color="magenta">{part.text}</Text>
+            </Button>
+          ))}
         </Box>
       </Box>
     )
@@ -1709,7 +1715,15 @@ export const register: Register = on => {
     const list = await read($, queue)
     const s = current?.sections
     const late = overdue(unpicked(s?.logs ?? ''), await $.clock.now())
-    const rows: Todo[] = s === undefined ? [] : items(s.todo).map(item => ({ id: keyOf(item.text), status: item.status, text: `${shown(item)}${why(item)}` }))
+    const unordered: Todo[] = s === undefined ? [] : items(s.todo).map(item => ({ id: keyOf(item.text), status: item.status, text: `${shown(item)}${why(item)}` }))
+    const path = current?.path ?? ''
+    const source = s?.todo ?? ''
+    const ids = new Set(unordered.map(item => item.id))
+    if (todoLayout?.path !== path || todoLayout.source !== source || todoLayout.order.length !== ids.size || todoLayout.order.some(id => !ids.has(id))) {
+      todoLayout = { path, source, order: blockedFirst(unordered).map(item => item.id) }
+    }
+    const byId = new Map(unordered.map(item => [item.id, item]))
+    const rows = todoLayout.order.flatMap(id => byId.get(id) ?? [])
     const hasObjectives = s !== undefined && s.objectives !== ''
     const go = (to: View) => async () => {
       await update($, editing, () => false)
@@ -1722,7 +1736,7 @@ export const register: Register = on => {
     const step = await read($, picked)
     const work = await read($, fleet)
     const hide = await read($, hidden)
-    const shownIds = new Set(s === undefined ? [] : items(s.todo).flatMap(item => (item.id !== undefined && !hide.includes(item.status) ? [item.id] : [])))
+    const shownIds = new Set(s === undefined ? [] : items(s.todo).flatMap(item => (item.id !== undefined && isShown({ id: item.id, text: item.text, status: item.status }, hide) ? [item.id] : [])))
     const calls = callsShown(work, shownIds)
     const unlinked = work === null ? undefined : unlinkedText(work)
     const back = at === 'history' && step !== null ? async () => {
@@ -1855,7 +1869,7 @@ export const register: Register = on => {
           // The engine answers {} or { deny }; `claude plugin test` has no ring and rejects.
           await $.ui.focus({ requestId: PANE, key: 'todo:pause-reason' }).catch(() => undefined)
         }}
-        onToggle={status => hideOnly(hide.includes(status) ? hide.filter(other => other !== status) : [...hide, status])}
+        onToggle={status => status === 'blocked' ? undefined : hideOnly(hide.includes(status) ? hide.filter(other => other !== status) : [...hide, status])}
         onFilter={() => hideOnly(hiddenFor(nextFilter(hide)))}
       />
     )
@@ -2388,13 +2402,19 @@ export const register: Register = on => {
       const openId = await read($, noteOpen)
       const one = (await allNotes($)).find(note => note.id === openId)
       const isQueued = list.some(pair => pair.note?.id === openId)
+      const editQueued = async (value: string) => {
+        await update($, queue, pairs => pairs.map(pair => pair.note?.id === openId ? { ...pair, user: value } : pair))
+        $.ui.toast('Queued note updated.')
+        $.ui.invalidate('ui.render')
+      }
       content = (
         <Box key="content" flexDirection="column">
           {one === undefined ? <Text dimColor>This note is no longer in the notes file or the queue.</Text> : null}
           {one === undefined ? null : <Text dimColor>{`${AGENT_TAG} ${one.agent}`}</Text>}
-          {one === undefined ? null : <Text>{`${USER_TAG} ${one.user}`}</Text>}
-          {isQueued ? <Text dimColor>Queued: it goes out with your next message.</Text> : null}
-          {hint('Read-only. b goes back')}
+          {one === undefined || isQueued ? null : <Text>{`${USER_TAG} ${one.user}`}</Text>}
+          {isQueued && one !== undefined && Input !== undefined ? <Input key="note:reply" label="Your note" value={one.user} submitLabel="update note" onSubmit={editQueued} /> : null}
+          {isQueued ? <Text dimColor>Queued: edit it here; it goes out with your next message.</Text> : null}
+          {hint(isQueued ? 'Enter updates it. b goes back' : 'Read-only. b goes back')}
         </Box>
       )
     } else if (at === 'important') {

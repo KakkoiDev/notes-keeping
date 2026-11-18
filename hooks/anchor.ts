@@ -102,7 +102,7 @@ function segments(source: string, span: Span): Span[] {
 }
 
 // Each note's span as a markdown link to its note; a span overlapping one already drawn is left out.
-export function marked(source: string, notes: readonly Anchored[]): string {
+function linksOf(source: string, notes: readonly Anchored[]): (Span & { label: string; href: string })[] {
   const links: (Span & { label: string; href: string })[] = []
   for (const note of notes) {
     const span = locate(source, note.agent)[note.at]
@@ -113,6 +113,27 @@ export function marked(source: string, notes: readonly Anchored[]): string {
       links.push({ ...seg, label, href: hrefOf(note.id) })
     }
   }
+  return links.sort((a, b) => a.start - b.start)
+}
+
+export type MarkedPart = { text: string; note?: string }
+
+// Markdown pieces around each noted span, and the note spans themselves. The UI keeps ordinary pieces as Markdown
+// (including its normal blue links) and draws note spans as magenta buttons.
+export function markedParts(source: string, notes: readonly Anchored[]): MarkedPart[] {
+  const out: MarkedPart[] = []
+  let at = 0
+  for (const link of linksOf(source, notes)) {
+    if (link.start > at) out.push({ text: source.slice(at, link.start) })
+    out.push({ text: link.label.replace(/[*_`~\\]/g, ''), note: noteOf(link.href) })
+    at = link.end
+  }
+  if (at < source.length) out.push({ text: source.slice(at) })
+  return out
+}
+
+export function marked(source: string, notes: readonly Anchored[]): string {
+  const links = linksOf(source, notes)
   let out = source
   for (const link of links.sort((a, b) => b.start - a.start)) {
     out = `${out.slice(0, link.start)}[${link.label}](${link.href})${out.slice(link.end)}`
