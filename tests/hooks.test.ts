@@ -3022,14 +3022,20 @@ const KEYNAV = '# Objectives\n\nSessions: s\n\n## Updates\n\n# Todo\n\n- [ ] One
 async function keynav($: Engine, on: On, extra: Fs = {}) {
   const fs: Fs = { [BOUND]: KEYNAV, ...extra }
   const { git } = engine(on, fs, { ...SESSION_BOUND })
-  // Answers the ring helper's $.ui.focus. The event names the plugin notes-keeping, which a test hook answers only
-  // under { plugin: '*' } from Claude Code 2.1.327.
-  on('ui.focus', { plugin: '*' }, () => ({ value: {} }) as never)
+  // Answers the ring helper's $.ui.focus.
+  answerFocus(on)
   await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: false })
   await flush()
   await run($, 'show')
   const pane = await $.ui.mount({ ...NOTES_PANE, surface: 'terminal' })
   return { fs, git, pane }
+}
+
+// Answers $.ui.focus on an event naming the plugin notes-keeping. Claude Code 2.1.322 matches it with no matcher and
+// skips a { plugin: '*' } hook; 2.1.327 matches it only under { plugin: '*' }.
+function answerFocus(on: On) {
+  on('ui.focus', () => ({ value: {} }) as never)
+  on('ui.focus', { plugin: '*' }, () => ({ value: {} }) as never)
 }
 
 // The person's Up or Down landing the notes pane's focus ring on `element`, as the engine raises it.
@@ -3373,7 +3379,7 @@ test('a toggle, or a status change that hides a row, draws the selected row unde
 test('a click in the notes pane while the prompt holds the keyboard hands the keyboard to the pane', async ($, on) => {
   const fs: Fs = { [BOUND]: KEYNAV }
   const { ui } = engine(on, fs, { ...SESSION_BOUND })
-  on('ui.focus', { plugin: '*' }, () => ({ value: {} }) as never)
+  answerFocus(on)
   await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: false })
   await flush()
   await run($, 'show')
@@ -3606,7 +3612,7 @@ const FLEET = {
 async function work($: Engine, on: On, selection: () => string | undefined = () => undefined, extra: Fs = {}) {
   const fs: Fs = { [BOUND]: setTodoFile('- [ ] **Build the table**: build the fleet table <!-- id:ab12cd3 -->'), [PYTHON]: '', [BRIDGE]: '', ...extra }
   const { clock, git, ui } = engine(on, fs, { ...SESSION_BOUND }, selection)
-  on('ui.focus', { plugin: '*' }, () => ({ value: {} }) as never)
+  answerFocus(on)
   fakeLaya()
   bridge.fleet = FLEET
   await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
