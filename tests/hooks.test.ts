@@ -439,6 +439,39 @@ test('Claude is denied Edit and Write on the notes folder; other paths pass', as
   expect(passed).toEqual(['Write'])
 })
 
+test('the notes guard compares real paths, so a link or .. into the notes folder is denied; a Bash write naming the notes folder is denied', async ($, on) => {
+  engine(on, {})
+  const LINK = `${HOME}/alias`
+  // The fake file system resolves .. and the one link LINK -> DIR; a path ending in missing.md does not exist.
+  on('fs.stat', (_$, e) => {
+    const parts: string[] = []
+    for (const part of e.path.split('/')) {
+      if (part === '..') parts.pop()
+      else if (part !== '.') parts.push(part)
+    }
+    const norm = parts.join('/')
+    if (norm.endsWith('/missing.md')) throw new Error(`ENOENT ${e.path}`)
+    const realPath = norm === LINK || norm.startsWith(`${LINK}/`) ? DIR + norm.slice(LINK.length) : norm
+    return { value: { kind: 'file' as const, size: 0, mtimeMs: 0, isLink: false, realPath } }
+  })
+  const passed: string[] = []
+  on('tool.call', (_$, e) => {
+    passed.push(e.tool)
+    return { result: {} }
+  })
+  const denied = async (call: Parameters<typeof $.tool.call>[0]) => JSON.stringify(await $.tool.call(call)).includes("is the user's notes")
+  expect(await denied({ tool: 'Edit', file_path: `${LINK}/a.md`, old_string: 'a', new_string: 'b' })).toBe(true)
+  expect(await denied({ tool: 'Write', file_path: `${HOME}/x/../.notes-keeping/a.md`, content: 'x' })).toBe(true)
+  expect(await denied({ tool: 'Write', file_path: `${LINK}/missing.md`, content: 'x' })).toBe(true)
+  expect(await denied({ tool: 'Write', file_path: `${HOME}/elsewhere/missing.md`, content: 'x' })).toBe(false)
+  expect(await denied({ tool: 'Bash', command: 'echo x >> ~/.notes-keeping/a.md' })).toBe(true)
+  expect(await denied({ tool: 'Bash', command: `sed -i '' s/a/b/ ${DIR}/a.md` })).toBe(true)
+  expect(await denied({ tool: 'Bash', command: `python3 -c "open('$HOME/.notes-keeping/a.md', 'w')"` })).toBe(true)
+  expect(await denied({ tool: 'Bash', command: 'cat ~/.notes-keeping/a.md 2>/dev/null' })).toBe(false)
+  expect(await denied({ tool: 'Bash', command: 'echo x > /tmp/a.md' })).toBe(false)
+  expect(passed).toEqual(['Write', 'Bash', 'Bash'])
+})
+
 test('a queued reply goes out with the next composer Enter, recorded as one turn in # Chat, once', async ($, on) => {
   const fs: Fs = {}
   const sent = submitting(on)
