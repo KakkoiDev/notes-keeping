@@ -733,5 +733,27 @@ f fleet "$H/notes.md" >/dev/null
 after=$(wc -l < "$H/tasks.runs" | tr -d ' ')
 check 'a recorded answer drops the 30 s backlog cache: the next fleet read sees the call closed' '1 2' "$before $after"
 
+# write_json from two processes at once: each write lands whole, none fails on a shared temporary file.
+home
+writer() {
+  python3 -c '
+import importlib.machinery, importlib.util, sys
+loader = importlib.machinery.SourceFileLoader("bridge", sys.argv[1])
+bridge = importlib.util.module_from_spec(importlib.util.spec_from_loader("bridge", loader))
+loader.exec_module(bridge)
+failed = 0
+for i in range(500):
+    try:
+        bridge.write_json(sys.argv[2], {"n": i})
+    except OSError:
+        failed += 1
+print(failed)
+' "$BRIDGE" "$H/state/race.json" > "$1"
+}
+writer "$H/race.1" & writer "$H/race.2" & wait
+race=$(( $(cat "$H/race.1") + $(cat "$H/race.2") ))
+check 'two processes writing one JSON file at once never fail' '0' "$race"
+check 'concurrent writes leave no temporary file behind' '' "$(find "$H/state" -name 'race.json?*')"
+
 printf '\n' "" ; printf '%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
