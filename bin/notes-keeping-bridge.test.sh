@@ -72,6 +72,14 @@ b unlink id:ab12cd3
 check 'an unlink of the item wins over a meta that names it' '{}' "$(b status /n.md)"
 
 home
+printf 'window=w\nkind=ship\ntodo=id:ab12cd3\n' > "$H/state/run-a.meta"
+b block run-a --reason 'no slot'
+printf '{"task": "run-a", "outcome": "done", "at": %d}\n' "$(( $(date +%s) - 10 ))" >> "$H/state/notes-todo-links.jsonl"
+check 'a done outcome older than the block leaves a meta-named item blocked' '{"id:ab12cd3": {"status": "blocked", "task": "run-a", "id": "ab12cd3", "reason": "no slot"}}' "$(b status /n.md)"
+printf '{"task": "run-a", "outcome": "done", "at": %d}\n' "$(( $(date +%s) + 1 ))" >> "$H/state/notes-todo-links.jsonl"
+check 'a done outcome after the block clears it on a meta-named item: the meta keeps it in-progress' '{"id:ab12cd3": {"status": "in-progress", "task": "run-a", "id": "ab12cd3"}}' "$(b status /n.md)"
+
+home
 printf 'window=w\nkind=ship\ntodo=Ship the bridge\n' > "$H/state/run-b.meta"
 check 'a meta todo= in text links nothing: only an id names an item' '{}' "$(b status /n.md)"
 
@@ -649,7 +657,7 @@ check 'open on a missing notes file exits 1' '1' "$(b open "$H/none.md" 2>/dev/n
 # fm-captain-hold.sh and fm-inbox.sh are stubs that record how they were run.
 call_home() {
   fleet_home
-  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" > "%s/hold.args"\necho "FM_HOME=$FM_HOME" > "%s/hold.env"\ncat > "%s/hold.stdin"\ncat "%s/hold.out" 2>/dev/null\nexit "$(cat "%s/hold.rc" 2>/dev/null || echo 0)"\n' "$H" "$H" "$H" "$H" "$H" > "$H/root/bin/fm-captain-hold.sh"
+  printf '#!/usr/bin/env bash\nif [ "$1" = open ]; then printf "%%s\\n" "$*" > "%s/open.args"; cat "%s/hold.identity" 2>/dev/null || exit 1; exit 0; fi\nprintf "%%s\\n" "$*" > "%s/hold.args"\necho "FM_HOME=$FM_HOME" > "%s/hold.env"\ncat > "%s/hold.stdin"\ncat "%s/hold.out" 2>/dev/null\nexit "$(cat "%s/hold.rc" 2>/dev/null || echo 0)"\n' "$H" "$H" "$H" "$H" "$H" "$H" "$H" > "$H/root/bin/fm-captain-hold.sh"
   printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" > "%s/inbox.args"\necho "FM_HOME=$FM_HOME" > "%s/inbox.env"\ncat > "%s/inbox.body"\nrc=$(cat "%s/inbox.rc" 2>/dev/null || echo 0)\n[ "$rc" = 0 ] || echo "inbox said no" >&2\nexit "$rc"\n' "$H" "$H" "$H" "$H" > "$H/root/bin/fm-inbox.sh"
   chmod +x "$H/root/bin/fm-captain-hold.sh" "$H/root/bin/fm-inbox.sh"
   echo 'closed: ask-q' > "$H/hold.out"
@@ -707,6 +715,18 @@ ca 'Measure first only' ask-q >/dev/null 2>&1
 check 'a different answer to the same call is its own request' 'differs' "$([ "$(grep -o 'nk-[0-9a-f]*' "$H/inbox.args")" != "$first" ] && echo differs || echo same)"
 
 call_home
+echo '2026-11-01T10:00:00Z#0' > "$H/hold.identity"
+ca 'yes' ask-q >/dev/null 2>&1
+first=$(grep -o 'nk-[0-9a-f]*' "$H/inbox.args")
+check 'call-answer reads the live call identity read-only before the intake closes it' 'open ask-q --identity' "$(cat "$H/open.args" 2>/dev/null)"
+echo '2026-11-05T09:00:00Z#1' > "$H/hold.identity"
+ca 'yes' ask-q >/dev/null 2>&1
+check 'the same answer to a re-held call is a new request, so firstmate gets a new note' 'differs' "$([ "$(grep -o 'nk-[0-9a-f]*' "$H/inbox.args")" != "$first" ] && echo differs || echo same)"
+echo '2026-11-01T10:00:00Z#0' > "$H/hold.identity"
+ca 'yes' ask-q >/dev/null 2>&1
+check 'the same answer to the same call lifecycle keeps its request id' "$first" "$(grep -o 'nk-[0-9a-f]*' "$H/inbox.args")"
+
+call_home
 echo 1 > "$H/inbox.rc"
 err=$(ca '1 Store-only batch 1' ask-q 2>&1 >/dev/null); rc=$?
 check 'call-answer exits 1 when the note cannot be filed, saying the answer is recorded' "1|yes" "$rc|$(case "$err" in *recorded*) echo yes ;; *) echo no ;; esac)"
@@ -720,6 +740,28 @@ ca 'go' ask-q >/dev/null 2>&1
 f fleet "$H/notes.md" >/dev/null
 after=$(wc -l < "$H/tasks.runs" | tr -d ' ')
 check 'a recorded answer drops the 30 s backlog cache: the next fleet read sees the call closed' '1 2' "$before $after"
+
+# write_json from two processes at once: each write lands whole, none fails on a shared temporary file.
+home
+writer() {
+  python3 -c '
+import importlib.machinery, importlib.util, sys
+loader = importlib.machinery.SourceFileLoader("bridge", sys.argv[1])
+bridge = importlib.util.module_from_spec(importlib.util.spec_from_loader("bridge", loader))
+loader.exec_module(bridge)
+failed = 0
+for i in range(500):
+    try:
+        bridge.write_json(sys.argv[2], {"n": i})
+    except OSError:
+        failed += 1
+print(failed)
+' "$BRIDGE" "$H/state/race.json" > "$1"
+}
+writer "$H/race.1" & writer "$H/race.2" & wait
+race=$(( $(cat "$H/race.1") + $(cat "$H/race.2") ))
+check 'two processes writing one JSON file at once never fail' '0' "$race"
+check 'concurrent writes leave no temporary file behind' '' "$(find "$H/state" -name 'race.json?*')"
 
 printf '\n' "" ; printf '%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

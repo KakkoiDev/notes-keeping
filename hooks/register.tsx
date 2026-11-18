@@ -734,11 +734,41 @@ function warn($: EngineInterface, text: string): void {
   if (rest !== '') $.ui.toast(rest)
 }
 
+// Where a path lands: the file's real path when it exists, else its folder's real path plus its name; undefined when
+// neither resolves.
+async function realOf($: EngineInterface, path: string): Promise<string | undefined> {
+  const own = await $.fs.stat(path, { resolve: true }).catch(() => undefined)
+  if (own?.realPath !== undefined) return own.realPath
+  const cut = path.lastIndexOf('/')
+  if (cut < 0) return undefined
+  const folder = await $.fs.stat(path.slice(0, cut) || '/', { resolve: true }).catch(() => undefined)
+  return folder?.realPath === undefined ? undefined : `${folder.realPath.replace(/\/$/, '')}${path.slice(cut)}`
+}
+
+function isUnder(path: string, dir: string): boolean {
+  return path === dir || path.startsWith(`${dir}/`)
+}
+
+function denial(path: string): string {
+  return `${NAME}: ${path} is the user's notes; only the user writes them, through /notes-keeping.`
+}
+
+// Denies a path in the notes folder, as written or as its real path.
 async function guard($: EngineInterface, path: string): Promise<string | undefined> {
   const dir = await notesDir($)
-  return path === dir || path.startsWith(`${dir}/`)
-    ? `${NAME}: ${path} is the user's notes; only the user writes them, through /notes-keeping.`
-    : undefined
+  if (isUnder(path, dir)) return denial(path)
+  const [real, realDir] = await Promise.all([realOf($, path), realOf($, dir)])
+  return real !== undefined && isUnder(real, realDir ?? dir) ? denial(path) : undefined
+}
+
+// A redirect to a file (not 2>&1 or 2>/dev/null), an in-place edit, or a command that writes, moves or runs code.
+const BASH_WRITE = /(?<![0-9])>(?!&)|\bsed\b[^|;&]*\s-i|\b(?:tee|rm|mv|cp|truncate|dd|touch|install|ln|python3?|perl|node|ruby)\b/
+
+// Denies a Bash command that names the notes folder and writes; best effort, as a command can name a path many ways.
+async function bashGuard($: EngineInterface, command: string): Promise<string | undefined> {
+  const dir = await notesDir($)
+  const named = [dir, `~/${DIR}`, `$HOME/${DIR}`, `\${HOME}/${DIR}`].find(spelling => command.includes(spelling))
+  return named !== undefined && BASH_WRITE.test(command) ? denial(named) : undefined
 }
 
 async function listNotes($: EngineInterface): Promise<string[]> {
@@ -1478,6 +1508,11 @@ export const register: Register = on => {
 
   on('tool.call', { tool: 'Write' }, async ($, e, next) => {
     const deny = await guard($, e.file_path)
+    return deny === undefined ? next(e) : { deny }
+  }).catch(($, e, next) => (next.called ? next(e) : { deny: `${NAME}: its notes guard failed.` }))
+
+  on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
+    const deny = await bashGuard($, e.command)
     return deny === undefined ? next(e) : { deny }
   }).catch(($, e, next) => (next.called ? next(e) : { deny: `${NAME}: its notes guard failed.` }))
 

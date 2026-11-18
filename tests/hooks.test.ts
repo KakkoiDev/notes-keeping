@@ -439,6 +439,39 @@ test('Claude is denied Edit and Write on the notes folder; other paths pass', as
   expect(passed).toEqual(['Write'])
 })
 
+test('the notes guard compares real paths, so a link or .. into the notes folder is denied; a Bash write naming the notes folder is denied', async ($, on) => {
+  engine(on, {})
+  const LINK = `${HOME}/alias`
+  // The fake file system resolves .. and the one link LINK -> DIR; a path ending in missing.md does not exist.
+  on('fs.stat', (_$, e) => {
+    const parts: string[] = []
+    for (const part of e.path.split('/')) {
+      if (part === '..') parts.pop()
+      else if (part !== '.') parts.push(part)
+    }
+    const norm = parts.join('/')
+    if (norm.endsWith('/missing.md')) throw new Error(`ENOENT ${e.path}`)
+    const realPath = norm === LINK || norm.startsWith(`${LINK}/`) ? DIR + norm.slice(LINK.length) : norm
+    return { value: { kind: 'file' as const, size: 0, mtimeMs: 0, isLink: false, realPath } }
+  })
+  const passed: string[] = []
+  on('tool.call', (_$, e) => {
+    passed.push(e.tool)
+    return { result: {} }
+  })
+  const denied = async (call: Parameters<typeof $.tool.call>[0]) => JSON.stringify(await $.tool.call(call)).includes("is the user's notes")
+  expect(await denied({ tool: 'Edit', file_path: `${LINK}/a.md`, old_string: 'a', new_string: 'b' })).toBe(true)
+  expect(await denied({ tool: 'Write', file_path: `${HOME}/x/../.notes-keeping/a.md`, content: 'x' })).toBe(true)
+  expect(await denied({ tool: 'Write', file_path: `${LINK}/missing.md`, content: 'x' })).toBe(true)
+  expect(await denied({ tool: 'Write', file_path: `${HOME}/elsewhere/missing.md`, content: 'x' })).toBe(false)
+  expect(await denied({ tool: 'Bash', command: 'echo x >> ~/.notes-keeping/a.md' })).toBe(true)
+  expect(await denied({ tool: 'Bash', command: `sed -i '' s/a/b/ ${DIR}/a.md` })).toBe(true)
+  expect(await denied({ tool: 'Bash', command: `python3 -c "open('$HOME/.notes-keeping/a.md', 'w')"` })).toBe(true)
+  expect(await denied({ tool: 'Bash', command: 'cat ~/.notes-keeping/a.md 2>/dev/null' })).toBe(false)
+  expect(await denied({ tool: 'Bash', command: 'echo x > /tmp/a.md' })).toBe(false)
+  expect(passed).toEqual(['Write', 'Bash', 'Bash'])
+})
+
 test('a queued reply goes out with the next composer Enter, recorded as one turn in # Chat, once', async ($, on) => {
   const fs: Fs = {}
   const sent = submitting(on)
@@ -2989,13 +3022,20 @@ const KEYNAV = '# Objectives\n\nSessions: s\n\n## Updates\n\n# Todo\n\n- [ ] One
 async function keynav($: Engine, on: On, extra: Fs = {}) {
   const fs: Fs = { [BOUND]: KEYNAV, ...extra }
   const { git } = engine(on, fs, { ...SESSION_BOUND })
-  // Answers the ring helper's $.ui.focus; the plugin's own $.ui.focus never reaches a test hook.
-  on('ui.focus', () => ({ value: {} }) as never)
+  // Answers the ring helper's $.ui.focus.
+  answerFocus(on)
   await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: false })
   await flush()
   await run($, 'show')
   const pane = await $.ui.mount({ ...NOTES_PANE, surface: 'terminal' })
   return { fs, git, pane }
+}
+
+// Answers $.ui.focus on an event naming the plugin notes-keeping. Claude Code 2.1.322 matches it with no matcher and
+// skips a { plugin: '*' } hook; 2.1.327 matches it only under { plugin: '*' }.
+function answerFocus(on: On) {
+  on('ui.focus', () => ({ value: {} }) as never)
+  on('ui.focus', { plugin: '*' }, () => ({ value: {} }) as never)
 }
 
 // The person's Up or Down landing the notes pane's focus ring on `element`, as the engine raises it.
@@ -3339,7 +3379,7 @@ test('a toggle, or a status change that hides a row, draws the selected row unde
 test('a click in the notes pane while the prompt holds the keyboard hands the keyboard to the pane', async ($, on) => {
   const fs: Fs = { [BOUND]: KEYNAV }
   const { ui } = engine(on, fs, { ...SESSION_BOUND })
-  on('ui.focus', () => ({ value: {} }) as never)
+  answerFocus(on)
   await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: false })
   await flush()
   await run($, 'show')
@@ -3572,7 +3612,7 @@ const FLEET = {
 async function work($: Engine, on: On, selection: () => string | undefined = () => undefined, extra: Fs = {}) {
   const fs: Fs = { [BOUND]: setTodoFile('- [ ] **Build the table**: build the fleet table <!-- id:ab12cd3 -->'), [PYTHON]: '', [BRIDGE]: '', ...extra }
   const { clock, git, ui } = engine(on, fs, { ...SESSION_BOUND }, selection)
-  on('ui.focus', () => ({ value: {} }) as never)
+  answerFocus(on)
   fakeLaya()
   bridge.fleet = FLEET
   await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
