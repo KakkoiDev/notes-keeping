@@ -649,7 +649,7 @@ check 'open on a missing notes file exits 1' '1' "$(b open "$H/none.md" 2>/dev/n
 # fm-captain-hold.sh and fm-inbox.sh are stubs that record how they were run.
 call_home() {
   fleet_home
-  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" > "%s/hold.args"\necho "FM_HOME=$FM_HOME" > "%s/hold.env"\ncat > "%s/hold.stdin"\ncat "%s/hold.out" 2>/dev/null\nexit "$(cat "%s/hold.rc" 2>/dev/null || echo 0)"\n' "$H" "$H" "$H" "$H" "$H" > "$H/root/bin/fm-captain-hold.sh"
+  printf '#!/usr/bin/env bash\nif [ "$1" = open ]; then printf "%%s\\n" "$*" > "%s/open.args"; cat "%s/hold.identity" 2>/dev/null || exit 1; exit 0; fi\nprintf "%%s\\n" "$*" > "%s/hold.args"\necho "FM_HOME=$FM_HOME" > "%s/hold.env"\ncat > "%s/hold.stdin"\ncat "%s/hold.out" 2>/dev/null\nexit "$(cat "%s/hold.rc" 2>/dev/null || echo 0)"\n' "$H" "$H" "$H" "$H" "$H" "$H" "$H" > "$H/root/bin/fm-captain-hold.sh"
   printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" > "%s/inbox.args"\necho "FM_HOME=$FM_HOME" > "%s/inbox.env"\ncat > "%s/inbox.body"\nrc=$(cat "%s/inbox.rc" 2>/dev/null || echo 0)\n[ "$rc" = 0 ] || echo "inbox said no" >&2\nexit "$rc"\n' "$H" "$H" "$H" "$H" > "$H/root/bin/fm-inbox.sh"
   chmod +x "$H/root/bin/fm-captain-hold.sh" "$H/root/bin/fm-inbox.sh"
   echo 'closed: ask-q' > "$H/hold.out"
@@ -705,6 +705,18 @@ ca '1 Store-only batch 1' ask-q >/dev/null 2>&1
 check 'the same answer sent twice files its note under one request id, so a replay does not wake firstmate again' "$first" "$(grep -o 'nk-[0-9a-f]*' "$H/inbox.args")"
 ca 'Measure first only' ask-q >/dev/null 2>&1
 check 'a different answer to the same call is its own request' 'differs' "$([ "$(grep -o 'nk-[0-9a-f]*' "$H/inbox.args")" != "$first" ] && echo differs || echo same)"
+
+call_home
+echo '2026-11-01T10:00:00Z#0' > "$H/hold.identity"
+ca 'yes' ask-q >/dev/null 2>&1
+first=$(grep -o 'nk-[0-9a-f]*' "$H/inbox.args")
+check 'call-answer reads the live call identity read-only before the intake closes it' 'open ask-q --identity' "$(cat "$H/open.args" 2>/dev/null)"
+echo '2026-11-05T09:00:00Z#1' > "$H/hold.identity"
+ca 'yes' ask-q >/dev/null 2>&1
+check 'the same answer to a re-held call is a new request, so firstmate gets a new note' 'differs' "$([ "$(grep -o 'nk-[0-9a-f]*' "$H/inbox.args")" != "$first" ] && echo differs || echo same)"
+echo '2026-11-01T10:00:00Z#0' > "$H/hold.identity"
+ca 'yes' ask-q >/dev/null 2>&1
+check 'the same answer to the same call lifecycle keeps its request id' "$first" "$(grep -o 'nk-[0-9a-f]*' "$H/inbox.args")"
 
 call_home
 echo 1 > "$H/inbox.rc"

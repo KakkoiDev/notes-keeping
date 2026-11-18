@@ -926,6 +926,9 @@ def call_answer(task, release):
         die(f'the answer is {len(text)} characters and the record keeps {ANSWER_CHARS}: shorten it, nothing was sent')
     env = {**os.environ, 'FM_HOME': HOME}
     line = f'{task}\t{text}\t' + ('\trelease' if release else '') + '\n'
+    # The call's lifecycle identity (hold-set stamp and answer count), read before the intake closes it; empty when unreadable.
+    held = subprocess.run([CAPTAIN_HOLD, 'open', task, '--identity'], stdin=subprocess.DEVNULL, text=True, capture_output=True, env=env)
+    identity = held.stdout.strip() if held.returncode == 0 else ''
     done = subprocess.run([CAPTAIN_HOLD, 'answers', '--any-origin', '--source', 'notes-keeping'], input=line, text=True, capture_output=True, env=env)
     if done.returncode != 0:
         why = next((l for l in done.stdout.split('\n') if l.startswith(('skipped:', 'refused:'))), None) or done.stderr.strip() or f'exit {done.returncode}'
@@ -936,7 +939,7 @@ def call_answer(task, release):
     except OSError:
         pass
     body = f"captain answered {task}: {text}\nnotes-keeping recorded the captain's answer to the call {task} through fm-captain-hold.sh answers ({'released' if release else 'closed'}). If it changes what a worker must build, route it to that worker.\n"
-    request = 'nk-' + hashlib.sha256(f'call-answer\n{body}'.encode()).hexdigest()[:16]
+    request = 'nk-' + hashlib.sha256(f'call-answer\n{identity}\n{body}'.encode()).hexdigest()[:16]
     noted = subprocess.run([INBOX, 'note', '--request-id', request, '-'], input=body, text=True, capture_output=True, env=env)
     if noted.returncode != 0:
         die(f'the answer is recorded, but fm-inbox.sh note failed ({noted.returncode}): {(noted.stderr or noted.stdout).strip()}; firstmate was not woken, sending the answer again files the note', 1)
