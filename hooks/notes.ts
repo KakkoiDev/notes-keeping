@@ -68,6 +68,15 @@ function escapeHeadings(text: string): string {
     .join('\n')
 }
 
+// A tag opening a line of quoted text gets a backslash, so only a pair's own tags open a line.
+function escapeTags(text: string): string {
+  return text.replace(/^(\s*)\[(AI_AGENT|USER)\] /gm, '$1\\[$2] ')
+}
+
+function unescapeTags(text: string): string {
+  return text.replace(/^(\s*)\\\[(AI_AGENT|USER)\] /gm, '$1[$2] ')
+}
+
 export function create(objectives: string, sessionId: string): string {
   const body = escapeHeadings(objectives.trim())
   return `${OBJECTIVES}\n\n${SESSIONS} ${sessionId}\n\n${body === '' ? '' : `${body}\n\n`}${UPDATES}\n\n${IMPORTANT}\n\n${CHAT}\n`
@@ -186,7 +195,7 @@ export function addImportant(md: string, tag: string, text: string): string {
 // The prompt carries a pair without its note; the notes file carries the note after the quoted text.
 export function chatPair(agent: string, user: string, note?: Note): string {
   const tag = note === undefined ? '' : ` <!-- note:${note.id} row:${note.row} at:${note.at} -->`
-  return `${AGENT_TAG} ${agent.trim()}${tag}\n${USER_TAG} ${user.trim()}`
+  return `${AGENT_TAG} ${escapeTags(agent.trim())}${tag}\n${USER_TAG} ${user.trim()}`
 }
 
 export function addChat(md: string, agent: string, user: string, note?: Note): string {
@@ -197,7 +206,7 @@ export function addChat(md: string, agent: string, user: string, note?: Note): s
 export function queuedBlock(pair: Pair, isFile: boolean): string {
   if (pair.pasted === undefined) return chatPair(pair.agent, pair.user, isFile ? pair.note : undefined)
   const head = pair.pasted.source === undefined ? '[PASTED]' : `[PASTED from ${pair.pasted.source}]`
-  return `${head}\n${pair.agent.trim()}${pair.user.trim() === '' ? '' : `\n${USER_TAG} ${pair.user.trim()}`}`
+  return `${head}\n${escapeTags(pair.agent.trim())}${pair.user.trim() === '' ? '' : `\n${USER_TAG} ${pair.user.trim()}`}`
 }
 
 // The prompt and the notes file carry each pasted text that notes are on whole, once, ahead of the first of them.
@@ -225,7 +234,7 @@ export function addTurn(md: string, pairs: readonly Pair[], message: string): st
 const NOTED = /(?:^|\n)\[AI_AGENT\] ((?:(?!\n\[(?:AI_AGENT|USER)\] )[\s\S])*?) <!-- note:([a-z0-9]+) row:(\S+) at:(\d+) -->\n\[USER\] ([^\n]*)/g
 
 export function chatNotes(chat: string): ChatNote[] {
-  return [...chat.matchAll(NOTED)].map(m => ({ id: m[2] ?? '', row: m[3] ?? '', at: Number(m[4]), agent: m[1] ?? '', user: m[5] ?? '' }))
+  return [...chat.matchAll(NOTED)].map(m => ({ id: m[2] ?? '', row: m[3] ?? '', at: Number(m[4]), agent: unescapeTags(m[1] ?? ''), user: m[5] ?? '' }))
 }
 
 function readObjectives(doc: string): Initial {
