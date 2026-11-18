@@ -72,6 +72,14 @@ b unlink id:ab12cd3
 check 'an unlink of the item wins over a meta that names it' '{}' "$(b status /n.md)"
 
 home
+printf 'window=w\nkind=ship\ntodo=id:ab12cd3\n' > "$H/state/run-a.meta"
+b block run-a --reason 'no slot'
+printf '{"task": "run-a", "outcome": "done", "at": %d}\n' "$(( $(date +%s) - 10 ))" >> "$H/state/notes-todo-links.jsonl"
+check 'a done outcome older than the block leaves a meta-named item blocked' '{"id:ab12cd3": {"status": "blocked", "task": "run-a", "id": "ab12cd3", "reason": "no slot"}}' "$(b status /n.md)"
+printf '{"task": "run-a", "outcome": "done", "at": %d}\n' "$(( $(date +%s) + 1 ))" >> "$H/state/notes-todo-links.jsonl"
+check 'a done outcome after the block clears it on a meta-named item: the meta keeps it in-progress' '{"id:ab12cd3": {"status": "in-progress", "task": "run-a", "id": "ab12cd3"}}' "$(b status /n.md)"
+
+home
 printf 'window=w\nkind=ship\ntodo=Ship the bridge\n' > "$H/state/run-b.meta"
 check 'a meta todo= in text links nothing: only an id names an item' '{}' "$(b status /n.md)"
 

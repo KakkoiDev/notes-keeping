@@ -346,7 +346,7 @@ def status(notes_file):
         m = ITEM_ID.match(read_meta(task).get('todo', '')) if name.endswith('.meta') and TASK_ID.match(task) else None
         if m is None or f'id:{m.group(1)}' in out or f'id:{m.group(1)}' in dropped:
             continue
-        state, reason = derive(task, blocked.get(task))
+        state, reason = derive(task, blocked.get(task), ended.get(task))
         out[f'id:{m.group(1)}'] = {'status': state, 'task': task, 'id': m.group(1), **({'reason': reason} if reason is not None else {})}
     print(json.dumps(out, ensure_ascii=False))
 
