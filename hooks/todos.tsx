@@ -28,17 +28,27 @@ export function stepStatus(status: Todo['status'], by: 1 | -1): Todo['status'] {
   return CYCLE[Math.min(CYCLE.length - 1, Math.max(0, CYCLE.indexOf(status) + by))] ?? status
 }
 
+// Blocked items are never filtered out: they are the items that need attention most.
+export function isShown(item: Todo, hidden: readonly Todo['status'][]): boolean {
+  return item.status === 'blocked' || !hidden.includes(item.status)
+}
+
+// A fresh Todos view puts blocked items first, keeping file order within both groups.
+export function blockedFirst(todos: readonly Todo[]): Todo[] {
+  return [...todos.filter(item => item.status === 'blocked'), ...todos.filter(item => item.status !== 'blocked')]
+}
+
 // The ringed item while it is shown, else the first shown one.
 export function selectedOf(todos: readonly Todo[], hidden: readonly Todo['status'][], cursor: string | null): string | undefined {
-  const shown = todos.filter(item => !hidden.includes(item.status))
+  const shown = todos.filter(item => isShown(item, hidden))
   return (shown.find(item => item.id === cursor) ?? shown[0])?.id
 }
 
 // Where the selection goes when `id` is no longer shown: the next shown item, else the last shown one before it.
 export function nextShown(todos: readonly Todo[], id: string, hidden: readonly Todo['status'][]): string | undefined {
   const at = todos.findIndex(item => item.id === id)
-  const isShown = (item: Todo) => item.id !== id && !hidden.includes(item.status)
-  return (todos.slice(at + 1).find(isShown) ?? todos.slice(0, Math.max(at, 0)).reverse().find(isShown))?.id
+  const isOtherShown = (item: Todo) => item.id !== id && isShown(item, hidden)
+  return (todos.slice(at + 1).find(isOtherShown) ?? todos.slice(0, Math.max(at, 0)).reverse().find(isOtherShown))?.id
 }
 
 // The filter the hidden statuses amount to: one status alone shown, all shown, or a mix set by hand.
@@ -93,7 +103,7 @@ export function TodoSlot(props: {
   keys?: unknown
 }) {
   const { Box, Button, Text, Client, todos, hidden, selected, landing, onCycle, onOpen, onStep, onSelect, onToggle, onFilter, onPause, onCall, pause, lines, keys } = props
-  const shown = todos.filter(item => !hidden.includes(item.status))
+  const shown = todos.filter(item => isShown(item, hidden))
   const step = (by: 1 | -1) => () => (selected === undefined ? undefined : onStep(selected, by))
   const at = shown.findIndex(item => item.id === selected)
   const move = (by: 1 | -1) => () => {
@@ -109,8 +119,8 @@ export function TodoSlot(props: {
             key={`show:${status}`}
             plain
             hotkey={SHOW[status]}
-            dimColor={hidden.includes(status)}
-            label={`${legend(status)}: ${hidden.includes(status) ? 'hidden' : 'shown'}`}
+            dimColor={status !== 'blocked' && hidden.includes(status)}
+            label={`${legend(status)}: ${status !== 'blocked' && hidden.includes(status) ? 'hidden' : 'shown'}`}
             onPress={() => onToggle(status)}
           />
         ))}

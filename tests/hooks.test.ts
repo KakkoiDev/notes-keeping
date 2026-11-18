@@ -2261,8 +2261,8 @@ test('a linked item follows its firstmate task: the bridge moves it to in-progre
 })
 
 test('a linked item whose task could not be started is blocked with the reason logged, and moves on when the task reports', async ($, on) => {
-  const fs: Fs = { [BOUND]: setTodoFile('- [ ] Review this pr'), [PYTHON]: '', [BRIDGE]: '' }
-  engine(on, fs, { ...SESSION_BOUND })
+  const fs: Fs = { [BOUND]: setTodoFile('- [ ] Write the docs\n- [ ] Review this pr\n- [x] Ship the release'), [PYTHON]: '', [BRIDGE]: '' }
+  const { ui } = engine(on, fs, { ...SESSION_BOUND })
   fakeLaya()
   bridge.links = { 'review this pr': { status: 'blocked', task: 'pr-review', by: 'firstmate', reason: 'no free worktree slot' } }
   await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: false })
@@ -2271,8 +2271,17 @@ test('a linked item whose task could not be started is blocked with the reason l
   expect(logsOf(fs[BOUND])).toContain(`- ${UTC} | firstmate | status | id:${idFor('Review this pr', new Set())} Review this pr | todo -> blocked | pr-review, by firstmate: no free worktree slot`)
   const pane = await $.ui.mount({ ...NOTES_PANE, surface: 'terminal' })
   expect((await pane.find({ key: 'show:blocked' }))?.props).toMatchObject({ hotkey: '5', label: '[!] blocked: shown' })
+  const initialOrder = (await todoRows(pane)).map(row => row.id)
+  expect(initialOrder.slice(0, 3)).toEqual(['review this pr', 'write the docs', 'ship the release'])
   expect((await pane.find({ key: 'todo:review this pr' }))?.props.label).toBe('[!]')
   expect((await pane.find({ key: 'open:review this pr' }))?.props.label).toBe('Review this pr')
+  await pane.press({ key: 'show:blocked' })
+  expect((await pane.find({ key: 'show:blocked' }))?.props.label).toBe('[!] blocked: shown')
+  expect((await todoRows(pane)).map(row => row.id)).toContain('review this pr')
+  await pane.press({ key: 'todo:review this pr' })
+  expect((await pane.find({ key: 'todo:review this pr' }))?.props.label).toBe('[ ]')
+  expect((await todoRows(pane)).map(row => row.id)).toEqual(initialOrder)
+  expect(ui.toasts.at(-1)).toBe('Review this pr is no longer blocked.')
   await pane.unmount()
   bridge.links = { 'review this pr': { status: 'in-progress', task: 'pr-review', by: 'firstmate' } }
   await complete($, 'Nothing.')
@@ -3527,7 +3536,6 @@ test('a reply to text selected in an assistant row marks that text as a link in 
   // No note yet: the engine draws the row.
   const before = await $.ui.mount(reply('row-1', source))
   expect(await before.find({ type: 'Markdown' })).toBeUndefined()
-  await before.unmount()
 
   selection = 'brown fox'
   await clock.advance(1200)
@@ -3537,12 +3545,22 @@ test('a reply to text selected in an assistant row marks that text as a link in 
   await menu.unmount()
   selection = undefined
 
+  // The row already on screen redraws as soon as the note is added.
+  expect((await before.find({ type: 'Text', text: 'brown fox' }))?.props.color).toBe('magenta')
+  await before.unmount()
+
   const queued = await $.ui.mount(reply('row-1', source))
-  const text = (await queued.find({ type: 'Markdown' }))?.props.text as string
-  const href = /\]\((https:[^)]+)\)/.exec(text)?.[1] ?? ''
-  expect(text).toBe(`The quick [**brown** fox](${href}) jumps.`)
+  expect((await queued.find({ type: 'Text', text: 'brown fox' }))?.props.color).toBe('magenta')
+  const noteKey = (await queued.findAll({ type: 'Button' })).find(button => button.key?.startsWith('note:'))?.key ?? ''
+  const id = noteKey.split(':')[1]
   // The drawing replaces the engine's, gutter included: the reply's bullet on its first block, two blanks on the others.
   expect(await queued.find({ type: 'Text', text: '⏺ ' })).toBeDefined()
+  await queued.press({ key: noteKey })
+  const queuedNote = await $.ui.mount({ ...NOTES_PANE, surface: 'terminal' })
+  expect((await queuedNote.find({ key: 'note:reply' }))?.props).toMatchObject({ value: 'Too slow', submitLabel: 'update note' })
+  await queuedNote.input({ key: 'note:reply', text: 'Much too slow' })
+  expect(ui.toasts.at(-1)).toBe('Queued note updated.')
+  await queuedNote.unmount()
   await queued.unmount()
   const later = await $.ui.mount(reply('row-1', source, false))
   expect(await later.find({ type: 'Text', text: '⏺ ' })).toBeUndefined()
@@ -3554,18 +3572,18 @@ test('a reply to text selected in an assistant row marks that text as a link in 
   await other.unmount()
 
   await submit($, 'carry on')
-  expect(sent.at(-1)?.text).toBe('[AI_AGENT] brown fox\n[USER] Too slow\n\ncarry on')
-  const id = href.split('/').pop()
-  expect(sections(fs[BOUND] ?? '').chat).toBe(`[AI_AGENT] brown fox <!-- note:${id} row:row-1 at:0 -->\n[USER] Too slow\n\n[USER] carry on`)
+  expect(sent.at(-1)?.text).toBe('[AI_AGENT] brown fox\n[USER] Much too slow\n\ncarry on')
+  expect(sections(fs[BOUND] ?? '').chat).toBe(`[AI_AGENT] brown fox <!-- note:${id} row:row-1 at:0 -->\n[USER] Much too slow\n\n[USER] carry on`)
 
   const row = await $.ui.mount(reply('row-1', source))
-  expect((await row.find({ type: 'Markdown' }))?.props.text).toBe(text)
-  await row.press({ key: 'notes', link: { href } })
+  expect((await row.find({ type: 'Text', text: 'brown fox' }))?.props.color).toBe('magenta')
+  await row.press({ key: noteKey })
   expect(ui.opened.at(-1)).toEqual({ id: 'notes-keeping', focus: true })
   await row.unmount()
   const pane = await $.ui.mount({ ...NOTES_PANE, surface: 'terminal' })
   expect(await pane.find({ type: 'Text', text: '[AI_AGENT] brown fox' })).toBeDefined()
-  expect(await pane.find({ type: 'Text', text: '[USER] Too slow' })).toBeDefined()
+  expect(await pane.find({ type: 'Text', text: '[USER] Much too slow' })).toBeDefined()
+  expect(await pane.find({ key: 'note:reply' })).toBeUndefined()
   await pane.unmount()
 })
 
@@ -3577,7 +3595,8 @@ test('a resumed session marks the rows its notes file anchors as soon as it star
   await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
   await flush()
   const row = await $.ui.mount(reply('row-1', 'The quick brown fox jumps.'))
-  expect((await row.find({ type: 'Markdown' }))?.props.text).toBe('The quick [brown fox](https://notes-keeping.invalid/note/k3x9) jumps.')
+  expect((await row.find({ type: 'Text', text: 'brown fox' }))?.props.color).toBe('magenta')
+  expect(await row.find({ key: 'note:k3x9:1' })).toBeDefined()
   await row.unmount()
 })
 

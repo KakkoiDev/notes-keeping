@@ -34,6 +34,8 @@ check 'no links prints an empty object' '{}' "$(b status /n.md)"
 home
 b link pr-review 'Review this PR: https://x/pull/1'
 check 'a linked task with no state files reports null' '{"Review this PR: https://x/pull/1": {"status": null, "task": "pr-review"}}' "$(b status /n.md)"
+printf '# Todo\n\n- [!] Review this PR: https://x/pull/1\n' > "$H/notes.md"
+check 'a linked item leaves stale blocked after its captain call closes' 'todo' "$(b status "$H/notes.md" | python3 -c 'import json,sys; print(next(iter(json.load(sys.stdin).values()))["status"])')"
 : > "$H/state/pr-review.meta"
 echo "working [at=1]: started" > "$H/state/pr-review.status"
 check 'a task with a meta is in-progress' '{"Review this PR: https://x/pull/1": {"status": "in-progress", "task": "pr-review"}}' "$(b status /n.md)"
@@ -272,6 +274,11 @@ echo "working [at=5]: setup done" > "$H/state/spawn-x.status"
 check 'a state line after the block clears it' '{"id:ab12cd3": {"status": "in-progress", "task": "spawn-x", "id": "ab12cd3", "by": "firstmate"}}' "$(b status /n.md)"
 b block spawn-x --reason 'stalled again' --by firstmate
 check 'a block after a state line holds until the next one' 'blocked stalled again' "$(b status /n.md | python3 -c 'import json,sys; v=next(iter(json.load(sys.stdin).values())); print(v["status"], v["reason"])')"
+rm "$H/state/spawn-x.meta"
+echo "resolved [at=6] [key=decision]: captain answered" >> "$H/state/spawn-x.status"
+check 'a resolved decision clears a blocked item back to todo' 'todo' "$(st)"
+: > "$H/state/spawn-x.meta"
+b block spawn-x --reason 'stalled after another decision' --by firstmate
 echo "done [at=6]: PR https://x/pull/3" >> "$H/state/spawn-x.status"
 check 'a done line after the block clears it' 'in-progress' "$(st)"
 b block spawn-x --reason 'stalled a third time' --by firstmate
