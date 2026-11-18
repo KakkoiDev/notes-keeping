@@ -304,7 +304,9 @@ queued-replies line when there is one); `?` firstmate's move, a last state line 
 | `6` | show or hide the gone workers |
 | `x` | show or hide the calls closed today without you |
   - Without the file nothing of this runs.
-- Claude never edits the notes file; its Edit and Write on the notes folder are denied.
+- Claude never edits the notes file; its Edit and Write on the notes folder are denied, matched on the path as written
+  and on its real path (a link or `..` into the folder), and so is a Bash command naming the notes folder that
+  redirects to a file, edits in place, or runs a writing or scripting command (best effort).
 
 ### In Claude's context
 
