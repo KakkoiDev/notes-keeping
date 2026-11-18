@@ -297,6 +297,13 @@ describe('section writer', () => {
     )
   })
 
+  test('a reply escapes an old user tag at the start of a quoted line, so it stays apart from the new reply', () => {
+    const quoted = '[AI_AGENT] P2P call POC: done, branch ready.\n[USER] show me'
+    expect(queuedBlock({ agent: quoted, user: 'make me a public repo for this' }, false)).toBe(
+      '[AI_AGENT] \\[AI_AGENT] P2P call POC: done, branch ready.\n\\[USER] show me\n[USER] make me a public repo for this',
+    )
+  })
+
   test('a note on pasted text escapes a tag that opens a line of it', () => {
     expect(queuedBlock({ agent: '[USER] ship it\nok', user: 'why', pasted: {} }, false)).toBe('[PASTED]\n\\[USER] ship it\nok\n[USER] why')
   })
