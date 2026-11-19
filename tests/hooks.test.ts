@@ -3524,6 +3524,28 @@ function reply(requestId: string, text: string, isFirstOfReply = true) {
   return { plugin: 'notes-keeping', component: 'AssistantMessage', requestId, surface: 'terminal', props: { text, isFirstOfReply } } as const
 }
 
+test('marked assistant text keeps source lines and nested indentation at wide and narrow widths', async ($, on) => {
+  const note = ' <!-- note:k3x9 row:row-1 at:0 -->'
+  const fs: Fs = { [BOUND]: `# Objectives\n\nPlan\n\n## Updates\n\n# Important\n\n# Chat\n\n[AI_AGENT] Waiting item${note}\n[USER] Keep watching\n` }
+  engine(on, fs, { [`session:${SESSION}`]: BOUND })
+  engineDraws(on)
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
+  await flush()
+  const source = ['Work remains:', '- First item', '  - Nested detail', '  - Waiting item', 'Next step.'].join('\n')
+
+  // Wide mirrors a closed side pane; narrow mirrors an open one. Explicit rows must survive both layouts.
+  for (const columns of [160, 48]) {
+    const row = await $.ui.mount({ ...reply('row-1', source), viewport: { columns, rows: 40 } })
+    expect(await Promise.all([
+      ...Array.from({ length: 5 }, (_, line) => row.find({ key: `note-line:${line}` }).then(Boolean)),
+      row.find({ key: 'note-line:2' }).then(found => found?.props.marginLeft === 2),
+      row.find({ key: 'note-line:3' }).then(found => found?.props.marginLeft === 2),
+      row.find({ type: 'Text', text: 'Waiting item' }).then(found => found?.props.color === 'magenta'),
+    ])).toEqual([true, true, true, true, true, true, true, true])
+    await row.unmount()
+  }
+})
+
 test('a reply to text selected in an assistant row marks that text as a link in the row, queued and once sent; a click opens the note', async ($, on) => {
   const fs: Fs = { [BOUND]: '# Objectives\n\nPlan\n\n## Updates\n\n# Important\n\n# Chat\n' }
   let selection: string | undefined
