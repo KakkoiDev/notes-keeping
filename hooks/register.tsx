@@ -78,6 +78,21 @@ const BULLET = '⏺ '
 const HEAD_CHARS = 200
 const NEAR = 2
 
+type DrawnPart = { text: string; note?: string; index: number }
+
+// Flex wrapping lays separate Markdown and marker components out as one continuous row, so source newlines disappear.
+// Split them first: each source line gets its own row, and leading spaces stay literal instead of being parsed away.
+function markedLines(parts: readonly { text: string; note?: string }[]): DrawnPart[][] {
+  const lines: DrawnPart[][] = [[]]
+  for (const [index, part] of parts.entries()) {
+    for (const [at, text] of part.text.split('\n').entries()) {
+      if (at > 0) lines.push([])
+      if (text !== '' || part.note !== undefined) lines[lines.length - 1]?.push({ ...part, text, index })
+    }
+  }
+  return lines
+}
+
 const LAYA_PYTHON = '.laya-venv/bin/python'
 const LAYA_MS = 60_000
 const LABEL_MODEL = 'haiku'
@@ -1610,14 +1625,23 @@ export const register: Register = on => {
     return (
       <Box flexDirection="row">
         <Text color="text">{e.props.isFirstOfReply ? BULLET : '  '}</Text>
-        <Box flexGrow={1} flexDirection="row" flexWrap="wrap">
-          {parts.map((part, i) => part.note === undefined ? (
-            <Markdown key={`note-text:${i}`} text={part.text} />
-          ) : (
-            <Button key={`note:${part.note}:${i}`} plain label={part.text} onPress={() => openNote($, part.note ?? '')}>
-              <Text color="magenta">{part.text}</Text>
-            </Button>
-          ))}
+        <Box flexGrow={1} flexDirection="column">
+          {markedLines(parts).map((line, lineIndex) => {
+            const indent = /^ */.exec(line.map(part => part.text).join(''))?.[0] ?? ''
+            const [first, ...rest] = line
+            const drawn = indent === '' || first === undefined || first.note !== undefined ? line : [{ ...first, text: first.text.slice(indent.length) }, ...rest]
+            return (
+              <Box key={`note-line:${lineIndex}`} flexDirection="row" flexWrap="wrap" marginLeft={indent.length}>
+                {drawn.map(part => part.text === '' ? null : part.note === undefined ? (
+                  <Markdown key={`note-text:${lineIndex}:${part.index}`} text={part.text} />
+                ) : (
+                  <Button key={`note:${part.note}:${part.index}`} plain label={part.text} onPress={() => openNote($, part.note ?? '')}>
+                    <Text color="magenta">{part.text}</Text>
+                  </Button>
+                ))}
+              </Box>
+            )
+          })}
         </Box>
       </Box>
     )
