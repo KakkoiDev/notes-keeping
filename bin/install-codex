@@ -5,8 +5,15 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 command -v codex >/dev/null || { echo 'install-codex: codex is not installed' >&2; exit 1; }
 command -v bun >/dev/null || { echo 'install-codex: bun is not installed' >&2; exit 1; }
+command -v python3 >/dev/null || { echo 'install-codex: python3 is not installed' >&2; exit 1; }
+command -v tmux >/dev/null || { echo 'install-codex: tmux is not installed' >&2; exit 1; }
+if ! command -v lockf >/dev/null && ! command -v flock >/dev/null; then
+  echo 'install-codex: lockf (macOS) or flock (Linux) is not installed' >&2
+  exit 1
+fi
 
 codex plugin marketplace add "$ROOT"
 codex plugin add notes-keeping@notes-keeping
+"$ROOT/bin/notes-keeping-tmux" install
 
-printf '%s\n' 'notes-keeping installed. Restart Codex, run /hooks, and trust the notes-keeping hooks.'
+printf '%s\n' 'notes-keeping installed with Prefix then Shift+N popup capture. Restart Codex, run /hooks, and trust the notes-keeping hooks.'

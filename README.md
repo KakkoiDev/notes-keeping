@@ -12,7 +12,7 @@ Add the clone to `CLAUDE_CODE_PLUGIN_DIRS` (colon-separated absolute paths) in t
 
 ### Codex CLI
 
-The Codex adapter uses native `SessionStart` and `UserPromptSubmit` hooks to create one notes file per Codex session and put the current todo list into developer context before every prompt.
+The Codex adapter uses native `SessionStart`, `UserPromptSubmit`, and `SessionEnd` hooks to create one notes file per Codex session, map a live tmux pane to it, and put the current todo list into developer context before every prompt.
 It was verified with [Codex CLI 0.170.0](https://github.com/openai/codex/releases/tag/rust-v0.170.0) and requires `codex`, `bun`, and the native hook and plugin commands available in that release.
 
 From this checkout, install the local plugin:
@@ -23,6 +23,48 @@ bin/install-codex
 
 Restart Codex, run `/hooks`, review the `notes-keeping` hooks, and trust them.
 Codex deliberately skips newly installed or changed plugin hooks until you do this, as described in the [Codex hooks documentation](https://learn.chatgpt.com/docs/hooks#review-and-trust-hooks).
+
+An already-running Codex session predates those hooks.
+Register it once from that tmux pane with `bin/notes-keeping-codex register-current <codex-session-id>`; this resolves its existing session note and never accepts a note path.
+
+The installer also adds one marked block to `~/.tmux.conf`, reloads that file, and starts the owner-only local popup service.
+It refuses noncanonical mouse or keyboard copy bindings rather than replacing custom behavior.
+Normal tmux copying and the existing `copy-command` continue to run.
+
+### Codex notes popup
+
+Press the tmux prefix, then Shift+N. The centered popup always exposes five views for that pane's exact note: Todos, Objectives, Updates, Important, and Notes.
+
+- After an explicit copy made in the last 30 seconds, it starts on Notes with that exact selection prefilled as an in-memory draft.
+- With no fresh explicit copy, it starts on Todos with an empty Notes draft.
+
+Switch views without closing with `1`-`5`, Shift+T/O/U/I/N, or Tab. In Todos, move with `j`/`k` or arrows and press Enter to cycle status. In Notes, `e` edits the in-memory draft, Ctrl+S keeps that edit in the popup, and `t`, `u`, `o`, or `i` explicitly saves it as Todo, Update, Objective, or Important. A save switches to the resulting view but leaves the popup open.
+
+Todo, Update, Objective, and Important save only after their category key. Press `q` or Esc to close and return to the source pane.
+Objective sets an empty objective section and otherwise appends an update.
+Draft writes nothing until its later explicit category save; closing a changed unsaved draft asks before discard. Cancel writes nothing.
+Missing service, wrong pane, stale Codex mapping, invalid UTF-8, NUL, and over-64-KiB input fail visibly without changing a note. A stale or missing copy is not an error; it selects the Todos view.
+
+HTTP/HTTPS URLs and Markdown links in every view are blue, underlined OSC 8 terminal hyperlinks. They are clickable when the terminal and tmux support OSC 8 (the terminal's usual modifier-click gesture may apply). This does not create Codex transcript anchors or Claude-host-native click handling.
+
+The direct path reads only the exact tmux buffer created by the explicit copy.
+It never calls `capture-pane`, reads scrollback, polls Codex output, polls selection, or automatically reads the clipboard.
+Selected text stays out of argv, environment values, popup titles, mapping files, stamp files, receipts, and logs.
+The service socket and state are owner-only, and the service authenticates the connecting UID.
+
+`bin/notes-keeping-tui manual` is the explicit clipboard fallback.
+It lists live same-directory Codex targets when more than one exists, reads `pbpaste` only after you press `p`, and keeps the preview unsaved until a category is chosen.
+
+Service and tmux lifecycle commands are:
+
+```sh
+bin/notes-keeping-tui start
+bin/notes-keeping-tui stop
+bin/notes-keeping-tmux uninstall
+```
+
+Uninstall removes only the marked notes-keeping tmux block.
+Restart tmux after uninstall to restore earlier or default copy bindings.
 
 The adapter stores notes in the same `~/.notes-keeping` directory and uses the same headings, todo markers, ids, pause reasons, and `# Logs` rows as the Claude Code plugin.
 The hook tells Codex the exact notes path and command on every turn.
@@ -35,10 +77,11 @@ bin/notes-keeping-codex --file /path/to/note.md status ITEM_ID in-progress
 bin/notes-keeping-codex --file /path/to/note.md status ITEM_ID paused --reason 'waiting for review'
 bin/notes-keeping-codex --file /path/to/note.md objective 'Deliver Codex support'
 bin/notes-keeping-codex --file /path/to/note.md update 'Adapter tests pass'
+bin/notes-keeping-codex --file /path/to/note.md important 'Keep this exact fact'
 ```
 
 Each write commits in the notes directory's local git repository, just like the Claude Code plugin.
-Status, add, objective, and update commands also append a `codex` action row to `# Logs`.
+Status, add, objective, update, and important commands also append a `codex` action row to `# Logs`.
 The existing panel and firstmate bridge continue to read the same file format.
 When a session root has `config/notes-keeping-bridge`, add and status commands also send their shared-format change lines through its existing `notify` entry point.
 

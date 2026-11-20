@@ -1,0 +1,191 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+TMP_ROOT="${TMPDIR:-/tmp}"
+H="$(mktemp -d "$TMP_ROOT/nk-tui.XXXXXX")"
+export NOTES_KEEPING_DIR="$H/notes"
+export NOTES_KEEPING_CODEX_STATE="$H/state"
+export GIT_AUTHOR_NAME='notes-keeping test'
+export GIT_AUTHOR_EMAIL='test@example.invalid'
+export GIT_COMMITTER_NAME="$GIT_AUTHOR_NAME"
+export GIT_COMMITTER_EMAIL="$GIT_AUTHOR_EMAIL"
+mkdir -p "$H/project"
+
+SERVER="nk-tui-$$"
+tmux -L "$SERVER" -f /dev/null new-session -d -s notes -c "$H/project" 'sleep 120'
+tmux -L "$SERVER" split-window -d -t notes:0 -c "$H/project" 'sleep 120'
+SOCKET="$(tmux -L "$SERVER" display-message -p '#{socket_path}')"
+SESSION="$(tmux -L "$SERVER" display-message -p '#{session_id}')"
+PANES=()
+while IFS= read -r pane; do PANES+=("$pane"); done < <(tmux -L "$SERVER" list-panes -F '#{pane_id}')
+trap '"$ROOT/bin/notes-keeping-tui" stop >/dev/null 2>&1 || true; tmux -L "$SERVER" kill-server >/dev/null 2>&1 || true' EXIT
+
+hook() {
+  local codex_id="$1" pane="$2"
+  printf '{"session_id":"%s","cwd":"%s","hook_event_name":"SessionStart","source":"startup"}\n' "$codex_id" "$H/project" |
+    TMUX="$SOCKET,1,0" TMUX_PANE="$pane" "$ROOT/bin/notes-keeping-codex" hook >/dev/null
+}
+
+binding() {
+  python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["path"])' "$NOTES_KEEPING_CODEX_STATE/sessions/$1.json"
+}
+
+event() {
+  local pane="$1" event_id="$2" category="$3" text="$4" action="${5:-save}"
+  TUI="$ROOT/bin/notes-keeping-tui" SOCKET="$SOCKET" PANE="$pane" SESSION="$SESSION" EVENT="$event_id" CATEGORY="$category" TEXT="$text" ACTION="$action" python3 - <<'PY'
+import hashlib, importlib.machinery, os, time
+module = importlib.machinery.SourceFileLoader('notes_keeping_tui', os.environ['TUI']).load_module()
+body = os.environ['TEXT'].encode()
+header = {
+    'type': 'capture',
+    'eventId': os.environ['EVENT'],
+    'tmuxServer': os.environ['SOCKET'],
+    'paneId': os.environ['PANE'],
+    'tmuxSessionId': os.environ['SESSION'],
+    'bufferName': 'test-buffer',
+    'copiedAt': time.time(),
+    'bodyHash': hashlib.sha256(body).hexdigest(),
+}
+module.request(header, body)
+module.request({'type': 'claim', 'eventId': os.environ['EVENT']})
+if os.environ['ACTION'] == 'cancel':
+    module.request({'type': 'cancel', 'eventId': os.environ['EVENT']})
+else:
+    response, _ = module.request({'type': 'mutate', 'eventId': os.environ['EVENT'], 'kind': os.environ['CATEGORY']})
+    if response.get('status') != 'result' or not response.get('ok'):
+        raise SystemExit(response)
+PY
+}
+
+hook codex-one "${PANES[0]}"
+hook codex-two "${PANES[1]}"
+NOTE_ONE="$(binding codex-one)"
+NOTE_TWO="$(binding codex-two)"
+"$ROOT/bin/notes-keeping-tui" start >/dev/null
+
+TUI="$ROOT/bin/notes-keeping-tui" SOCKET="$SOCKET" PANE="${PANES[0]}" python3 - <<'PY'
+import importlib.machinery, os
+module = importlib.machinery.SourceFileLoader('notes_keeping_tui_panel_branch', os.environ['TUI']).load_module()
+opened = []
+module.open_workspace = lambda server, pane, session, cwd: opened.append((server, pane, session, cwd))
+module.capture(os.environ['SOCKET'], os.environ['PANE'])
+assert len(opened) == 1
+assert opened[0][0:2] == (os.environ['SOCKET'], os.environ['PANE'])
+preview = module.linked('See [docs](https://example.com/a) and https://example.com/b.')
+assert preview.count('\x1b]8;;https://') == 2
+assert 'https://example.com/b\x1b\\' in preview and '\x1b\\.' in preview
+assert 'javascript:alert(1)' in module.linked('javascript:alert(1)')
+assert module.VIEWS == ('Todos', 'Objectives', 'Updates', 'Important', 'Notes')
+assert module.NAVIGATION['1'] == 0 and module.NAVIGATION['5'] == 4
+PY
+
+TUI="$ROOT/bin/notes-keeping-tui" CWD="$H/project" python3 - <<'PY'
+import importlib.machinery, os
+module = importlib.machinery.SourceFileLoader('notes_keeping_tui_targets', os.environ['TUI']).load_module()
+response, _ = module.request({'type': 'targets', 'cwd': os.environ['CWD']})
+assert len(response['targets']) == 2
+PY
+
+event "${PANES[0]}" 11111111111111111111111111111111 add 'pane one α'
+event "${PANES[1]}" 22222222222222222222222222222222 important 'pane two β'
+event "${PANES[0]}" 55555555555555555555555555555555 update 'pane one update γ'
+event "${PANES[1]}" 66666666666666666666666666666666 objective 'pane two objective δ'
+event "${PANES[1]}" 77777777777777777777777777777777 objective 'pane two later objective ε'
+grep -q 'pane one α' "$NOTE_ONE"
+if grep -q 'pane one α' "$NOTE_TWO"; then exit 1; fi
+grep -q '\[AI_AGENT\] pane two β' "$NOTE_TWO"
+if grep -q 'pane two β' "$NOTE_ONE"; then exit 1; fi
+grep -q '^pane one update γ$' "$NOTE_ONE"
+if grep -q 'pane one update γ' "$NOTE_TWO"; then exit 1; fi
+grep -q '^pane two objective δ$' "$NOTE_TWO"
+grep -q '^pane two later objective ε$' "$NOTE_TWO"
+[ "$(grep -c '^\[UPDATE\] ' "$NOTE_TWO")" -eq 1 ]
+grep -q '| captain | added |' "$NOTE_ONE"
+grep -q 'transport=tmux/codex event=11111111111111111111111111111111' "$NOTE_ONE"
+
+TUI="$ROOT/bin/notes-keeping-tui" SOCKET="$SOCKET" PANE="${PANES[0]}" SESSION="$SESSION" python3 - <<'PY'
+import importlib.machinery, json, os
+module = importlib.machinery.SourceFileLoader('notes_keeping_tui_panel', os.environ['TUI']).load_module()
+header = {'tmuxServer': os.environ['SOCKET'], 'paneId': os.environ['PANE'], 'tmuxSessionId': os.environ['SESSION']}
+response, body = module.request({'type': 'workspace', **header})
+workspace = json.loads(body)
+items = workspace['todos']
+item = next(one for one in items if one['text'] == 'pane one α')
+assert response['status'] == 'workspace' and item['status'] == 'todo'
+assert set(workspace) == {'todos', 'objectives', 'updates', 'important'}
+assert 'pane one update γ' in workspace['updates']
+selector = f"id:{item['id']}"
+changed, _ = module.request({'type': 'status', **header, 'selector': selector, 'todoStatus': 'in-progress'})
+assert changed['status'] == 'result' and changed['saved']
+_, body = module.request({'type': 'workspace', **header})
+assert next(one for one in json.loads(body)['todos'] if one['id'] == item['id'])['status'] == 'in-progress'
+saved, _ = module.request(
+    {'type': 'direct-mutate', **header, 'eventId': '88888888888888888888888888888888', 'kind': 'important'},
+    b'workspace important view',
+)
+assert saved['status'] == 'result' and saved['saved']
+_, body = module.request({'type': 'workspace', **header})
+assert 'workspace important view' in json.loads(body)['important']
+PY
+
+TUI="$ROOT/bin/notes-keeping-tui" SOCKET="$SOCKET" PANE="${PANES[0]}" SESSION="$SESSION" python3 - <<'PY'
+import hashlib, importlib.machinery, os, pty, select, subprocess, time
+module = importlib.machinery.SourceFileLoader('notes_keeping_tui_navigation', os.environ['TUI']).load_module()
+
+def run(args, keys):
+    master, slave = pty.openpty()
+    process = subprocess.Popen(args, stdin=slave, stdout=slave, stderr=slave, close_fds=True)
+    os.close(slave)
+    output = bytearray()
+    try:
+        time.sleep(0.15)
+        os.write(master, keys)
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            ready, _, _ = select.select([master], [], [], 0.1)
+            if ready:
+                try:
+                    output.extend(os.read(master, 65536))
+                except OSError:
+                    break
+            if process.poll() is not None:
+                break
+        assert process.wait(timeout=1) == 0
+    finally:
+        os.close(master)
+    return output.decode(errors='replace')
+
+header = {'tmuxServer': os.environ['SOCKET'], 'paneId': os.environ['PANE'], 'tmuxSessionId': os.environ['SESSION']}
+ordinary = run([os.environ['TUI'], 'workspace-popup', os.environ['SOCKET'], os.environ['PANE'], os.environ['SESSION']], b'23451q')
+for expected in ('pane one α', 'No objectives yet.', 'pane one update γ', 'workspace important view', 'Draft (in memory only'):
+    assert expected in ordinary
+
+event_id = '99999999999999999999999999999999'
+body = 'prefilled Notes navigation ζ'.encode()
+module.request({'type': 'capture', 'eventId': event_id, 'bufferName': 'test-buffer', 'copiedAt': time.time(), 'bodyHash': hashlib.sha256(body).hexdigest(), **header}, body)
+selected = run([os.environ['TUI'], 'popup', event_id], b'1234q')
+assert selected.index('prefilled Notes navigation ζ') < selected.index('pane one α')
+assert 'pane one update γ' in selected and 'workspace important view' in selected
+PY
+
+BEFORE="$(shasum -a 256 "$NOTE_ONE")"
+event "${PANES[0]}" 33333333333333333333333333333333 update 'must not save' cancel
+AFTER="$(shasum -a 256 "$NOTE_ONE")"
+[ "$BEFORE" = "$AFTER" ]
+
+REQUEST='{"version":1,"kind":"update","text":"replay once","actor":"captain","transport":"tmux/codex","eventId":"44444444444444444444444444444444","at":1700000000000}'
+printf '%s\n' "$REQUEST" | "$ROOT/bin/notes-keeping-engine" --file "$NOTE_ONE" >/dev/null
+printf '%s\n' "$REQUEST" | "$ROOT/bin/notes-keeping-engine" --file "$NOTE_ONE" >/dev/null
+[ "$(grep -c '^replay once$' "$NOTE_ONE")" -eq 1 ]
+
+[ "$(stat -f '%Lp' "$NOTES_KEEPING_CODEX_STATE/runtime")" = 700 ]
+[ "$(stat -f '%Lp' "$NOTES_KEEPING_CODEX_STATE/runtime/tui.sock")" = 600 ]
+[ "$(git -C "$NOTES_KEEPING_DIR" rev-list --count HEAD)" -ge 4 ]
+
+printf 'ok   two panes map to distinct notes\n'
+printf 'ok   cancel makes no write\n'
+printf 'ok   event replay writes once\n'
+printf 'ok   runtime transport is owner-only\n'
+printf 'ok   no-selection opens full workspace on Todos and same-cwd targets stay explicit\n'
+printf 'ok   all five views, direct category save, Todo status, and OSC 8 links work\n'

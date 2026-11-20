@@ -1,0 +1,113 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+BEGIN='# BEGIN notes-keeping Codex popup'
+END='# END notes-keeping Codex popup'
+CONFIG="${NOTES_KEEPING_TMUX_CONF:-$HOME/.tmux.conf}"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+TUI="$ROOT/bin/notes-keeping-tui"
+
+fail() {
+  printf 'notes-keeping-tmux: %s\n' "$*" >&2
+  exit 1
+}
+
+version_ok() {
+  local version major minor
+  version="$(tmux -V | awk '{print $2}')"
+  major="${version%%.*}"
+  minor="${version#*.}"
+  minor="${minor%%[^0-9]*}"
+  [ "${major:-0}" -gt 3 ] || { [ "${major:-0}" -eq 3 ] && [ "${minor:-0}" -ge 3 ]; }
+}
+
+canonical() {
+  local table key line
+  table="$1"
+  key="$2"
+  line="$(tmux list-keys -T "$table" 2>/dev/null | awk -v key="$key" '$4 == key { sub(/^.* send-keys /, "send-keys "); print; exit }')"
+  [ "$line" = 'send-keys -X copy-pipe-and-cancel' ] || [[ "$line" == *notes-keeping-tui*stamp* ]]
+}
+
+block() {
+  local quoted
+  quoted="$(python3 -c 'import shlex,sys; print(shlex.quote(sys.argv[1]))' "$TUI")"
+  quoted="${quoted//\\/\\\\}"
+  quoted="${quoted//\"/\\\"}"
+  cat <<EOF
+$BEGIN
+# Explicit copies keep copy-command behavior, gain a unique tmux buffer, then stamp metadata only.
+bind-key -T copy-mode-vi Enter send-keys -X copy-pipe-and-cancel '' 'notes-keeping-#{pane_id}-' \; run-shell -b "$quoted stamp #{q:socket_path} #{q:pane_id}"
+bind-key -T copy-mode-vi y send-keys -X copy-pipe-and-cancel '' 'notes-keeping-#{pane_id}-' \; run-shell -b "$quoted stamp #{q:socket_path} #{q:pane_id}"
+bind-key -T copy-mode-vi C-j send-keys -X copy-pipe-and-cancel '' 'notes-keeping-#{pane_id}-' \; run-shell -b "$quoted stamp #{q:socket_path} #{q:pane_id}"
+bind-key -T copy-mode-vi MouseDragEnd1Pane send-keys -X copy-pipe-and-cancel '' 'notes-keeping-#{pane_id}-' \; run-shell -b "$quoted stamp #{q:socket_path} #{q:pane_id}"
+bind-key -T copy-mode M-w send-keys -X copy-pipe-and-cancel '' 'notes-keeping-#{pane_id}-' \; run-shell -b "$quoted stamp #{q:socket_path} #{q:pane_id}"
+bind-key -T copy-mode MouseDragEnd1Pane send-keys -X copy-pipe-and-cancel '' 'notes-keeping-#{pane_id}-' \; run-shell -b "$quoted stamp #{q:socket_path} #{q:pane_id}"
+bind-key N run-shell -b "$quoted capture #{q:socket_path} #{q:pane_id}"
+$END
+EOF
+}
+
+rewrite_without_block() {
+  local source target
+  source="$1"
+  target="$2"
+  awk -v begin="$BEGIN" -v end="$END" '
+    $0 == begin { skipping=1; next }
+    $0 == end { skipping=0; next }
+    !skipping { print }
+  ' "$source" > "$target"
+}
+
+install_config() {
+  command -v tmux >/dev/null || fail 'tmux is not installed'
+  command -v python3 >/dev/null || fail 'python3 is not installed'
+  version_ok || fail 'tmux 3.3 or newer is required'
+  [ -x "$TUI" ] || fail "$TUI is not executable"
+  local table key
+  while read -r table key; do
+    canonical "$table" "$key" || fail "unsupported $table $key binding; expected copy-pipe-and-cancel"
+  done <<'EOF'
+copy-mode-vi Enter
+copy-mode-vi y
+copy-mode-vi C-j
+copy-mode-vi MouseDragEnd1Pane
+copy-mode M-w
+copy-mode MouseDragEnd1Pane
+EOF
+  local temp existing
+  temp="$(mktemp "${TMPDIR:-/tmp}/notes-keeping-tmux.XXXXXX")"
+  existing="$(mktemp "${TMPDIR:-/tmp}/notes-keeping-tmux-existing.XXXXXX")"
+  if [ -f "$CONFIG" ]; then
+    rewrite_without_block "$CONFIG" "$existing"
+  else
+    : > "$existing"
+  fi
+  {
+    cat "$existing"
+    [ ! -s "$existing" ] || printf '\n'
+    block
+  } > "$temp"
+  chmod 600 "$temp"
+  mv "$temp" "$CONFIG"
+  tmux source-file "$CONFIG"
+  "$TUI" start
+  printf 'Installed Prefix then Shift+N popup binding in %s\n' "$CONFIG"
+}
+
+uninstall_config() {
+  [ -f "$CONFIG" ] || exit 0
+  local temp
+  temp="$(mktemp "${TMPDIR:-/tmp}/notes-keeping-tmux.XXXXXX")"
+  rewrite_without_block "$CONFIG" "$temp"
+  chmod 600 "$temp"
+  mv "$temp" "$CONFIG"
+  printf 'Removed notes-keeping block from %s. Restart tmux to restore prior/default copy bindings.\n' "$CONFIG"
+}
+
+case "${1:-}" in
+  install) install_config ;;
+  uninstall) uninstall_config ;;
+  print) block ;;
+  *) fail 'usage: notes-keeping-tmux install|uninstall|print' ;;
+esac

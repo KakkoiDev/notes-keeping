@@ -1,0 +1,879 @@
+#!/usr/bin/env python3
+"""Owner-only tmux selection transport, popup client, and local notes service."""
+
+from __future__ import annotations
+
+import ctypes
+import datetime
+import errno
+import fcntl
+import hashlib
+import json
+import os
+import re
+import select
+import shlex
+import signal
+import socket
+import stat
+import struct
+import subprocess
+import sys
+import termios
+import time
+import tty
+import uuid
+from pathlib import Path
+from typing import Any, NoReturn
+
+MAX_HEADER = 16 * 1024
+MAX_BODY = 64 * 1024
+STAMP_SECONDS = 30
+EVENT_SECONDS = 60
+LEASE_SECONDS = 10 * 60
+
+
+def die(message: str, code: int = 2) -> NoReturn:
+    print(f"notes-keeping-tui: {message}", file=sys.stderr)
+    raise SystemExit(code)
+
+
+def notes_dir() -> Path:
+    return Path(os.environ.get("NOTES_KEEPING_DIR", Path.home() / ".notes-keeping")).resolve()
+
+
+def state_dir() -> Path:
+    return Path(os.environ.get("NOTES_KEEPING_CODEX_STATE", os.environ.get("PLUGIN_DATA", notes_dir() / ".codex"))).resolve()
+
+
+def runtime_dir() -> Path:
+    path = state_dir() / "runtime"
+    if path.exists() and path.is_symlink():
+        die("runtime directory is a symlink")
+    path.mkdir(mode=0o700, parents=True, exist_ok=True)
+    os.chmod(path, 0o700)
+    info = path.stat()
+    if info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o700:
+        die("runtime directory must be owned by the current user with mode 0700")
+    return path
+
+
+def socket_path() -> Path:
+    return runtime_dir() / "tui.sock"
+
+
+def atomic_json(path: Path, value: object) -> None:
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    os.chmod(path.parent, 0o700)
+    temp = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+    with temp.open("x", encoding="utf-8") as handle:
+        os.chmod(temp, 0o600)
+        json.dump(value, handle, separators=(",", ":"))
+        handle.write("\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(temp, path)
+
+
+def key_path(folder: str, server: str, pane: str) -> Path:
+    key = hashlib.sha256(f"{server}\0{pane}".encode()).hexdigest()
+    return state_dir() / folder / f"{key}.json"
+
+
+def exact_read(sock: socket.socket, size: int) -> bytes:
+    chunks: list[bytes] = []
+    left = size
+    while left:
+        chunk = sock.recv(left)
+        if not chunk:
+            raise ValueError("truncated frame")
+        chunks.append(chunk)
+        left -= len(chunk)
+    return b"".join(chunks)
+
+
+def recv_frame(sock: socket.socket) -> tuple[dict[str, Any], bytes]:
+    header_size = struct.unpack(">I", exact_read(sock, 4))[0]
+    if header_size > MAX_HEADER:
+        raise ValueError("header is too large")
+    header_bytes = exact_read(sock, header_size)
+    body_size = struct.unpack(">I", exact_read(sock, 4))[0]
+    if body_size > MAX_BODY:
+        raise ValueError("body is too large")
+    body = exact_read(sock, body_size)
+    try:
+        header = json.loads(header_bytes.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ValueError("invalid JSON header") from error
+    if not isinstance(header, dict):
+        raise ValueError("header must be an object")
+    return header, body
+
+
+def send_frame(sock: socket.socket, header: dict[str, Any], body: bytes = b"") -> None:
+    encoded = json.dumps(header, separators=(",", ":")).encode()
+    if len(encoded) > MAX_HEADER or len(body) > MAX_BODY:
+        raise ValueError("response is too large")
+    sock.sendall(struct.pack(">I", len(encoded)) + encoded + struct.pack(">I", len(body)) + body)
+
+
+def peer_uid(conn: socket.socket) -> int:
+    if sys.platform == "darwin":
+        libc = ctypes.CDLL(None, use_errno=True)
+        uid = ctypes.c_uint()
+        gid = ctypes.c_uint()
+        if libc.getpeereid(conn.fileno(), ctypes.byref(uid), ctypes.byref(gid)) != 0:
+            raise OSError(ctypes.get_errno(), "getpeereid failed")
+        return int(uid.value)
+    if hasattr(socket, "SO_PEERCRED"):
+        credentials = conn.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i"))
+        _, uid, _ = struct.unpack("3i", credentials)
+        return uid
+    raise OSError(errno.ENOTSUP, "peer credentials unavailable")
+
+
+def tmux(server: str, *args: str, input_bytes: bytes | None = None) -> subprocess.CompletedProcess[bytes]:
+    return subprocess.run(["tmux", "-S", server, *args], input=input_bytes, capture_output=True, check=False)
+
+
+def checked_record(path: Path) -> dict[str, Any]:
+    if path.is_symlink():
+        raise ValueError("mapping is a symlink")
+    info = path.stat()
+    if info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) & 0o022:
+        raise ValueError("mapping permissions are unsafe")
+    value = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(value, dict):
+        raise ValueError("mapping is invalid")
+    return value
+
+
+def validate_mapping(header: dict[str, Any]) -> dict[str, Any]:
+    server = header.get("tmuxServer")
+    pane = header.get("paneId")
+    session = header.get("tmuxSessionId")
+    if not all(isinstance(value, str) for value in (server, pane, session)):
+        raise ValueError("capture source is incomplete")
+    pane_path = key_path("panes", server, pane)
+    if not pane_path.exists():
+        raise ValueError("Codex pane mapping is missing; restart Codex or submit a prompt and retry")
+    record = checked_record(pane_path)
+    if record.get("tmuxServer") != server or record.get("paneId") != pane or record.get("tmuxSessionId") != session:
+        raise ValueError("Codex pane mapping does not match this pane")
+    expiry = record.get("leaseExpiresAt")
+    try:
+        expires_at = datetime.datetime.fromisoformat(str(expiry).replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        expires_at = 0
+    if time.time() > expires_at:
+        refreshed = record.get("refreshedAt")
+        if not isinstance(refreshed, str):
+            raise ValueError("Codex pane mapping lease is stale")
+        refreshed_at = datetime.datetime.fromisoformat(refreshed.replace("Z", "+00:00")).timestamp()
+        if time.time() - refreshed_at > LEASE_SECONDS:
+            raise ValueError("Codex pane mapping lease is stale; submit a prompt and retry")
+    shown = tmux(server, "display-message", "-p", "-t", pane, "#{session_id}\t#{pane_current_path}\t#{pane_pid}")
+    if shown.returncode != 0:
+        raise ValueError("source tmux pane no longer exists")
+    live_session, live_cwd, live_pid = shown.stdout.decode().strip().split("\t")
+    if live_session != session or Path(live_cwd).resolve().as_posix() != Path(str(record.get("realCwd"))).resolve().as_posix():
+        raise ValueError("source pane identity changed")
+    if int(live_pid) != record.get("panePid"):
+        raise ValueError("source pane process changed; submit a prompt and retry")
+    codex_session = record.get("codexSessionId")
+    if not isinstance(codex_session, str):
+        raise ValueError("Codex session mapping is missing")
+    binding_path = state_dir() / "sessions" / f"{''.join(ch if ch.isalnum() or ch in '_.-' else '_' for ch in codex_session)}.json"
+    if not binding_path.exists():
+        raise ValueError("Codex session binding is missing; submit a prompt and retry")
+    binding = checked_record(binding_path)
+    if binding.get("path") != record.get("notePath") or binding.get("generation") != record.get("generation"):
+        raise ValueError("Codex pane mapping generation is stale")
+    note = Path(str(record.get("notePath"))).resolve()
+    root = notes_dir().resolve()
+    if not note.is_file() or root not in (note, *note.parents):
+        raise ValueError("unsafe note mapping rejected")
+    if f"Sessions: {codex_session}" not in note.read_text(encoding="utf-8"):
+        raise ValueError("note no longer belongs to the mapped Codex session")
+    return record
+
+
+def engine_path() -> Path:
+    return Path(__file__).resolve().parent / "notes-keeping-engine"
+
+
+def mutate(record: dict[str, Any], event_id: str, kind: str, body: bytes) -> dict[str, Any]:
+    try:
+        text = body.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise ValueError("selection is not valid UTF-8") from error
+    request = {
+        "version": 1,
+        "kind": kind,
+        "text": text,
+        "actor": "captain",
+        "transport": "tmux/codex",
+        "eventId": event_id,
+        "at": int(time.time() * 1000),
+    }
+    done = subprocess.run(
+        [str(engine_path()), "--file", str(record["notePath"])],
+        input=(json.dumps(request) + "\n").encode(),
+        capture_output=True,
+        check=False,
+        env=os.environ,
+    )
+    if done.returncode != 0:
+        raise ValueError((done.stderr or done.stdout).decode(errors="replace").strip().splitlines()[-1])
+    result = json.loads(done.stdout)
+    result["note"] = Path(str(record["notePath"])).name
+    return result
+
+
+def read_workspace(record: dict[str, Any]) -> dict[str, Any]:
+    request_value = {
+        "version": 1,
+        "kind": "view",
+        "actor": "captain",
+        "transport": "tmux/codex",
+        "eventId": uuid.uuid4().hex,
+        "at": int(time.time() * 1000),
+    }
+    done = subprocess.run(
+        [str(engine_path()), "--file", str(record["notePath"])],
+        input=(json.dumps(request_value) + "\n").encode(),
+        capture_output=True,
+        check=False,
+        env=os.environ,
+    )
+    if done.returncode != 0:
+        raise ValueError((done.stderr or done.stdout).decode(errors="replace").strip().splitlines()[-1])
+    result = json.loads(done.stdout)
+    workspace = result.get("workspace")
+    if not isinstance(workspace, dict) or not isinstance(workspace.get("todos"), list):
+        raise ValueError("notes engine returned an invalid workspace")
+    if not all(isinstance(workspace.get(key), str) for key in ("objectives", "updates", "important")):
+        raise ValueError("notes engine returned invalid note sections")
+    return workspace
+
+
+def serve() -> None:
+    path = socket_path()
+    lock_handle = (runtime_dir() / "service.lock").open("a+")
+    try:
+        fcntl.flock(lock_handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        die("service is already running")
+    if path.exists() or path.is_symlink():
+        if path.is_symlink() or not stat.S_ISSOCK(path.lstat().st_mode) or path.lstat().st_uid != os.getuid():
+            die("refusing unsafe pre-existing service socket")
+        path.unlink()
+    server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    server.bind(path.as_posix())
+    os.chmod(path, 0o600)
+    server.listen(8)
+    pid_path = runtime_dir() / "service.pid"
+    atomic_json(pid_path, {"version": 1, "pid": os.getpid()})
+
+    def shutdown(_signum: int, _frame: object) -> None:
+        server.close()
+        path.unlink(missing_ok=True)
+        pid_path.unlink(missing_ok=True)
+        raise SystemExit(0)
+
+    signal.signal(signal.SIGTERM, shutdown)
+    signal.signal(signal.SIGINT, shutdown)
+    events: dict[str, dict[str, Any]] = {}
+    while True:
+        conn, _ = server.accept()
+        with conn:
+            try:
+                if peer_uid(conn) != os.getuid():
+                    raise ValueError("local transport rejected")
+                header, body = recv_frame(conn)
+                if header.get("version") != 1 or not isinstance(header.get("type"), str):
+                    raise ValueError("unsupported protocol request")
+                now = time.time()
+                events = {key: value for key, value in events.items() if now - value["acceptedAt"] <= EVENT_SECONDS}
+                request_type = header["type"]
+                event_id = header.get("eventId")
+                if request_type in ("panel", "workspace"):
+                    record = validate_mapping(header)
+                    workspace = read_workspace(record)
+                    encoded_workspace = json.dumps(workspace, ensure_ascii=False, separators=(",", ":")).encode()
+                    send_frame(
+                        conn,
+                        {
+                            "version": 1,
+                            "status": "workspace",
+                            "target": Path(record["notePath"]).name,
+                            "pane": record["paneId"],
+                            "session": record["codexSessionId"][:8],
+                        },
+                        encoded_workspace,
+                    )
+                    continue
+                if request_type == "direct-mutate":
+                    record = validate_mapping(header)
+                    kind = header.get("kind")
+                    direct_event_id = header.get("eventId")
+                    if kind not in ("add", "update", "objective", "important"):
+                        raise ValueError("unknown category")
+                    if not isinstance(direct_event_id, str) or not 16 <= len(direct_event_id) <= 64 or any(
+                        ch not in "0123456789abcdef-" for ch in direct_event_id.lower()
+                    ):
+                        raise ValueError("event ID is invalid")
+                    if len(body) == 0 or len(body) > MAX_BODY or b"\0" in body:
+                        raise ValueError("note draft is empty, contains NUL, or is too large")
+                    try:
+                        content = body.decode("utf-8").strip().encode("utf-8")
+                    except UnicodeDecodeError as error:
+                        raise ValueError("note draft is not valid UTF-8") from error
+                    if not content:
+                        raise ValueError("note draft is empty")
+                    result = mutate(record, direct_event_id, kind, content)
+                    send_frame(conn, {"version": 1, "status": "result", **result})
+                    continue
+                if request_type == "status":
+                    record = validate_mapping(header)
+                    selector = header.get("selector")
+                    status_value = header.get("todoStatus")
+                    if not isinstance(selector, str) or not selector or status_value not in (
+                        "todo",
+                        "in-progress",
+                        "done",
+                        "declined",
+                    ):
+                        raise ValueError("todo status request is invalid")
+                    status_request = {
+                        "version": 1,
+                        "kind": "status",
+                        "selector": selector,
+                        "status": status_value,
+                        "actor": "captain",
+                        "transport": "tmux/codex",
+                        "eventId": uuid.uuid4().hex,
+                        "at": int(time.time() * 1000),
+                    }
+                    done = subprocess.run(
+                        [str(engine_path()), "--file", str(record["notePath"])],
+                        input=(json.dumps(status_request) + "\n").encode(),
+                        capture_output=True,
+                        check=False,
+                        env=os.environ,
+                    )
+                    if done.returncode != 0:
+                        raise ValueError((done.stderr or done.stdout).decode(errors="replace").strip().splitlines()[-1])
+                    result = json.loads(done.stdout)
+                    send_frame(conn, {"version": 1, "status": "result", "note": Path(record["notePath"]).name, **result})
+                    continue
+                if request_type == "targets":
+                    requested_cwd = header.get("cwd")
+                    if not isinstance(requested_cwd, str):
+                        raise ValueError("manual target cwd is missing")
+                    cwd = Path(requested_cwd).resolve()
+                    targets: list[dict[str, str]] = []
+                    for path in (state_dir() / "panes").glob("*.json"):
+                        try:
+                            candidate = checked_record(path)
+                            if Path(str(candidate.get("realCwd"))).resolve() != cwd:
+                                continue
+                            validate_mapping({"tmuxServer": candidate["tmuxServer"], "paneId": candidate["paneId"], "tmuxSessionId": candidate["tmuxSessionId"]})
+                            targets.append({"id": path.stem, "pane": candidate["paneId"], "session": candidate["codexSessionId"][:8], "note": Path(candidate["notePath"]).name})
+                        except (KeyError, OSError, ValueError, json.JSONDecodeError):
+                            continue
+                    send_frame(conn, {"version": 1, "status": "targets", "targets": targets})
+                    continue
+                if not isinstance(event_id, str):
+                    raise ValueError("event ID is missing")
+                if request_type in ("capture", "manual"):
+                    if len(body) == 0 or len(body) > MAX_BODY or b"\0" in body:
+                        raise ValueError("selection is empty, contains NUL, or is too large")
+                    text = body.decode("utf-8").strip()
+                    if not text:
+                        raise ValueError("selection is empty")
+                    body = text.encode("utf-8")
+                    if hashlib.sha256(body).hexdigest() != header.get("bodyHash"):
+                        raise ValueError("selection hash mismatch")
+                    if request_type == "capture":
+                        copied_at = header.get("copiedAt")
+                        if not isinstance(copied_at, (int, float)) or now - copied_at > STAMP_SECONDS or copied_at > now + 2:
+                            raise ValueError("selection expired; copy it again")
+                        record = validate_mapping(header)
+                    else:
+                        target_id = header.get("targetId")
+                        if not isinstance(target_id, str) or not all(ch in "0123456789abcdef" for ch in target_id) or len(target_id) != 64:
+                            raise ValueError("manual target is invalid")
+                        target = checked_record(state_dir() / "panes" / f"{target_id}.json")
+                        record = validate_mapping({"tmuxServer": target["tmuxServer"], "paneId": target["paneId"], "tmuxSessionId": target["tmuxSessionId"]})
+                    prior = events.get(event_id)
+                    if prior is not None and prior["body"] != body:
+                        raise ValueError("event ID reused with different content")
+                    events[event_id] = {"body": body, "record": record, "acceptedAt": now, "claimed": False}
+                    send_frame(conn, {"version": 1, "status": "accepted", "bytes": len(body)})
+                elif request_type == "claim":
+                    event = events.get(event_id)
+                    if event is None:
+                        raise ValueError("selection expired")
+                    if event["claimed"]:
+                        raise ValueError("selection already claimed")
+                    event["claimed"] = True
+                    send_frame(
+                        conn,
+                        {
+                            "version": 1,
+                            "status": "claimed",
+                            "bytes": len(event["body"]),
+                            "target": Path(event["record"]["notePath"]).name,
+                            "pane": event["record"]["paneId"],
+                            "session": event["record"]["codexSessionId"][:8],
+                            "tmuxServer": event["record"]["tmuxServer"],
+                            "tmuxSessionId": event["record"]["tmuxSessionId"],
+                        },
+                        event["body"],
+                    )
+                elif request_type == "cancel":
+                    events.pop(event_id, None)
+                    send_frame(conn, {"version": 1, "status": "cancelled"})
+                elif request_type == "mutate":
+                    event = events.get(event_id)
+                    if event is None or not event["claimed"]:
+                        raise ValueError("selection is not claimed")
+                    kind = header.get("kind")
+                    if kind not in ("add", "update", "objective", "important"):
+                        raise ValueError("unknown category")
+                    content = body if body else event["body"]
+                    result = mutate(event["record"], event_id, kind, content)
+                    if result.get("ok"):
+                        events.pop(event_id, None)
+                    send_frame(conn, {"version": 1, "status": "result", **result})
+                else:
+                    raise ValueError("unknown request type")
+            except Exception as error:  # visible, content-free failure response
+                send_frame(conn, {"version": 1, "status": "error", "message": str(error).splitlines()[-1]})
+
+
+def request(header: dict[str, Any], body: bytes = b"") -> tuple[dict[str, Any], bytes]:
+    path = socket_path()
+    if not path.exists():
+        raise ValueError("Notes TUI not running; start it and retry Prefix then Shift+N")
+    client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    client.settimeout(5)
+    try:
+        client.connect(path.as_posix())
+        send_frame(client, {"version": 1, **header}, body)
+        response, response_body = recv_frame(client)
+    finally:
+        client.close()
+    if response.get("status") == "error":
+        raise ValueError(str(response.get("message", "request failed")))
+    return response, response_body
+
+
+def display_error(server: str, pane: str, message: str) -> None:
+    tmux(server, "display-message", "-t", pane, message.replace("\n", " ")[:200])
+
+
+def mapping_header(server: str, pane: str, session: str) -> dict[str, str]:
+    return {"tmuxServer": server, "paneId": pane, "tmuxSessionId": session}
+
+
+def open_workspace(server: str, pane: str, session: str, cwd: str) -> None:
+    response, _ = request({"type": "workspace", **mapping_header(server, pane, session)})
+    command = shlex.join([sys.executable, str(Path(__file__).resolve()), "workspace-popup", server, pane, session])
+    opened = tmux(
+        server,
+        "display-popup",
+        "-E",
+        "-t",
+        pane,
+        "-d",
+        cwd,
+        "-w",
+        "80%",
+        "-h",
+        "70%",
+        "-T",
+        f"Notes — {response['target']}",
+        command,
+    )
+    if opened.returncode != 0:
+        raise ValueError(opened.stderr.decode(errors="replace").strip() or "popup could not open")
+
+
+def stamp_copy(server: str, pane: str) -> None:
+    shown = tmux(server, "display-message", "-p", "-t", pane, "#{session_id}")
+    if shown.returncode != 0:
+        display_error(server, pane, "notes-keeping: copied, but source session could not be resolved")
+        return
+    session = shown.stdout.decode().strip()
+    prefix = f"notes-keeping-{pane}-"
+    listed = tmux(server, "list-buffers", "-F", "#{buffer_created}\t#{buffer_name}")
+    if listed.returncode != 0:
+        display_error(server, pane, "notes-keeping: copied, but selection stamp failed")
+        return
+    candidates: list[tuple[int, int, str]] = []
+    for line in listed.stdout.decode().splitlines():
+        created, _, name = line.partition("\t")
+        if name.startswith(prefix):
+            try:
+                candidates.append((int(created), int(name.removeprefix(prefix)), name))
+            except ValueError:
+                pass
+    if not candidates:
+        display_error(server, pane, "notes-keeping: copied, but exact selection buffer was not found")
+        return
+    _, _, name = max(candidates)
+    atomic_json(key_path("stamps", server, pane), {"version": 1, "tmuxServer": server, "paneId": pane, "tmuxSessionId": session, "bufferName": name, "copiedAt": time.time()})
+
+
+def capture(server: str, pane: str) -> None:
+    try:
+        shown = tmux(server, "display-message", "-p", "-t", pane, "#{session_id}\t#{pane_current_path}")
+        if shown.returncode != 0:
+            raise ValueError("source tmux pane no longer exists")
+        session, cwd = shown.stdout.decode().strip().split("\t")
+        stamp_path = key_path("stamps", server, pane)
+        if not stamp_path.exists():
+            open_workspace(server, pane, session, cwd)
+            return
+        record = checked_record(stamp_path)
+        if record.get("tmuxServer") != server or record.get("paneId") != pane or record.get("tmuxSessionId") != session:
+            stamp_path.unlink(missing_ok=True)
+            open_workspace(server, pane, session, cwd)
+            return
+        copied_at = record.get("copiedAt")
+        if not isinstance(copied_at, (int, float)) or time.time() - copied_at > STAMP_SECONDS:
+            stamp_path.unlink(missing_ok=True)
+            open_workspace(server, pane, session, cwd)
+            return
+        buffer_name = record.get("bufferName")
+        if not isinstance(buffer_name, str):
+            raise ValueError("selection stamp is invalid")
+        saved = tmux(server, "save-buffer", "-b", buffer_name, "-")
+        if saved.returncode != 0:
+            stamp_path.unlink(missing_ok=True)
+            open_workspace(server, pane, session, cwd)
+            return
+        if len(saved.stdout) > MAX_BODY or b"\0" in saved.stdout:
+            raise ValueError("selection contains NUL or is larger than 64 KiB")
+        try:
+            body = saved.stdout.decode("utf-8").strip().encode("utf-8")
+        except UnicodeDecodeError as error:
+            raise ValueError("selection is not valid UTF-8") from error
+        event_id = uuid.uuid4().hex
+        response, _ = request({"type": "capture", "eventId": event_id, "tmuxServer": server, "paneId": pane, "tmuxSessionId": session, "bufferName": buffer_name, "copiedAt": copied_at, "bodyHash": hashlib.sha256(body).hexdigest()}, body)
+        stamp_path.unlink(missing_ok=True)
+        title = f"Send selection ({response['bytes']} bytes)"
+        command = shlex.join([sys.executable, str(Path(__file__).resolve()), "popup", event_id])
+        opened = tmux(server, "display-popup", "-E", "-t", pane, "-d", cwd, "-w", "80%", "-h", "70%", "-T", title, command)
+        if opened.returncode != 0:
+            request({"type": "cancel", "eventId": event_id})
+            raise ValueError(opened.stderr.decode(errors="replace").strip() or "popup could not open")
+    except Exception as error:
+        display_error(server, pane, f"notes-keeping: {error}")
+        return
+
+
+def sanitized(text: str) -> str:
+    return "".join(ch if ch in "\n\t" or ord(ch) >= 32 and ord(ch) != 127 else f"<{ord(ch):02x}>" for ch in text)
+
+
+LINK = re.compile(r"\[([^\]\n]+)\]\((https?://[^\s)]+)\)|(https?://[^\s<>]+)")
+
+
+def linked(text: str) -> str:
+    """Render terminal-supported OSC 8 links; never invent transcript anchors."""
+
+    def render(match: re.Match[str]) -> str:
+        label = match.group(1) or match.group(3) or ""
+        url = match.group(2) or match.group(3) or ""
+        trailing = ""
+        if match.group(3):
+            while label.endswith((".", ",", ";", ":")):
+                trailing = label[-1] + trailing
+                label = label[:-1]
+                url = url[:-1]
+        return f"\x1b]8;;{url}\x1b\\\x1b[34;4m{label}\x1b[0m\x1b]8;;\x1b\\{trailing}"
+
+    return LINK.sub(render, text)
+
+
+def read_key() -> str:
+    return os.read(sys.stdin.fileno(), 1).decode("utf-8", errors="ignore")
+
+
+MARKS = {"todo": "[ ]", "in-progress": "[~]", "done": "[x]", "declined": "[-]", "blocked": "[!]", "paused": "[/]"}
+NEXT_STATUS = {"todo": "in-progress", "in-progress": "done", "done": "declined", "declined": "todo", "blocked": "todo", "paused": "todo"}
+VIEWS = ("Todos", "Objectives", "Updates", "Important", "Notes")
+NAVIGATION = {"1": 0, "T": 0, "2": 1, "O": 1, "3": 2, "U": 2, "4": 3, "I": 3, "5": 4, "N": 4}
+SAVE_KINDS = {"t": "add", "u": "update", "o": "objective", "i": "important"}
+SAVED_VIEW = {"add": 0, "objective": 1, "update": 2, "important": 3}
+
+
+def workspace(server: str, pane: str, session: str) -> tuple[dict[str, Any], dict[str, Any]]:
+    response, body = request({"type": "workspace", **mapping_header(server, pane, session)})
+    value = json.loads(body)
+    if not isinstance(value, dict) or not isinstance(value.get("todos"), list):
+        raise ValueError("notes engine returned an invalid workspace")
+    return response, value
+
+
+def edit_draft(text: str) -> tuple[str, bool]:
+    original = text
+    edited = list(text)
+    print("\x1b[2J\x1b[HNotes draft (in memory only). Ctrl+S keeps edits; Esc asks before abandoning them.\r\n\r")
+    print(sanitized(text), end="", flush=True)
+    while True:
+        char = read_key()
+        if char == "\x13":
+            result = "".join(edited).strip()
+            return result, result != original
+        if char == "\x1b":
+            print("\r\nAbandon these draft edits? [y/N]: ", end="", flush=True)
+            if read_key().lower() == "y":
+                return original, False
+            print("\r\nContinuing edit.\r\n", end="", flush=True)
+            continue
+        if char in ("\x7f", "\b"):
+            if edited:
+                edited.pop()
+                print("\b \b", end="", flush=True)
+        elif char in ("\r", "\n"):
+            edited.append("\n")
+            print("\r\n", end="", flush=True)
+        elif char.isprintable() or char == "\t":
+            edited.append(char)
+            print(char, end="", flush=True)
+
+
+def confirm_close(dirty: bool) -> bool:
+    if not dirty:
+        return True
+    print("\r\nDiscard unsaved Notes draft? [y/N]: ", end="", flush=True)
+    return read_key().lower() == "y"
+
+
+def workspace_panel(server: str, pane: str, session: str, *, initial_view: int, draft: str) -> None:
+    old = termios.tcgetattr(sys.stdin.fileno())
+    view = initial_view
+    cursor = 0
+    dirty = False
+    message = ""
+    try:
+        tty.setraw(sys.stdin.fileno())
+        while True:
+            response, value = workspace(server, pane, session)
+            todo_items = value["todos"]
+            cursor = min(cursor, max(0, len(todo_items) - 1))
+            print("\x1b[2J\x1b[H", end="")
+            tabs = "  ".join(f"\x1b[7m{index + 1}/{name[0]}:{name}\x1b[0m" if index == view else f"{index + 1}/{name[0]}:{name}" for index, name in enumerate(VIEWS))
+            print(f"{tabs}\r")
+            print(f"Target: {response['target']}  Codex: {response['session']}  Pane: {response['pane']}\r")
+            print("Links use OSC 8 when tmux and the terminal support them. Saved notes are durable local history.\r\n")
+
+            if view == 0:
+                if not todo_items:
+                    print("No todo items. Open Notes to draft one.\r")
+                for index, item in enumerate(todo_items):
+                    status_value = str(item.get("status", "todo"))
+                    text = str(item.get("label") or item.get("text") or "")
+                    reason = f" — {item['reason']}" if item.get("reason") else ""
+                    selected = "\x1b[7m" if index == cursor else ""
+                    reset = "\x1b[0m" if selected else ""
+                    print(f"{selected}{'>' if index == cursor else ' '} {MARKS.get(status_value, '[?]')} {linked(sanitized(text + reason))}{reset}\r")
+                print("\r\n[j/k or arrows] Move  [Enter] Cycle status\r")
+            elif view == 1:
+                print(linked(sanitized(value["objectives"] or "No objectives yet.")), end="\r\n")
+            elif view == 2:
+                print(linked(sanitized(value["updates"] or "No updates yet.")), end="\r\n")
+            elif view == 3:
+                print(linked(sanitized(value["important"] or "No important notes yet.")), end="\r\n")
+            else:
+                print("Draft (in memory only; no write until an explicit save):\r\n")
+                print(linked(sanitized(draft or "Empty draft. Press e to edit.")), end="\r\n")
+                print("\r\n[e] Edit  Save as [t] Todo [o] Objective [u] Update [i] Important\r")
+            print("\r\n[1-5 or Shift+T/O/U/I/N] Switch view  [Tab] Next  [q/Esc] Close\r")
+            if message:
+                print(f"{sanitized(message)}\r")
+                message = ""
+
+            key = read_key()
+            if key in ("q", "\x1b"):
+                if key == "\x1b":
+                    ready, _, _ = select.select([sys.stdin], [], [], 0.03)
+                    if ready:
+                        sequence = os.read(sys.stdin.fileno(), 2)
+                        if sequence == b"[A" and view == 0 and todo_items:
+                            cursor = (cursor - 1) % len(todo_items)
+                            continue
+                        if sequence == b"[B" and view == 0 and todo_items:
+                            cursor = (cursor + 1) % len(todo_items)
+                            continue
+                if confirm_close(dirty):
+                    return
+                continue
+            if key in NAVIGATION:
+                view = NAVIGATION[key]
+                continue
+            if key == "\t":
+                view = (view + 1) % len(VIEWS)
+                continue
+            if view == 0 and key == "k" and todo_items:
+                cursor = (cursor - 1) % len(todo_items)
+            elif view == 0 and key == "j" and todo_items:
+                cursor = (cursor + 1) % len(todo_items)
+            elif view == 0 and key in ("\r", "\n") and todo_items:
+                item = todo_items[cursor]
+                selector = f"id:{item['id']}" if item.get("id") else str(item.get("text", ""))
+                status_value = NEXT_STATUS.get(str(item.get("status")), "todo")
+                result, _ = request(
+                    {
+                        "type": "status",
+                        **mapping_header(server, pane, session),
+                        "selector": selector,
+                        "todoStatus": status_value,
+                    }
+                )
+                message = str(result.get("message", "Todo updated"))
+            elif view == 4 and key == "e":
+                draft, changed = edit_draft(draft)
+                dirty = dirty or changed
+            elif view == 4 and key in SAVE_KINDS:
+                try:
+                    event_id = uuid.uuid4().hex
+                    result, _ = request(
+                        {
+                            "type": "direct-mutate",
+                            **mapping_header(server, pane, session),
+                            "eventId": event_id,
+                            "kind": SAVE_KINDS[key],
+                        },
+                        draft.strip().encode("utf-8"),
+                    )
+                    warnings = result.get("warnings") or []
+                    message = "Saved: " + str(result.get("message", SAVE_KINDS[key]))
+                    if warnings:
+                        message += " | " + " | ".join(str(warning) for warning in warnings)
+                    dirty = False
+                    view = SAVED_VIEW[SAVE_KINDS[key]]
+                except ValueError as error:
+                    message = f"Not saved: {error}"
+    finally:
+        termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, old)
+
+
+def popup(event_id: str) -> None:
+    response, body = request({"type": "claim", "eventId": event_id})
+    request({"type": "cancel", "eventId": event_id})
+    workspace_panel(
+        str(response["tmuxServer"]),
+        str(response["pane"]),
+        str(response["tmuxSessionId"]),
+        initial_view=4,
+        draft=body.decode("utf-8"),
+    )
+
+
+def workspace_popup(server: str, pane: str, session: str) -> None:
+    workspace_panel(server, pane, session, initial_view=0, draft="")
+
+
+def manual() -> None:
+    response, _ = request({"type": "targets", "cwd": str(Path.cwd().resolve())})
+    targets = response.get("targets")
+    if not isinstance(targets, list) or not targets:
+        die("no live Codex pane is mapped to this directory")
+    if len(targets) == 1:
+        target = targets[0]
+    else:
+        print("Choose target; no note changes until a category is saved:")
+        for index, item in enumerate(targets, start=1):
+            print(f"  {index}. {item['note']}  Codex {item['session']}  pane {item['pane']}")
+        try:
+            chosen = int(input("Target number: "))
+            target = targets[chosen - 1]
+        except (ValueError, IndexError):
+            die("no target selected")
+    if input("Press p then Enter to read the clipboard into an unsaved preview: ").strip().lower() != "p":
+        die("clipboard preview cancelled", 1)
+    pasted = subprocess.run(["pbpaste"], capture_output=True, check=False)
+    if pasted.returncode != 0:
+        die("pbpaste failed")
+    try:
+        body = pasted.stdout.decode("utf-8").strip().encode("utf-8")
+    except UnicodeDecodeError:
+        die("clipboard is not valid UTF-8")
+    if not body or len(body) > MAX_BODY or b"\0" in body:
+        die("clipboard is empty, contains NUL, or is larger than 64 KiB")
+    event_id = uuid.uuid4().hex
+    request({"type": "manual", "eventId": event_id, "targetId": target["id"], "bodyHash": hashlib.sha256(body).hexdigest()}, body)
+    popup(event_id)
+
+
+def start() -> None:
+    path = socket_path()
+    if path.exists():
+        try:
+            request({"type": "cancel", "eventId": uuid.uuid4().hex})
+            print(f"notes-keeping TUI already running at {path}")
+            return
+        except Exception:
+            path.unlink(missing_ok=True)
+    subprocess.Popen([sys.executable, str(Path(__file__).resolve()), "serve"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=(runtime_dir() / "service.log").open("ab"), start_new_session=True, env=os.environ)
+    for _ in range(50):
+        if path.exists():
+            print(f"notes-keeping TUI started at {path}")
+            return
+        time.sleep(0.05)
+    die("service did not start")
+
+
+def stop() -> None:
+    pid_path = runtime_dir() / "service.pid"
+    if not pid_path.exists():
+        socket_path().unlink(missing_ok=True)
+        print("notes-keeping TUI is not running")
+        return
+    record = checked_record(pid_path)
+    pid = record.get("pid")
+    if not isinstance(pid, int) or pid <= 1:
+        die("service PID file is invalid")
+    shown = subprocess.run(["ps", "-p", str(pid), "-o", "command="], capture_output=True, text=True, check=False)
+    if shown.returncode != 0 or "notes-keeping-tui serve" not in shown.stdout:
+        die("service PID is stale; refusing to signal an unrelated process")
+    os.kill(pid, signal.SIGTERM)
+    for _ in range(50):
+        if not socket_path().exists():
+            print("notes-keeping TUI stopped")
+            return
+        time.sleep(0.05)
+    die("service did not stop")
+
+
+def main() -> None:
+    if len(sys.argv) < 2:
+        die("usage: notes-keeping-tui serve|start|stop|manual|stamp|capture|popup|workspace-popup")
+    command = sys.argv[1]
+    if command == "serve":
+        serve()
+    elif command == "start":
+        start()
+    elif command == "stop":
+        stop()
+    elif command == "manual":
+        manual()
+    elif command == "stamp" and len(sys.argv) == 4:
+        stamp_copy(*sys.argv[2:4])
+    elif command == "capture" and len(sys.argv) == 4:
+        capture(*sys.argv[2:4])
+    elif command == "popup" and len(sys.argv) == 3:
+        popup(sys.argv[2])
+    elif command == "workspace-popup" and len(sys.argv) == 5:
+        workspace_panel(*sys.argv[2:5], initial_view=0, draft="")
+    else:
+        die("invalid command or arguments")
+
+
+if __name__ == "__main__":
+    main()
