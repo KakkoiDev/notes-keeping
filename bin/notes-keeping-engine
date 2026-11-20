@@ -274,11 +274,14 @@ const path = trustedPath(rawFile)
 if (!isLocked) {
   const lock = join(stateDir(), 'mutation.lock')
   if (existsSync(lock) && lstatSync(lock).isSymbolicLink()) fail('mutation lock is a symlink')
-  const done = spawnSync('lockf', ['-t', '10', lock, process.execPath, process.argv[1]!, '--locked', '--file', path], {
+  const coordinator = process.platform === 'darwin' ? 'lockf' : 'flock'
+  const lockArgs = process.platform === 'darwin' ? ['-t', '10', lock] : ['-w', '10', lock]
+  const done = spawnSync(coordinator, [...lockArgs, process.execPath, process.argv[1]!, '--locked', '--file', path], {
     input: raw,
     encoding: 'utf8',
     env: process.env,
   })
+  if (done.error) fail(`${coordinator} failed: ${done.error.message}`)
   if (done.stdout) process.stdout.write(done.stdout)
   if (done.stderr) process.stderr.write(done.stderr)
   process.exit(done.status ?? 1)

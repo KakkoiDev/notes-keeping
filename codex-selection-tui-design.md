@@ -435,7 +435,7 @@ Logs must omit content, preview text, clipboard text, and note body excerpts.
 | Modify | `codex-selection-tui-design.md` | Observable contract and Goldfish remediation owner |
 
 No package manifest is added.
-The implementation uses the existing Bun runtime, Python standard library, tmux, `lockf`, and Git.
+The implementation uses the existing Bun runtime, Python standard library, tmux, Git, and the platform lock coordinator: `lockf` on macOS or `flock` on Linux.
 
 ## Operation and log schema
 
