@@ -1,0 +1,17 @@
+{
+  "name": "notes-keeping",
+  "plugins": [
+    {
+      "name": "notes-keeping",
+      "source": {
+        "source": "local",
+        "path": "./"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

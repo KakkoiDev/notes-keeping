@@ -1,0 +1,29 @@
+{
+  "description": "Keep session todos in Codex context and create per-session notes files.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bun \"${PLUGIN_ROOT}/bin/notes-keeping-codex\" hook",
+            "statusMessage": "Starting session notes",
+            "additionalContextLimit": 12000
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bun \"${PLUGIN_ROOT}/bin/notes-keeping-codex\" hook",
+            "statusMessage": "Loading session todos",
+            "additionalContextLimit": 12000
+          }
+        ]
+      }
+    ]
+  }
+}

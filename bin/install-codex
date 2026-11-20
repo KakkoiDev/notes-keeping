@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+command -v codex >/dev/null || { echo 'install-codex: codex is not installed' >&2; exit 1; }
+command -v bun >/dev/null || { echo 'install-codex: bun is not installed' >&2; exit 1; }
+
+codex plugin marketplace add "$ROOT"
+codex plugin add notes-keeping@notes-keeping
+
+printf '%s\n' 'notes-keeping installed. Restart Codex, run /hooks, and trust the notes-keeping hooks.'
