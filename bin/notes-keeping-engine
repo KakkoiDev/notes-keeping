@@ -1,0 +1,292 @@
+#!/usr/bin/env bun
+import {
+  chmodSync,
+  closeSync,
+  existsSync,
+  fsyncSync,
+  lstatSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  realpathSync,
+  renameSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs'
+import { createHash, randomBytes } from 'node:crypto'
+import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
+import { homedir } from 'node:os'
+import { spawnSync } from 'node:child_process'
+
+import { applyMutation, revisionOf, type MutationRequest } from '../hooks/mutation'
+import type { ActorId } from '../hooks/actors'
+import { sections } from '../hooks/notes'
+import { STATUSES, changeLine, type Status } from '../hooks/todo'
+import { items } from '../hooks/todo'
+
+type Input = {
+  version?: unknown
+  kind?: unknown
+  text?: unknown
+  selector?: unknown
+  status?: unknown
+  reason?: unknown
+  actor?: unknown
+  transport?: unknown
+  eventId?: unknown
+  at?: unknown
+  subject?: unknown
+  expectedRevision?: unknown
+  commit?: unknown
+}
+
+type Result = {
+  ok: boolean
+  saved: boolean
+  committed: boolean
+  notified: boolean
+  replayed: boolean
+  message: string
+  warnings: string[]
+  items?: ReturnType<typeof items>
+  workspace?: {
+    objectives: string
+    updates: string
+    important: string
+    todos: ReturnType<typeof items>
+  }
+}
+
+const MAX_BODY = 64 * 1024
+const actors = new Set<ActorId>(['captain', 'firstmate', 'codex', 'laya', 'plugin', 'unknown'])
+
+function fail(message: string, code = 2): never {
+  console.error(`notes-keeping-engine: ${message}`)
+  process.exit(code)
+}
+
+function notesDir(): string {
+  return resolve(process.env.NOTES_KEEPING_DIR || join(homedir(), '.notes-keeping'))
+}
+
+function stateDir(): string {
+  return resolve(process.env.NOTES_KEEPING_CODEX_STATE || process.env.PLUGIN_DATA || join(notesDir(), '.codex'))
+}
+
+function under(path: string, root: string): boolean {
+  const rel = relative(root, path)
+  return rel === '' || (rel !== '..' && !rel.startsWith(`..${process.platform === 'win32' ? '\\' : '/'}`) && !isAbsolute(rel))
+}
+
+function trustedPath(raw: string): string {
+  const root = realpathSync(notesDir())
+  const absolute = resolve(raw)
+  const parent = realpathSync(dirname(absolute))
+  const path = existsSync(absolute) ? realpathSync(absolute) : join(parent, basename(absolute))
+  if (!under(path, root)) fail('notes path escapes the configured notes directory')
+  if (existsSync(path) && !statSync(path).isFile()) fail('notes path is not a regular file')
+  return path
+}
+
+function atomicWrite(path: string, text: string): void {
+  const temp = join(dirname(path), `.${basename(path)}.${process.pid}.${randomBytes(6).toString('hex')}.tmp`)
+  const fd = openSync(temp, 'wx', 0o600)
+  try {
+    writeFileSync(fd, text, 'utf8')
+    fsyncSync(fd)
+  } finally {
+    closeSync(fd)
+  }
+  renameSync(temp, path)
+  chmodSync(path, 0o600)
+  try {
+    const parent = openSync(dirname(path), 'r')
+    try { fsyncSync(parent) } finally { closeSync(parent) }
+  } catch {}
+}
+
+function hash(value: string): string {
+  return createHash('sha256').update(value).digest('hex')
+}
+
+function receiptPath(eventId: string): string {
+  return join(stateDir(), 'receipts', `${hash(eventId)}.json`)
+}
+
+function readReceipt(eventId: string, requestHash: string, target: string): Result | undefined {
+  const path = receiptPath(eventId)
+  if (!existsSync(path)) return undefined
+  const receipt = JSON.parse(readFileSync(path, 'utf8')) as { eventId?: string; requestHash?: string; target?: string; result?: Result }
+  if (receipt.eventId !== eventId || receipt.requestHash !== requestHash || receipt.target !== target) {
+    fail('event ID replayed with different operation, content, or target')
+  }
+  return receipt.result === undefined ? undefined : { ...receipt.result, replayed: true }
+}
+
+function writeReceipt(eventId: string, requestHash: string, target: string, result: Result): void {
+  const dir = join(stateDir(), 'receipts')
+  mkdirSync(dir, { recursive: true, mode: 0o700 })
+  chmodSync(dir, 0o700)
+  atomicWrite(receiptPath(eventId), `${JSON.stringify({ version: 1, eventId, requestHash, target, result })}\n`)
+}
+
+function commit(path: string, subject: string): { committed: boolean; warning?: string } {
+  const dir = notesDir()
+  if (!existsSync(join(dir, '.git'))) {
+    const initialized = spawnSync('git', ['-C', dir, 'init', '-q'], { encoding: 'utf8' })
+    if (initialized.status !== 0) return { committed: false, warning: `local history init failed: ${(initialized.stderr || initialized.error || initialized.status).toString().trim()}` }
+  }
+  const added = spawnSync('git', ['-C', dir, 'add', '--', path], { encoding: 'utf8' })
+  if (added.status !== 0) return { committed: false, warning: `local history stage failed: ${(added.stderr || added.error || added.status).toString().trim()}` }
+  const done = spawnSync('git', ['-C', dir, 'commit', '-q', '-m', `${subject}: ${basename(path)}`, '--', path], { encoding: 'utf8' })
+  if (done.status === 0) return { committed: true }
+  const said = `${done.stdout || ''}\n${done.stderr || ''}`
+  if (/nothing to commit|no changes added/i.test(said)) return { committed: true }
+  return { committed: false, warning: `local history commit failed: ${(done.stderr || done.stdout || done.error || done.status).toString().trim().split('\n').pop()}` }
+}
+
+function bridgePath(): string | undefined {
+  if (process.env.NOTES_KEEPING_BRIDGE) return resolve(process.env.NOTES_KEEPING_BRIDGE)
+  const root = spawnSync('git', ['rev-parse', '--show-toplevel'], { encoding: 'utf8' })
+  const candidate = root.status === 0 ? join(root.stdout.trim(), 'config', 'notes-keeping-bridge') : join(process.cwd(), 'config', 'notes-keeping-bridge')
+  return existsSync(candidate) ? candidate : undefined
+}
+
+function notify(path: string, lines: string[]): { notified: boolean; warning?: string } {
+  if (lines.length === 0) return { notified: true }
+  const bridge = bridgePath()
+  if (bridge === undefined) return { notified: true }
+  const done = spawnSync(bridge, ['notify', path], { input: `${lines.join('\n')}\n`, encoding: 'utf8', timeout: 10_000 })
+  if (done.status === 0) return { notified: true }
+  return { notified: false, warning: `Firstmate notification failed: ${(done.stderr || done.error || done.status).toString().trim().split('\n').pop()}` }
+}
+
+function validateInput(input: Input): asserts input is Input & { kind: string; actor: ActorId; transport: string; eventId: string; at: number } {
+  if (input.version !== 1) fail('unsupported request version')
+  if (typeof input.kind !== 'string') fail('request has no operation kind')
+  if (typeof input.actor !== 'string' || !actors.has(input.actor as ActorId)) fail('request has invalid actor')
+  if (typeof input.transport !== 'string' || !/^[a-z0-9./_-]{1,64}$/i.test(input.transport)) fail('request has invalid transport')
+  if (typeof input.eventId !== 'string' || !/^[a-f0-9-]{16,64}$/i.test(input.eventId)) fail('request has invalid event ID')
+  if (typeof input.at !== 'number' || !Number.isFinite(input.at)) fail('request has invalid time')
+  if (input.text !== undefined && (typeof input.text !== 'string' || Buffer.byteLength(input.text) > MAX_BODY || input.text.includes('\0'))) fail('request text is invalid or too large')
+}
+
+function execute(path: string, raw: string): Result {
+  let input: Input
+  try { input = JSON.parse(raw) as Input } catch { fail('request is not valid JSON') }
+  validateInput(input)
+  const canonical = JSON.stringify({ ...input, eventId: undefined })
+  const requestHash = hash(canonical)
+  const prior = readReceipt(input.eventId, requestHash, path)
+  if (prior !== undefined) return prior
+
+  const before = existsSync(path) ? readFileSync(path, 'utf8') : ''
+  const marker = `event=${input.eventId} hash=${requestHash}`
+  if (before.includes(marker)) {
+    const recovered: Result = { ok: true, saved: true, committed: false, notified: false, replayed: true, message: 'Recovered prior saved mutation', warnings: ['Recovered after interrupted acknowledgment; note was not written twice'] }
+    const git = commit(path, typeof input.subject === 'string' ? input.subject : input.kind)
+    recovered.committed = git.committed
+    if (git.warning) recovered.warnings.push(git.warning)
+    writeReceipt(input.eventId, requestHash, path, recovered)
+    return recovered
+  }
+
+  if (input.kind === 'replace') {
+    if (typeof input.text !== 'string') fail('replace needs text')
+    if (existsSync(path)) {
+      if (typeof input.expectedRevision !== 'string') fail('replace needs the revision that was read')
+      if (revisionOf(before) !== input.expectedRevision) fail('note changed after it was read; retry without overwriting the newer change')
+    }
+    atomicWrite(path, input.text)
+    const git = input.commit === false ? { committed: false } : commit(path, typeof input.subject === 'string' ? input.subject : 'notes')
+    const warnings = git.warning ? [git.warning] : []
+    return { ok: true, saved: true, committed: git.committed, notified: true, replayed: false, message: 'Notes saved', warnings }
+  }
+
+  if (input.kind === 'list' || input.kind === 'view') {
+    if (!existsSync(path)) fail('notes file does not exist')
+    const parsed = sections(before)
+    return {
+      ok: true,
+      saved: false,
+      committed: false,
+      notified: true,
+      replayed: false,
+      message: input.kind === 'view' ? 'Notes workspace read' : 'Todo list read',
+      warnings: [],
+      items: items(parsed.todo),
+      workspace: input.kind === 'view'
+        ? { objectives: parsed.objectives, updates: parsed.updates, important: parsed.important, todos: items(parsed.todo) }
+        : undefined,
+    }
+  }
+
+  if (!existsSync(path)) fail('notes file does not exist')
+  if (!['status', 'add', 'objective', 'update', 'important'].includes(input.kind)) fail(`unknown operation: ${input.kind}`)
+  if (input.status !== undefined && (typeof input.status !== 'string' || !STATUSES.includes(input.status as Status))) fail('request has invalid status')
+  const request: MutationRequest = {
+    kind: input.kind as MutationRequest['kind'],
+    text: typeof input.text === 'string' ? input.text : undefined,
+    selector: typeof input.selector === 'string' ? input.selector : undefined,
+    status: input.status as Status | undefined,
+    reason: typeof input.reason === 'string' ? input.reason : undefined,
+    actor: input.actor,
+    transport: input.transport,
+    eventId: input.eventId,
+    requestHash,
+    at: input.at,
+  }
+  const applied = applyMutation(before, request)
+  if (applied.saved) atomicWrite(path, applied.markdown)
+  const warnings: string[] = []
+  const git = applied.saved ? commit(path, applied.subject) : { committed: true }
+  if (git.warning) warnings.push(git.warning)
+  const notification = notify(path, applied.changes.map(change => changeLine(change, request.actor)))
+  if (notification.warning) warnings.push(notification.warning)
+  const result: Result = {
+    ok: true,
+    saved: applied.saved,
+    committed: git.committed,
+    notified: notification.notified,
+    replayed: false,
+    message: applied.message,
+    warnings,
+  }
+  writeReceipt(input.eventId, requestHash, path, result)
+  return result
+}
+
+const args = process.argv.slice(2)
+const lockedAt = args.indexOf('--locked')
+const isLocked = lockedAt >= 0
+if (isLocked) args.splice(lockedAt, 1)
+const fileAt = args.indexOf('--file')
+if (fileAt < 0 || args[fileAt + 1] === undefined) fail('--file is required')
+const rawFile = args[fileAt + 1]!
+const raw = readFileSync(0, 'utf8')
+if (Buffer.byteLength(raw) > MAX_BODY + 16 * 1024) fail('request is too large')
+
+mkdirSync(notesDir(), { recursive: true, mode: 0o700 })
+mkdirSync(stateDir(), { recursive: true, mode: 0o700 })
+chmodSync(stateDir(), 0o700)
+const path = trustedPath(rawFile)
+
+if (!isLocked) {
+  const lock = join(stateDir(), 'mutation.lock')
+  if (existsSync(lock) && lstatSync(lock).isSymbolicLink()) fail('mutation lock is a symlink')
+  const done = spawnSync('lockf', ['-t', '10', lock, process.execPath, process.argv[1]!, '--locked', '--file', path], {
+    input: raw,
+    encoding: 'utf8',
+    env: process.env,
+  })
+  if (done.stdout) process.stdout.write(done.stdout)
+  if (done.stderr) process.stderr.write(done.stderr)
+  process.exit(done.status ?? 1)
+}
+
+try {
+  const result = execute(path, raw)
+  process.stdout.write(`${JSON.stringify(result)}\n`)
+} catch (error) {
+  fail(error instanceof Error ? error.message : String(error), 1)
+}

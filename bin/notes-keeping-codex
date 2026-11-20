@@ -1,14 +1,16 @@
 #!/usr/bin/env bun
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
 import { spawnSync } from 'node:child_process'
+import { createHash, randomUUID } from 'node:crypto'
 
-import { logRow } from '../hooks/logs'
-import { addLogs, addUpdate, create, fileName, logsHint, projectName, sections, setObjectives, setTodo } from '../hooks/notes'
-import { changeLine, context, cycleItem, format, idOf, items, keyOf, markOf, parse, type Change, type Status, withIds } from '../hooks/todo'
+import { create, fileName, logsHint, projectName, sections } from '../hooks/notes'
+import { context, markOf, type Status } from '../hooks/todo'
 
 type HookInput = { session_id?: unknown; cwd?: unknown; hook_event_name?: unknown; source?: unknown }
+type Binding = { version: 1; path: string; sessionId: string; realCwd: string; generation: string }
+type EngineResult = { ok: boolean; saved: boolean; committed: boolean; notified: boolean; replayed: boolean; message: string; warnings: string[] }
 
 const statuses = new Set<Status>(['todo', 'in-progress', 'done', 'declined', 'blocked', 'paused'])
 const marks: Record<string, Status> = { '[ ]': 'todo', '[~]': 'in-progress', '[x]': 'done', '[-]': 'declined', '[!]': 'blocked', '[/]': 'paused' }
@@ -34,6 +36,19 @@ function bindingPath(id: string): string {
   return join(stateDir(), 'sessions', `${safeSession(id)}.json`)
 }
 
+function registryDir(): string {
+  return join(stateDir(), 'panes')
+}
+
+function atomicJson(path: string, value: unknown): void {
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 })
+  chmodSync(dirname(path), 0o700)
+  const temp = `${path}.${process.pid}.${randomUUID()}.tmp`
+  writeFileSync(temp, `${JSON.stringify(value)}\n`, { mode: 0o600 })
+  renameSync(temp, path)
+  chmodSync(path, 0o600)
+}
+
 function read(path: string): string {
   try {
     return readFileSync(path, 'utf8')
@@ -42,31 +57,18 @@ function read(path: string): string {
   }
 }
 
-function commit(path: string, subject: string): void {
-  const dir = dirname(path)
-  if (!existsSync(join(dir, '.git'))) spawnSync('git', ['-C', dir, 'init', '-q'], { stdio: 'ignore' })
-  spawnSync('git', ['-C', dir, 'add', '-A'], { stdio: 'ignore' })
-  spawnSync('git', ['-C', dir, 'commit', '-q', '-m', `${subject}: ${basename(path)}`], { stdio: 'ignore' })
+function engineExecutable(): string {
+  return process.env.PLUGIN_ROOT ? join(process.env.PLUGIN_ROOT, 'bin', 'notes-keeping-engine') : join(dirname(resolve(process.argv[1] || 'notes-keeping-codex')), 'notes-keeping-engine')
 }
 
-function save(path: string, md: string, subject: string): void {
-  writeFileSync(path, md)
-  commit(path, subject)
-}
-
-function bridgePath(): string | undefined {
-  if (process.env.NOTES_KEEPING_BRIDGE) return resolve(process.env.NOTES_KEEPING_BRIDGE)
-  const root = spawnSync('git', ['rev-parse', '--show-toplevel'], { encoding: 'utf8' })
-  const candidate = root.status === 0 ? join(root.stdout.trim(), 'config', 'notes-keeping-bridge') : join(process.cwd(), 'config', 'notes-keeping-bridge')
-  return existsSync(candidate) ? candidate : undefined
-}
-
-function notify(path: string, changes: readonly Change[]): void {
-  const bridge = bridgePath()
-  if (bridge === undefined || changes.length === 0) return
-  const input = `${changes.map(change => changeLine(change, 'codex')).join('\n')}\n`
-  const done = spawnSync(bridge, ['notify', path], { input, encoding: 'utf8', timeout: 10_000 })
-  if (done.status !== 0) console.error(`notes-keeping-codex: bridge notify failed: ${(done.stderr || String(done.error || done.status)).trim().split('\n').pop()}`)
+function engine(path: string, input: Record<string, unknown>): EngineResult {
+  const request = { version: 1, actor: 'codex', transport: 'codex/cli', eventId: randomUUID(), at: Date.now(), ...input }
+  const done = spawnSync(engineExecutable(), ['--file', path], { input: `${JSON.stringify(request)}\n`, encoding: 'utf8', env: process.env })
+  if (done.status !== 0) fail((done.stderr || done.stdout || String(done.error || done.status)).trim().split('\n').pop() || 'mutation engine failed', 1)
+  let result: EngineResult
+  try { result = JSON.parse(done.stdout) as EngineResult } catch { fail('mutation engine returned invalid JSON', 1) }
+  for (const warning of result.warnings) console.error(`notes-keeping-codex: ${warning}`)
+  return result
 }
 
 function existingSession(id: string): string | undefined {
@@ -78,21 +80,37 @@ function existingSession(id: string): string | undefined {
   return undefined
 }
 
-function ensureSession(id: string, cwd: string): string {
+function storedBinding(id: string, cwd: string): Binding | undefined {
   const binding = bindingPath(id)
   if (existsSync(binding)) {
     try {
-      const path = JSON.parse(read(binding)).path
-      if (typeof path === 'string' && existsSync(path)) return path
+      const kept = JSON.parse(read(binding)) as Partial<Binding>
+      if (typeof kept.path === 'string' && existsSync(kept.path)) {
+        return {
+          version: 1,
+          path: kept.path,
+          sessionId: id,
+          realCwd: typeof kept.realCwd === 'string' ? kept.realCwd : resolve(cwd),
+          generation: typeof kept.generation === 'string' ? kept.generation : randomUUID(),
+        }
+      }
     } catch {}
   }
-  mkdirSync(notesDir(), { recursive: true })
-  mkdirSync(dirname(binding), { recursive: true })
+  return undefined
+}
+
+function ensureSession(id: string, cwd: string): Binding {
+  const binding = bindingPath(id)
+  const stored = storedBinding(id, cwd)
+  if (stored !== undefined) return stored
+  mkdirSync(notesDir(), { recursive: true, mode: 0o700 })
+  mkdirSync(dirname(binding), { recursive: true, mode: 0o700 })
   const found = existingSession(id)
   const path = found || join(notesDir(), fileName(projectName(cwd), id, Date.now(), readdirSync(notesDir())))
-  if (!found) save(path, create('', id), 'session')
-  writeFileSync(binding, `${JSON.stringify({ path })}\n`)
-  return path
+  if (!found) engine(path, { kind: 'replace', text: create('', id), subject: 'session' })
+  const kept: Binding = { version: 1, path, sessionId: id, realCwd: resolve(cwd), generation: randomUUID() }
+  atomicJson(binding, kept)
+  return kept
 }
 
 function executable(): string {
@@ -105,8 +123,57 @@ function instructions(path: string): string {
     `Codex session notes: ${path}`,
     'Do not edit this file directly. Keep its todo statuses current yourself.',
     `Use ${command} status <id-or-exact-label> <todo|in-progress|done|declined|blocked|paused> [--reason <text>] to change a status and log it.`,
-    `Use ${command} add <text>, objective <text>, or update <text> for other logged changes; use show to read the file.`,
+    `Use ${command} add <text>, objective <text>, update <text>, or important <text> for other logged changes; use show to read the file.`,
   ].join('\n')
+}
+
+function tmuxIdentity(): { socket: string; pane: string } | undefined {
+  const socket = process.env.TMUX?.split(',')[0]
+  const pane = process.env.TMUX_PANE
+  return socket && pane ? { socket: resolve(socket), pane } : undefined
+}
+
+function registryPath(socket: string, pane: string): string {
+  const key = createHash('sha256').update(socket).update('\0').update(pane).digest('hex')
+  return join(registryDir(), `${key}.json`)
+}
+
+function registerPane(binding: Binding, event: string, source: unknown): void {
+  const tmux = tmuxIdentity()
+  if (tmux === undefined) return
+  if (event === 'SessionStart' && source !== 'compact') binding.generation = randomUUID()
+  const shown = spawnSync('tmux', ['-S', tmux.socket, 'display-message', '-p', '-t', tmux.pane, '#{session_id}\t#{pane_current_path}\t#{pane_pid}'], { encoding: 'utf8' })
+  if (shown.status !== 0) return
+  const [tmuxSessionId, paneCwd, panePid] = shown.stdout.trim().split('\t')
+  if (!tmuxSessionId || !paneCwd || !panePid) return
+  binding.realCwd = resolve(paneCwd)
+  atomicJson(bindingPath(binding.sessionId), binding)
+  const now = Date.now()
+  atomicJson(registryPath(tmux.socket, tmux.pane), {
+    version: 1,
+    tmuxServer: tmux.socket,
+    paneId: tmux.pane,
+    tmuxSessionId,
+    panePid: Number(panePid),
+    codexSessionId: binding.sessionId,
+    notePath: binding.path,
+    realCwd: binding.realCwd,
+    generation: binding.generation,
+    registeredAt: new Date(now).toISOString(),
+    refreshedAt: new Date(now).toISOString(),
+    leaseExpiresAt: new Date(now + 10 * 60_000).toISOString(),
+  })
+}
+
+function unregisterPane(binding: Binding): void {
+  const tmux = tmuxIdentity()
+  if (tmux === undefined) return
+  const path = registryPath(tmux.socket, tmux.pane)
+  if (!existsSync(path)) return
+  try {
+    const record = JSON.parse(read(path)) as { codexSessionId?: unknown; generation?: unknown }
+    if (record.codexSessionId === binding.sessionId && record.generation === binding.generation) unlinkSync(path)
+  } catch {}
 }
 
 function hook(): void {
@@ -118,7 +185,15 @@ function hook(): void {
   }
   if (typeof input.session_id !== 'string') fail('hook input has no session_id')
   const cwd = typeof input.cwd === 'string' ? input.cwd : process.cwd()
-  const path = ensureSession(input.session_id, cwd)
+  if (input.hook_event_name === 'SessionEnd') {
+    const stored = storedBinding(input.session_id, cwd)
+    if (stored !== undefined) unregisterPane(stored)
+    return
+  }
+  const binding = ensureSession(input.session_id, cwd)
+  const path = binding.path
+  if (input.hook_event_name === 'SessionStart' && input.source !== 'compact') binding.generation = randomUUID()
+  registerPane(binding, typeof input.hook_event_name === 'string' ? input.hook_event_name : '', input.source)
   if (input.hook_event_name === 'SessionStart' && input.source !== 'compact') return
   const md = read(path)
   const s = sections(md)
@@ -145,15 +220,6 @@ function statusOf(value: string): Status {
   return status as Status
 }
 
-function findItem(md: string, selector: string) {
-  const list = items(sections(md).todo)
-  const wanted = selector.replace(/^id:/, '')
-  const found = list.filter(item => item.id === wanted || keyOf(item.text) === keyOf(selector) || (item.label !== undefined && keyOf(item.label) === keyOf(selector)))
-  if (found.length === 0) fail(`no todo item matches: ${selector}`)
-  if (found.length > 1) fail(`todo item is ambiguous: ${selector}`)
-  return found[0]!
-}
-
 function mutate(path: string, verb: string, args: string[]): void {
   if (!existsSync(path)) fail(`notes file does not exist: ${path}`)
   const before = read(path)
@@ -164,37 +230,29 @@ function mutate(path: string, verb: string, args: string[]): void {
   if (verb === 'status') {
     const reason = option(args, '--reason')
     if (args.length !== 2) fail('status needs <id-or-exact-label> <status>')
-    const item = findItem(before, args[0]!)
     const to = statusOf(args[1]!)
-    const body = cycleItem(sections(before).todo, idOf(item), () => to, reason)
-    const changed = items(body).find(one => idOf(one) === idOf(item)) || { ...item, status: to }
-    const md = addLogs(setTodo(before, body), [logRow({ at: Date.now(), actor: 'codex', action: 'status', item: changed, from: item.status, to, note: reason })])
-    save(path, md, 'todo')
-    notify(path, [{ item: changed, from: item.status, to }])
-    console.log(`${markOf(to)} ${changed.label || changed.text}`)
+    const result = engine(path, { kind: 'status', selector: args[0], status: to, reason })
+    console.log(`${markOf(to)} ${result.message}`)
     return
   }
   const text = args.join(' ').trim()
   if (text === '') fail(`${verb} needs text`)
   if (verb === 'add') {
-    const current = sections(before).todo
-    if (items(current).some(item => keyOf(item.text) === keyOf(text))) fail(`todo item already exists: ${text}`)
-    const body = format(withIds(parse([current, `- [ ] ${text}`].filter(Boolean).join('\n'))))
-    const item = items(body).find(one => keyOf(one.text) === keyOf(text))!
-    const md = addLogs(setTodo(before, body), [logRow({ at: Date.now(), actor: 'codex', action: 'added', item, to: 'todo' })])
-    save(path, md, 'todo')
-    notify(path, [{ item, to: 'todo' }])
-    console.log(`${item.id} ${item.text}`)
+    const result = engine(path, { kind: 'add', text })
+    if (!result.saved) fail(result.message)
+    console.log(result.message)
     return
   }
   if (verb === 'objective') {
-    const md = addLogs(setObjectives(before, text), [logRow({ at: Date.now(), actor: 'codex', action: 'objective', note: text })])
-    save(path, md, 'objective')
+    console.log(engine(path, { kind: 'objective', text }).message)
     return
   }
   if (verb === 'update') {
-    const md = addLogs(addUpdate(before, new Date().toISOString().replace(/\.\d{3}Z$/, 'Z'), text), [logRow({ at: Date.now(), actor: 'codex', action: 'update', note: text })])
-    save(path, md, 'update')
+    console.log(engine(path, { kind: 'update', text }).message)
+    return
+  }
+  if (verb === 'important') {
+    console.log(engine(path, { kind: 'important', text }).message)
     return
   }
   fail(`unknown command: ${verb}`)
@@ -202,10 +260,18 @@ function mutate(path: string, verb: string, args: string[]): void {
 
 const args = process.argv.slice(2)
 if (args[0] === 'hook') hook()
+else if (args[0] === 'register-current') {
+  if (args.length !== 2 || args[1]?.trim() === '') fail('register-current needs <codex-session-id>')
+  if (tmuxIdentity() === undefined) fail('register-current must run with TMUX and TMUX_PANE set')
+  const binding = ensureSession(args[1]!, process.cwd())
+  binding.generation = randomUUID()
+  registerPane(binding, 'SessionStart', 'manual-registration')
+  console.log(`Registered ${process.env.TMUX_PANE} to ${basename(binding.path)} for Codex ${binding.sessionId.slice(0, 8)}`)
+}
 else {
   const file = option(args, '--file')
   if (file === undefined) fail('--file is required')
   const verb = args.shift()
-  if (verb === undefined) fail('usage: notes-keeping-codex --file <path> show | status <item> <status> | add|objective|update <text>')
+  if (verb === undefined) fail('usage: notes-keeping-codex --file <path> show | status <item> <status> | add|objective|update|important <text>')
   mutate(resolve(file), verb, args)
 }

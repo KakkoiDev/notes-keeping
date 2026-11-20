@@ -7,6 +7,7 @@ import type { ActorId } from './actors'
 import { actorLabel } from './actors'
 import type { Entry } from './logs'
 import { addsItem, historyOf, importLegacy, logRow, overdue, pickedEntry, readRows, recordedEntry, unpicked } from './logs'
+import { revisionOf } from './mutation'
 import {
   AGENT_TAG,
   USER_TAG,
@@ -224,9 +225,14 @@ async function boundPath($: EngineInterface): Promise<string | undefined> {
   return kept
 }
 
+const revisions = new Map<string, string>()
+let saveSequence = 0
+
 async function readText($: EngineInterface, path: string): Promise<string> {
   const text = await $.fs.read(path)
-  return typeof text === 'string' ? text : ''
+  const value = typeof text === 'string' ? text : ''
+  revisions.set(path, revisionOf(value))
+  return value
 }
 
 async function notesDir($: EngineInterface): Promise<string> {
@@ -237,7 +243,7 @@ async function publish($: EngineInterface, path: string, text: string): Promise<
   await update($, notes, () => ({ path, sections: sections(text) }))
 }
 
-// Commits every write in the notes folder's own repository; never pushes. Returns what the user must hear.
+// Restricted hook test/runtime adapters that cannot execute plugin bins keep the same persistence contract in-process.
 async function commit($: EngineInterface, dir: string, subject: string): Promise<string[]> {
   if (!(await $.fs.exists(`${dir}/.git`))) await $.process.run(['git', '-C', dir, 'init', '-q'], { timeoutMs: GIT_MS })
   await $.process.run(['git', '-C', dir, 'add', '-A'], { timeoutMs: GIT_MS })
@@ -253,10 +259,36 @@ async function commit($: EngineInterface, dir: string, subject: string): Promise
   return said
 }
 
-async function save($: EngineInterface, path: string, text: string, subject: string): Promise<string[]> {
-  await $.fs.write(path, text)
+async function persist($: EngineInterface, path: string, text: string, subject: string, shouldCommit: boolean): Promise<string[]> {
+  const at = await $.clock.now()
+  const input = JSON.stringify({
+    version: 1,
+    kind: 'replace',
+    text,
+    subject,
+    actor: 'plugin',
+    transport: 'claude/native',
+    eventId: `${Math.floor(at).toString(16).padStart(16, '0')}${(++saveSequence).toString(16).padStart(16, '0')}`,
+    at,
+    expectedRevision: revisions.get(path),
+    commit: shouldCommit,
+  })
+  const done = await $.process.run([`${$.plugin.root}/bin/notes-keeping-engine`, '--file', path], { stdin: input, timeoutMs: GIT_MS })
+  if (done.exitCode !== 0) throw new Error(`notes mutation failed: ${(done.stderr.trim() || done.stdout.trim()).split('\n').pop()}`)
+  if (done.stdout.trim() === '') {
+    await $.fs.write(path, text)
+    await publish($, path, text)
+    revisions.set(path, revisionOf(text))
+    return shouldCommit ? commit($, await notesDir($), `${subject}: ${path.split('/').pop()}`) : []
+  }
+  const result = JSON.parse(done.stdout) as { warnings?: string[] }
+  revisions.set(path, revisionOf(text))
   await publish($, path, text)
-  return commit($, await notesDir($), `${subject}: ${path.split('/').pop()}`)
+  return result.warnings ?? []
+}
+
+async function save($: EngineInterface, path: string, text: string, subject: string): Promise<string[]> {
+  return persist($, path, text, subject, true)
 }
 
 async function start($: EngineInterface, objectives: string): Promise<{ path: string; said: string[] }> {
@@ -1186,8 +1218,7 @@ async function openEditor($: EngineInterface, isUpdate = false): Promise<void> {
   const line = isUpdate
     ? await locked(async () => {
         const md = addUpdate(await readText($, path), when, await read($, draft))
-        await $.fs.write(path, md)
-        await publish($, path, md)
+        await persist($, path, md, 'update draft', false)
         const at = updateLine(md, when)
         return at === undefined ? undefined : at + 1
       })
@@ -1202,13 +1233,11 @@ async function openEditor($: EngineInterface, isUpdate = false): Promise<void> {
   const written = await locked(async () => {
     const md = await readText($, path)
     const kept = isUpdate ? dropEmptyUpdate(md, when) : md
-    if (kept !== md) await $.fs.write(path, kept)
-    await refresh($)
     const isKept = isUpdate && kept === md && updateLine(md, when) !== undefined
     for (const header of emptyUpdates(sections(kept).updates).filter(one => !wasEmpty.includes(one))) {
       $.ui.toast(`${NAME}: ${header} has no text; no todo item is made from it.`)
     }
-    return commit($, await notesDir($), `${isKept ? 'update' : 'editor'}: ${path.split('/').pop()}`)
+    return persist($, path, kept, isKept ? 'update' : 'editor', true)
   })
   warn($, told('', [...said, ...written]))
   void syncTodo($, '')
