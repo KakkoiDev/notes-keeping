@@ -10,6 +10,42 @@ git clone https://github.com/KakkoiDev/notes-keeping ~/Code/notes-keeping
 
 Add the clone to `CLAUDE_CODE_PLUGIN_DIRS` (colon-separated absolute paths) in the `env` of your Claude Code settings, then restart Claude Code.
 
+### Codex CLI
+
+The Codex adapter uses native `SessionStart` and `UserPromptSubmit` hooks to create one notes file per Codex session and put the current todo list into developer context before every prompt.
+It was verified with [Codex CLI 0.170.0](https://github.com/openai/codex/releases/tag/rust-v0.170.0) and requires `codex`, `bun`, and the native hook and plugin commands available in that release.
+
+From this checkout, install the local plugin:
+
+```sh
+bin/install-codex
+```
+
+Restart Codex, run `/hooks`, review the `notes-keeping` hooks, and trust them.
+Codex deliberately skips newly installed or changed plugin hooks until you do this, as described in the [Codex hooks documentation](https://learn.chatgpt.com/docs/hooks#review-and-trust-hooks).
+
+The adapter stores notes in the same `~/.notes-keeping` directory and uses the same headings, todo markers, ids, pause reasons, and `# Logs` rows as the Claude Code plugin.
+The hook tells Codex the exact notes path and command on every turn.
+Codex can then use these entry points without editing the file directly:
+
+```sh
+bin/notes-keeping-codex --file /path/to/note.md show
+bin/notes-keeping-codex --file /path/to/note.md add 'Ship the adapter'
+bin/notes-keeping-codex --file /path/to/note.md status ITEM_ID in-progress
+bin/notes-keeping-codex --file /path/to/note.md status ITEM_ID paused --reason 'waiting for review'
+bin/notes-keeping-codex --file /path/to/note.md objective 'Deliver Codex support'
+bin/notes-keeping-codex --file /path/to/note.md update 'Adapter tests pass'
+```
+
+Each write commits in the notes directory's local git repository, just like the Claude Code plugin.
+Status, add, objective, and update commands also append a `codex` action row to `# Logs`.
+The existing panel and firstmate bridge continue to read the same file format.
+When a session root has `config/notes-keeping-bridge`, add and status commands also send their shared-format change lines through its existing `notify` entry point.
+
+Codex CLI does not host the Claude Code React pane, prompt button, selection band, queued-reply editor, or Laya `turn.complete` integration.
+The closest Codex substitutes are per-turn hook context and the `show` and mutation commands above; opening the same notes file in Claude Code still gives its native panel.
+Codex supports bundled lifecycle hooks but does not expose Claude Code's `claude-code` pane API; see the [plugin hook packaging documentation](https://developers.openai.com/plugins/build/plugins#bundled-mcp-servers-and-lifecycle-hooks).
+
 License: MIT.
 
 Session notes in `~/.notes-keeping/<date>-<time>-<project>-<session>.md`, committed in that folder's own git repository (never pushed). Sections: `# Objectives` (with `## Updates`), `# Todo`, `# Important`, `# Chat`.
@@ -356,6 +392,7 @@ the firstmate task, the copied file). An attach from History logs one `attach` r
 | --- | --- | --- |
 | `captain` | human | a click or key in the pane, or a command typed at the prompt or sent from the phone |
 | `firstmate` | AI agent | a bridge move or an update queued through the bridge (Claude Opus 5.5 via the bridge), with the task id and `--by` name |
+| `codex` | AI agent | a todo, objective, or update change made through the Codex adapter |
 | `laya` | AI classifier | a Laya move or a line Laya judged a task (`aac6fef/laya-mlx` on replies, the multilingual checkpoint on objective lines) |
 | `plugin` | plugin | an item made from an objective or update as written, with no Laya call |
 | `unknown` | unknown | a change found in the file that the plugin did not make, or a command from another origin |

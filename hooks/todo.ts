@@ -635,8 +635,8 @@ const UPKEEP = [
   'Without the firstmate bridge you have no path to change a status.',
 ]
 
-// What Claude reads each turn: the list, and to work every open item at once. s: the objectives and updates the items came from.
-export function context(body: string, s?: Pick<Sections, 'objectives' | 'updates'>): string | undefined {
+// What an agent reads each turn: the list, and to work every open item at once. s: the objectives and updates the items came from.
+export function context(body: string, s?: Pick<Sections, 'objectives' | 'updates'>, upkeep: readonly string[] = UPKEEP): string | undefined {
   const list = items(body)
   if (list.length === 0) return undefined
   const isOpen = list.some(item => item.status === 'todo' || item.status === 'in-progress')
@@ -651,5 +651,5 @@ export function context(body: string, s?: Pick<Sections, 'objectives' | 'updates
     ? ["Blocked ([!]): could not be started. Open your reply by telling the captain which items are blocked, why, and what you are doing to unblock each; clearing the marker is yours, not the captain's."]
     : []
   const paused = pausedContext(body)
-  return [`Todo list kept by notes-keeping (${STATUSES.map(legend).join(', ')}).`, ...UPKEEP, head, ...blocked, ...shown, ...more, ...(paused === undefined ? [] : [paused])].join('\n')
+  return [`Todo list kept by notes-keeping (${STATUSES.map(legend).join(', ')}).`, ...upkeep, head, ...blocked, ...shown, ...more, ...(paused === undefined ? [] : [paused])].join('\n')
 }

@@ -8,11 +8,12 @@ const AT = Date.UTC(2026, 9, 29, 1, 12, 43, 512)
 
 describe('actors', () => {
   test('the config names each actor once with a kind and a label, Laya by the models it runs', () => {
-    expect(ACTORS.map(actor => actor.id)).toEqual(['captain', 'firstmate', 'laya', 'plugin', 'unknown'])
+    expect(ACTORS.map(actor => actor.id)).toEqual(['captain', 'firstmate', 'codex', 'laya', 'plugin', 'unknown'])
     expect(new Set(ACTORS.map(actor => actor.id)).size).toBe(ACTORS.length)
     expect(Object.fromEntries(ACTORS.map(actor => [actor.id, actor.kind]))).toEqual({
       captain: 'human',
       firstmate: 'ai-agent',
+      codex: 'ai-agent',
       laya: 'ai-agent',
       plugin: 'plugin',
       unknown: 'unknown',

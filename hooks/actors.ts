@@ -4,6 +4,7 @@
 export const ACTORS = [
   { id: 'captain', kind: 'human', label: 'Captain (human)' },
   { id: 'firstmate', kind: 'ai-agent', label: 'Firstmate (AI agent, Claude Opus 5.5 via bridge)' },
+  { id: 'codex', kind: 'ai-agent', label: 'Codex (AI agent)' },
   { id: 'laya', kind: 'ai-agent', label: 'Laya (AI classifier, aac6fef/laya-mlx)' },
   { id: 'plugin', kind: 'plugin', label: 'Plugin (notes-keeping)' },
   { id: 'unknown', kind: 'unknown', label: 'Unknown writer' },

@@ -38,3 +38,11 @@ jobs:
           path: firstmate
       - name: Bridge tests
         run: FM_ROOT="$GITHUB_WORKSPACE/firstmate" bin/notes-keeping-bridge.test.sh
+
+  codex:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - name: Codex adapter tests
+        run: bin/notes-keeping-codex.test.sh
