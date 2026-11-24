@@ -1632,13 +1632,24 @@ export const register: Register = on => {
             const drawn = indent === '' || first === undefined || first.note !== undefined ? line : [{ ...first, text: first.text.slice(indent.length) }, ...rest]
             return (
               <Box key={`note-line:${lineIndex}`} flexDirection="row" flexWrap="wrap" marginLeft={indent.length}>
-                {drawn.map(part => part.text === '' ? null : part.note === undefined ? (
-                  <Markdown key={`note-text:${lineIndex}:${part.index}`} text={part.text} />
-                ) : (
-                  <Button key={`note:${part.note}:${part.index}`} plain label={part.text} onPress={() => openNote($, part.note ?? '')}>
-                    <Text color="magenta">{part.text}</Text>
-                  </Button>
-                ))}
+                {drawn.flatMap(part => {
+                  if (part.text === '') return []
+                  if (part.note !== undefined) return [
+                    <Button key={`note:${part.note}:${part.index}`} plain label={part.text} onPress={() => openNote($, part.note ?? '')}>
+                      <Text color="magenta">{part.text}</Text>
+                    </Button>,
+                  ]
+                  // Markdown drops whitespace at a component boundary. Draw both sides literally when a note splits a line.
+                  const leading = /^[ \t]+/.exec(part.text)?.[0] ?? ''
+                  const rest = part.text.slice(leading.length)
+                  const trailing = /[ \t]+$/.exec(rest)?.[0] ?? ''
+                  const body = rest.slice(0, rest.length - trailing.length)
+                  return [
+                    leading === '' ? null : <Text key={`note-space:${lineIndex}:${part.index}:leading`}>{leading}</Text>,
+                    body === '' ? null : <Markdown key={`note-text:${lineIndex}:${part.index}`} text={body} />,
+                    trailing === '' ? null : <Text key={`note-space:${lineIndex}:${part.index}:trailing`}>{trailing}</Text>,
+                  ]
+                })}
               </Box>
             )
           })}
