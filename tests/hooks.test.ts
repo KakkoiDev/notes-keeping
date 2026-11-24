@@ -3229,13 +3229,13 @@ function toggleLines(labels: { hotkey: string; label: string }[], props: { gap?:
   return rows.flatMap((row, i) => i === rows.length - 1 ? [row] : [row, ...Array<string>(rowGap).fill('')])
 }
 
-test('the wrapped status legend has adjacent lines without blank rows', async ($, on) => {
+test('the wrapped status legend exact terminal output has one space between toggles and no blank rows', async ($, on) => {
   const { pane } = await keynav($, on)
   const row = await pane.find({ key: 'filters' })
   const toggles = (await pane.findAll({ type: 'Button' })).filter(button => button.key?.startsWith('show:') === true || button.key === 'filter')
   expect(toggleLines(toggles.map(button => ({ hotkey: String(button.props.hotkey ?? ''), label: String(button.props.label ?? '') })), row?.props ?? {}, 70)).toEqual([
-    '1: [ ] todo: shown  2: [~] in-progress: shown  3: [x] done: shown',
-    '4: [-] declined: shown  5: [!] blocked: shown  6: [/] paused: shown',
+    '1: [ ] todo: shown 2: [~] in-progress: shown 3: [x] done: shown',
+    '4: [-] declined: shown 5: [!] blocked: shown 6: [/] paused: shown',
     'm: filter: all',
   ])
   await pane.unmount()
