@@ -3214,12 +3214,39 @@ function toggleEnds(labels: { hotkey: string; label: string }[], gap: number, wr
   })
 }
 
+// The terminal lines produced by a wrapping row of plain Buttons. A row gap becomes empty lines between wrapped rows.
+function toggleLines(labels: { hotkey: string; label: string }[], props: { gap?: number; columnGap?: number; rowGap?: number }, columns: number): string[] {
+  const columnGap = props.columnGap ?? props.gap ?? 0
+  const rowGap = props.rowGap ?? props.gap ?? 0
+  const rows: string[] = []
+  for (const { hotkey, label } of labels) {
+    const button = `${hotkey}: ${label}`
+    const row = rows.at(-1) ?? ''
+    if (row !== '' && row.length + columnGap + button.length > columns) rows.push(button)
+    else if (row === '') rows.push(button)
+    else rows[rows.length - 1] = `${row}${' '.repeat(columnGap)}${button}`
+  }
+  return rows.flatMap((row, i) => i === rows.length - 1 ? [row] : [row, ...Array<string>(rowGap).fill('')])
+}
+
+test('the wrapped status legend has adjacent lines without blank rows', async ($, on) => {
+  const { pane } = await keynav($, on)
+  const row = await pane.find({ key: 'filters' })
+  const toggles = (await pane.findAll({ type: 'Button' })).filter(button => button.key?.startsWith('show:') === true || button.key === 'filter')
+  expect(toggleLines(toggles.map(button => ({ hotkey: String(button.props.hotkey ?? ''), label: String(button.props.label ?? '') })), row?.props ?? {}, 70)).toEqual([
+    '1: [ ] todo: shown  2: [~] in-progress: shown  3: [x] done: shown',
+    '4: [-] declined: shown  5: [!] blocked: shown  6: [/] paused: shown',
+    'm: filter: all',
+  ])
+  await pane.unmount()
+})
+
 test('every status toggle, [!] blocked included, fits a sidebar 89 columns wide', async ($, on) => {
   const { pane } = await keynav($, on)
   const row = await pane.find({ key: 'filters' })
   const toggles = (await pane.findAll({ type: 'Button' })).filter(button => button.key?.startsWith('show:') === true)
   expect(toggles.map(button => button.key)).toContain('show:blocked')
-  const ends = toggleEnds(toggles.map(button => ({ hotkey: button.props.hotkey, label: button.props.label })), row?.props.gap, row?.props.flexWrap === 'wrap', 89)
+  const ends = toggleEnds(toggles.map(button => ({ hotkey: String(button.props.hotkey ?? ''), label: String(button.props.label ?? '') })), Number(row?.props.columnGap ?? row?.props.gap ?? 0), row?.props.flexWrap === 'wrap', 89)
   expect(ends.filter(end => end > 89)).toEqual([])
   await pane.unmount()
 })
