@@ -3546,6 +3546,20 @@ test('marked assistant text keeps source lines and nested indentation at wide an
   }
 })
 
+test('marked assistant text preserves spaces beside the selected text', async ($, on) => {
+  const note = ' <!-- note:k3x9 row:row-1 at:0 -->'
+  const fs: Fs = { [BOUND]: `# Objectives\n\nPlan\n\n## Updates\n\n# Important\n\n# Chat\n\n[AI_AGENT] brown fox${note}\n[USER] Keep watching\n` }
+  engine(on, fs, { [`session:${SESSION}`]: BOUND })
+  engineDraws(on)
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
+  await flush()
+
+  const row = await $.ui.mount(reply('row-1', 'The quick brown fox jumps.'))
+  const spaces = await row.findAll({ type: 'Text', text: ' ' })
+  expect(spaces.filter(space => Object.keys(space.props).length === 0)).toHaveLength(2)
+  await row.unmount()
+})
+
 test('a reply to text selected in an assistant row marks that text as a link in the row, queued and once sent; a click opens the note', async ($, on) => {
   const fs: Fs = { [BOUND]: '# Objectives\n\nPlan\n\n## Updates\n\n# Important\n\n# Chat\n' }
   let selection: string | undefined
