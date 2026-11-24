@@ -113,7 +113,7 @@ export function TodoSlot(props: {
   return (
     <Box flexDirection="column" marginBottom={1}>
       <Text bold>Todo</Text>
-      <Box key="filters" flexDirection="row" flexWrap="wrap" columnGap={2}>
+      <Box key="filters" flexDirection="row" flexWrap="wrap" columnGap={1}>
         {STATUSES.map(status => (
           <Button
             key={`show:${status}`}
