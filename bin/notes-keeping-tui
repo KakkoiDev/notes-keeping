@@ -990,8 +990,12 @@ def workspace_panel(server: str, pane: str, session: str, *, initial_view: int, 
                     calls = sum(row.get("flag") == "!" and (not row.get("todos") or shown_ids.intersection(row["todos"])) for row in work.get("rows", []))
                     if calls:
                         print(f"Open calls: {calls}\r")
-                    if not todo_items:
-                        print("No todo items in this filter. Open Notes to draft one.\r")
+                    if not value["todos"]:
+                        print("No todos in this session. [5/N] Draft a todo.\r")
+                        if history_items:
+                            print("[9/H] History → [Enter] Preview → [a] Attach open todos.\r")
+                    elif not todo_items:
+                        print("No todos match this filter. [m] Cycle filters or [v] show a status.\r")
                     for index, item in window_at(todo_items, cursors["todo"], max(1, height // (2 if work else 1))):
                         status_value = str(item.get("status", "todo"))
                         text = str(item.get("label") or item.get("text") or "")

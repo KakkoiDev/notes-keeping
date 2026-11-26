@@ -177,7 +177,7 @@ assert source_path.read_bytes() == saved_source
 
 PY
 
-TUI="$ROOT/bin/notes-keeping-tui" SOCKET="$SOCKET" PANE="${PANES[0]}" SESSION="$SESSION" python3 - <<'PY'
+TUI="$ROOT/bin/notes-keeping-tui" ADAPTER="$ROOT/bin/notes-keeping-codex" CWD="$H/project" SOCKET="$SOCKET" PANE="${PANES[0]}" SESSION="$SESSION" python3 - <<'PY'
 import hashlib, importlib.machinery, json, os, pty, select, subprocess, time
 module = importlib.machinery.SourceFileLoader('notes_keeping_tui_navigation', os.environ['TUI']).load_module()
 
@@ -187,21 +187,28 @@ def run(args, keys):
     os.close(slave)
     output = bytearray()
     try:
-        time.sleep(0.15)
-        os.write(master, keys)
-        deadline = time.time() + 5
-        while time.time() < deadline:
+        sent = False
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
             ready, _, _ = select.select([master], [], [], 0.1)
             if ready:
                 try:
                     output.extend(os.read(master, 65536))
                 except OSError:
                     break
+                if not sent and b'[q/Esc] Close' in output:
+                    os.write(master, keys)
+                    sent = True
             if process.poll() is not None:
                 break
-        assert process.wait(timeout=1) == 0, output.decode(errors='replace')
+        assert sent and process.wait(timeout=1) == 0, output.decode(errors='replace')
+    except subprocess.TimeoutExpired as error:
+        raise AssertionError(output.decode(errors='replace')) from error
     finally:
         os.close(master)
+        if process.poll() is None:
+            process.kill()
+            process.wait()
     return output.decode(errors='replace')
 
 header = {'tmuxServer': os.environ['SOCKET'], 'paneId': os.environ['PANE'], 'tmuxSessionId': os.environ['SESSION']}
@@ -235,6 +242,65 @@ assert 'Continuation of: ' + source.name in current.read_text()
 assert '| captain | attach |' in current.read_text()
 assert source.read_bytes() == original
 
+filtered = run(popup, b'm291q').split('\x1b[2J\x1b[H')
+todo_frames = [frame for frame in filtered if 'Filter:' in frame]
+assert 'pane one α' in todo_frames[0]
+assert 'No todos match this filter.' in todo_frames[-1], todo_frames[-1]
+assert 'No todos in this session.' not in todo_frames[-1]
+assert 'pane one α' not in todo_frames[-1]
+
+fixture_pane = subprocess.check_output(
+    ['tmux', '-S', header['tmuxServer'], 'split-window', '-d', '-P', '-F', '#{pane_id}', '-t', header['paneId'],
+     '-c', os.environ['CWD'], 'sleep 120'],
+    text=True,
+).strip()
+fixture_header = {**header, 'paneId': fixture_pane}
+fixture_popup = [os.environ['TUI'], 'workspace-popup', header['tmuxServer'], fixture_pane, header['tmuxSessionId']]
+
+def bind_fixture(session_id):
+    subprocess.run(
+        [os.environ['ADAPTER'], 'hook'],
+        input=json.dumps({'session_id': session_id, 'cwd': os.environ['CWD'], 'hook_event_name': 'SessionStart', 'source': 'startup'}),
+        text=True, check=True,
+        env={**os.environ, 'TMUX': header['tmuxServer'] + ',1,0', 'TMUX_PANE': fixture_pane},
+    )
+
+status_rows = {
+    'todo': '[ ] Fixture todo item',
+    'in-progress': '[~] Fixture active item',
+    'done': '[x] Fixture done item',
+    'declined': '[-] Fixture declined item',
+    'blocked': '[!] Fixture blocked item',
+    'paused': '[/] Fixture paused item',
+}
+status_note = module.notes_dir() / '2099-01-01-00-00-status-cafe0001.md'
+status_note.write_text('# Objectives\n\nSessions: cafe0001-fixture\n\n# Todo\n\n' +
+                       '\n'.join('- ' + row for row in status_rows.values()) + '\n')
+source_before = status_note.read_bytes()
+bind_fixture('cafe0001-fixture')
+populated = run(fixture_popup, b'm291q').split('\x1b[2J\x1b[H')
+todo_frames = [frame for frame in populated if 'Filter:' in frame]
+assert all(row in todo_frames[0] for row in status_rows.values())
+for status, row in status_rows.items():
+    assert (row in todo_frames[-1]) == (status in ('todo', 'blocked')), todo_frames[-1]
+
+bind_fixture('cafe0002-empty')
+empty_response, empty_body = module.request({'type': 'workspace', **fixture_header})
+assert json.loads(empty_body)['todos'] == []
+empty_note = module.notes_dir() / empty_response['target']
+empty_before = empty_note.read_bytes()
+cancelled = run(fixture_popup, b'9\ranb1q')
+assert 'No todos in this session.' in cancelled
+assert '[9/H] History' in cancelled and '[a] Attach' in cancelled
+assert 'Attach ' + status_note.name in cancelled and status_rows['todo'] in cancelled
+assert empty_note.read_bytes() == empty_before
+
+attached = run(fixture_popup, b'9\ray1q').split('\x1b[2J\x1b[H')[-1]
+for status, row in status_rows.items():
+    assert (row in attached) == (status not in ('done', 'declined')), attached
+assert 'Continuation of: ' + status_note.name in empty_note.read_text()
+assert status_note.read_bytes() == source_before
+
 PY
 
 BEFORE="$(shasum -a 256 "$NOTE_ONE")"
@@ -262,3 +328,4 @@ printf 'ok   runtime transport is owner-only\n'
 printf 'ok   no-selection opens full workspace on Todos and same-cwd targets stay explicit\n'
 printf 'ok   all workspace views, direct category save, Todo status, and OSC 8 links work\n'
 printf 'ok   History arrows, preview, return, and view refresh preserve the workspace mapping\n'
+printf 'ok   all six Todo statuses, filter persistence, and empty-session History attach work\n'
