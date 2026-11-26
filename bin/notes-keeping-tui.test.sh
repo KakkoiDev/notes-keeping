@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+export PATH="$ROOT/bin:$PATH"
 TMP_ROOT="${TMPDIR:-/tmp}"
 H="$(mktemp -d "$TMP_ROOT/nk-tui.XXXXXX")"
 export PYTHONDONTWRITEBYTECODE=1
@@ -301,6 +302,12 @@ for status, row in status_rows.items():
 assert 'Continuation of: ' + status_note.name in empty_note.read_text()
 assert status_note.read_bytes() == source_before
 
+large_history = module.notes_dir() / '2000-01-01-00-00-archive-feed0002.md'
+large_chat = ('Long archived chat line.\n' * 50_000) + 'End of archived chat.'
+large_history.write_text('# Objectives\n\n# Chat\n\n' + large_chat + '\n')
+_, preview = module.request({'type': 'preview', **fixture_header, 'source': large_history.name})
+assert json.loads(preview)['chat'] == large_chat
+
 PY
 
 BEFORE="$(shasum -a 256 "$NOTE_ONE")"
@@ -329,3 +336,4 @@ printf 'ok   no-selection opens full workspace on Todos and same-cwd targets sta
 printf 'ok   all workspace views, direct category save, Todo status, and OSC 8 links work\n'
 printf 'ok   History arrows, preview, return, and view refresh preserve the workspace mapping\n'
 printf 'ok   all six Todo statuses, filter persistence, and empty-session History attach work\n'
+printf 'ok   large History previews survive the mutation lock and IPC frame\n'
