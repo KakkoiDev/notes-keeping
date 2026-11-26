@@ -4,6 +4,7 @@ set -uo pipefail
 ADAPTER="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/notes-keeping-codex"
 TMP_ROOT="${TMPDIR:-/tmp}"
 H="$(mktemp -d "$TMP_ROOT/nk-codex.XXXXXX")"
+trap '"${ADAPTER%/*}/notes-keeping-tui" stop >/dev/null 2>&1 || true' EXIT
 export NOTES_KEEPING_DIR="$H/notes"
 export NOTES_KEEPING_CODEX_STATE="$H/state"
 export GIT_AUTHOR_NAME='notes-keeping test'

@@ -1,6 +1,6 @@
 {
   "name": "notes-keeping",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Session notes and todo context for Codex",
   "hooks": "./hooks/codex-hooks.json"
 }

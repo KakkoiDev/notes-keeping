@@ -12,8 +12,9 @@ if ! command -v lockf >/dev/null && ! command -v flock >/dev/null; then
   exit 1
 fi
 
+CLI="$(command -v notes-keeping)" || { echo 'install-codex: install the notes-keeping CLI on PATH first' >&2; exit 1; }
 codex plugin marketplace add "$ROOT"
 codex plugin add notes-keeping@notes-keeping
-"$ROOT/bin/notes-keeping-tmux" install
+NOTES_KEEPING_COMMAND="$CLI" "$CLI" tmux install
 
 printf '%s\n' 'notes-keeping installed with Prefix then Shift+N popup capture. Restart Codex, run /hooks, and trust the notes-keeping hooks.'

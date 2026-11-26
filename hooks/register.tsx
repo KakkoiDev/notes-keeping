@@ -227,6 +227,7 @@ async function boundPath($: EngineInterface): Promise<string | undefined> {
 
 const revisions = new Map<string, string>()
 let saveSequence = 0
+let standaloneCliReady = false
 
 async function readText($: EngineInterface, path: string): Promise<string> {
   const text = await $.fs.read(path)
@@ -236,7 +237,7 @@ async function readText($: EngineInterface, path: string): Promise<string> {
 }
 
 async function notesDir($: EngineInterface): Promise<string> {
-  return `${await $.env.get('HOME')}/${DIR}`
+  return (await $.env.get('NOTES_KEEPING_DIR')) || `${await $.env.get('HOME')}/${DIR}`
 }
 
 async function publish($: EngineInterface, path: string, text: string): Promise<void> {
@@ -273,7 +274,8 @@ async function persist($: EngineInterface, path: string, text: string, subject: 
     expectedRevision: revisions.get(path),
     commit: shouldCommit,
   })
-  const done = await $.process.run([`${$.plugin.root}/bin/notes-keeping-engine`, '--file', path], { stdin: input, timeoutMs: GIT_MS })
+  const engine = standaloneCliReady ? ['notes-keeping', 'engine'] : [`${$.plugin.root}/bin/notes-keeping-engine`]
+  const done = await $.process.run([...engine, '--file', path], { stdin: input, timeoutMs: GIT_MS })
   if (done.exitCode !== 0) throw new Error(`notes mutation failed: ${(done.stderr.trim() || done.stdout.trim()).split('\n').pop()}`)
   if (done.stdout.trim() === '') {
     await $.fs.write(path, text)
@@ -1379,6 +1381,11 @@ function isDrawn(surface: string): boolean {
 
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
+    const runtime = await $.process.run(['notes-keeping', 'start', '--quiet'], { timeoutMs: 8_000 }).catch(() => undefined)
+    standaloneCliReady = runtime?.exitCode === 0
+    if (!standaloneCliReady && e.isInteractive) {
+      $.ui.toast(`notes-keeping runtime: ${runtime?.stderr.trim().split('\n').pop() || 'install notes-keeping on PATH to enable the shared runtime'}`)
+    }
     await $.command.register({
       name: NAME,
       description: 'Session notes: objectives, important, queued replies, history, show, hide',

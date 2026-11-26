@@ -25,7 +25,7 @@ function notesDir(): string {
 }
 
 function stateDir(): string {
-  return resolve(process.env.NOTES_KEEPING_CODEX_STATE || process.env.PLUGIN_DATA || join(notesDir(), '.codex'))
+  return resolve(process.env.NOTES_KEEPING_CODEX_STATE || join(notesDir(), '.codex'))
 }
 
 function safeSession(id: string): string {
@@ -58,17 +58,32 @@ function read(path: string): string {
 }
 
 function engineExecutable(): string {
-  return process.env.PLUGIN_ROOT ? join(process.env.PLUGIN_ROOT, 'bin', 'notes-keeping-engine') : join(dirname(resolve(process.argv[1] || 'notes-keeping-codex')), 'notes-keeping-engine')
+  return join(dirname(resolve(process.argv[1] || 'notes-keeping-codex')), 'notes-keeping-engine')
 }
 
 function engine(path: string, input: Record<string, unknown>): EngineResult {
-  const request = { version: 1, actor: 'codex', transport: 'codex/cli', eventId: randomUUID(), at: Date.now(), ...input }
-  const done = spawnSync(engineExecutable(), ['--file', path], { input: `${JSON.stringify(request)}\n`, encoding: 'utf8', env: process.env })
+  const standalone = process.env.NOTES_KEEPING_STANDALONE === '1'
+  const request = { version: 1, actor: standalone ? 'captain' : 'codex', transport: standalone ? 'cli' : 'codex/cli', eventId: randomUUID(), at: Date.now(), ...input }
+  const args = ['--file', path]
+  const options = { input: `${JSON.stringify(request)}\n`, encoding: 'utf8' as const }
+  let done = standalone ? spawnSync(engineExecutable(), args, options) : spawnSync('notes-keeping', ['engine', ...args], options)
+  if (done.error?.code === 'ENOENT' && !standalone) done = spawnSync(engineExecutable(), args, options)
   if (done.status !== 0) fail((done.stderr || done.stdout || String(done.error || done.status)).trim().split('\n').pop() || 'mutation engine failed', 1)
   let result: EngineResult
   try { result = JSON.parse(done.stdout) as EngineResult } catch { fail('mutation engine returned invalid JSON', 1) }
   for (const warning of result.warnings) console.error(`notes-keeping-codex: ${warning}`)
   return result
+}
+
+function startRuntime(): void {
+  const options = { encoding: 'utf8' as const, timeout: 8_000 }
+  let done = spawnSync('notes-keeping', ['start', '--quiet'], options)
+  if (done.error?.code === 'ENOENT') {
+    done = spawnSync(join(dirname(executable()), 'notes-keeping-tui'), ['start', '--quiet'], options)
+  }
+  if (done.status !== 0) {
+    console.error(`notes-keeping-codex: runtime startup failed: ${(done.stderr || String(done.error || done.status)).trim()}`)
+  }
 }
 
 function existingSession(id: string): string | undefined {
@@ -138,13 +153,29 @@ function registryPath(socket: string, pane: string): string {
   return join(registryDir(), `${key}.json`)
 }
 
+function hostProcess(): { hostPid: number; hostStarted: string } | undefined {
+  let pid = process.ppid
+  while (pid > 1) {
+    const details = spawnSync('ps', ['-p', String(pid), '-o', 'ppid=', '-o', 'comm='], { encoding: 'utf8' })
+    const parent = /^\s*(\d+)\s+(.+)$/.exec(details.stdout?.trim() ?? '')
+    if (parent === null) return undefined
+    if (basename(parent[2]!) === 'codex') {
+      const started = spawnSync('ps', ['-p', String(pid), '-o', 'lstart='], { encoding: 'utf8' }).stdout?.trim()
+      if (started) return { hostPid: pid, hostStarted: started }
+      return undefined
+    }
+    pid = Number(parent[1])
+  }
+  return undefined
+}
+
 function registerPane(binding: Binding, event: string, source: unknown): void {
   const tmux = tmuxIdentity()
   if (tmux === undefined) return
   if (event === 'SessionStart' && source !== 'compact') binding.generation = randomUUID()
-  const shown = spawnSync('tmux', ['-S', tmux.socket, 'display-message', '-p', '-t', tmux.pane, '#{session_id}\t#{pane_current_path}\t#{pane_pid}'], { encoding: 'utf8' })
+  const shown = spawnSync('tmux', ['-S', tmux.socket, 'display-message', '-p', '-t', tmux.pane, '#{session_id}\t#{pane_current_path}\t#{pane_pid}\t#{pane_current_command}'], { encoding: 'utf8' })
   if (shown.status !== 0) return
-  const [tmuxSessionId, paneCwd, panePid] = shown.stdout.trim().split('\t')
+  const [tmuxSessionId, paneCwd, panePid, paneCommand] = shown.stdout.trim().split('\t')
   if (!tmuxSessionId || !paneCwd || !panePid) return
   binding.realCwd = resolve(paneCwd)
   atomicJson(bindingPath(binding.sessionId), binding)
@@ -155,6 +186,8 @@ function registerPane(binding: Binding, event: string, source: unknown): void {
     paneId: tmux.pane,
     tmuxSessionId,
     panePid: Number(panePid),
+    paneCommand,
+    ...hostProcess(),
     codexSessionId: binding.sessionId,
     notePath: binding.path,
     realCwd: binding.realCwd,
@@ -192,9 +225,11 @@ function hook(): void {
   }
   const binding = ensureSession(input.session_id, cwd)
   const path = binding.path
-  if (input.hook_event_name === 'SessionStart' && input.source !== 'compact') binding.generation = randomUUID()
   registerPane(binding, typeof input.hook_event_name === 'string' ? input.hook_event_name : '', input.source)
-  if (input.hook_event_name === 'SessionStart' && input.source !== 'compact') return
+  if (input.hook_event_name === 'SessionStart') {
+    startRuntime()
+    if (input.source !== 'compact') return
+  }
   const md = read(path)
   const s = sections(md)
   const upkeep = [

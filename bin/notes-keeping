@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(python3 -c 'import pathlib, sys; print(pathlib.Path(sys.argv[1]).resolve().parent.parent)' "$0")"
+case "${1:-}" in
+  version|--version)
+    python3 - "$ROOT" <<'PY'
+import json, sys
+from pathlib import Path
+root = Path(sys.argv[1])
+version = json.loads((root / '.codex-plugin/plugin.json').read_text())['version']
+release = root / '.release.json'
+build = json.loads(release.read_text())['revision'][:12] if release.is_file() else 'source'
+print(f'notes-keeping {version}+{build}')
+PY
+    ;;
+  update) shift; exec "$ROOT/bin/install-cli" --update "$@" ;;
+  engine) shift; exec "$ROOT/bin/notes-keeping-engine" "$@" ;;
+  codex)
+    shift
+    for arg in "$@"; do
+      case "$arg" in --remote|--remote=*) exec codex "$@" ;; esac
+    done
+    "$ROOT/bin/notes-keeping-tui" start --quiet || echo 'notes-keeping: Codex is starting without the notes runtime' >&2
+    # The shared Codex app server does not carry the launching pane's
+    # environment into lifecycle hooks. A local engine preserves TMUX_PANE.
+    if [[ -n "${TMUX_PANE:-}" ]] && codex --help | grep -F -- '--no-daemon' >/dev/null; then
+      exec codex --no-daemon "$@"
+    fi
+    exec codex "$@"
+    ;;
+  tmux) shift; NOTES_KEEPING_COMMAND="${NOTES_KEEPING_COMMAND:-$0}" exec "$ROOT/bin/notes-keeping-tmux" "$@" ;;
+  start|stop|serve|manual|stamp|capture|popup|workspace-popup) exec "$ROOT/bin/notes-keeping-tui" "$@" ;;
+  --file) NOTES_KEEPING_STANDALONE=1 exec "$ROOT/bin/notes-keeping-codex" "$@" ;;
+  ''|-h|--help)
+    cat <<'HELP'
+Usage: notes-keeping version | update | start | stop | manual
+       notes-keeping codex [Codex arguments]
+       notes-keeping tmux install|uninstall
+       notes-keeping --file PATH show|status|add|objective|update|important [arguments]
+HELP
+    ;;
+  *) echo "notes-keeping: unknown command: $1" >&2; exit 2 ;;
+esac

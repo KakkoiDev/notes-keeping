@@ -5,7 +5,7 @@ BEGIN='# BEGIN notes-keeping Codex popup'
 END='# END notes-keeping Codex popup'
 CONFIG="${NOTES_KEEPING_TMUX_CONF:-$HOME/.tmux.conf}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-TUI="$ROOT/bin/notes-keeping-tui"
+TUI="${NOTES_KEEPING_COMMAND:-$ROOT/bin/notes-keeping}"
 
 fail() {
   printf 'notes-keeping-tmux: %s\n' "$*" >&2
@@ -26,7 +26,7 @@ canonical() {
   table="$1"
   key="$2"
   line="$(tmux list-keys -T "$table" 2>/dev/null | awk -v key="$key" '$4 == key { sub(/^.* send-keys /, "send-keys "); print; exit }')"
-  [ "$line" = 'send-keys -X copy-pipe-and-cancel' ] || [[ "$line" == *notes-keeping-tui*stamp* ]]
+  [ "$line" = 'send-keys -X copy-pipe-and-cancel' ] || [[ "$line" == *notes-keeping*stamp* ]]
 }
 
 block() {
@@ -75,9 +75,11 @@ copy-mode-vi MouseDragEnd1Pane
 copy-mode M-w
 copy-mode MouseDragEnd1Pane
 EOF
-  local temp existing
+  local temp existing owned
   temp="$(mktemp "${TMPDIR:-/tmp}/notes-keeping-tmux.XXXXXX")"
   existing="$(mktemp "${TMPDIR:-/tmp}/notes-keeping-tmux-existing.XXXXXX")"
+  owned="$(mktemp "${TMPDIR:-/tmp}/notes-keeping-tmux-owned.XXXXXX")"
+  block > "$owned"
   if [ -f "$CONFIG" ]; then
     rewrite_without_block "$CONFIG" "$existing"
   else
@@ -86,12 +88,11 @@ EOF
   {
     cat "$existing"
     [ ! -s "$existing" ] || printf '\n'
-    block
+    cat "$owned"
   } > "$temp"
   chmod 600 "$temp"
   mv "$temp" "$CONFIG"
-  tmux source-file "$CONFIG"
-  "$TUI" start
+  tmux source-file "$owned"
   printf 'Installed Prefix then Shift+N popup binding in %s\n' "$CONFIG"
 }
 

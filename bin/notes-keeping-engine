@@ -7,6 +7,7 @@ import {
   lstatSync,
   mkdirSync,
   openSync,
+  readdirSync,
   readFileSync,
   realpathSync,
   renameSync,
@@ -20,9 +21,11 @@ import { spawnSync } from 'node:child_process'
 
 import { applyMutation, revisionOf, type MutationRequest } from '../hooks/mutation'
 import type { ActorId } from '../hooks/actors'
-import { sections } from '../hooks/notes'
-import { STATUSES, changeLine, type Status } from '../hooks/todo'
-import { items } from '../hooks/todo'
+import { addLogs, addQueued, carriedGoals, carryOver, isNotesFile, nameParts, newestFirst, queuedBlocks, sections, summary } from '../hooks/notes'
+import { historyOf, logRow, readRows } from '../hooks/logs'
+import { STATUSES, changeLine, items, keyOf, sourceOf, withoutIds, type Status } from '../hooks/todo'
+import { actorLabel } from '../hooks/actors'
+import type { Pair } from '../types'
 
 type Input = {
   version?: unknown
@@ -38,6 +41,25 @@ type Input = {
   subject?: unknown
   expectedRevision?: unknown
   commit?: unknown
+  source?: unknown
+  sessionId?: unknown
+  pairs?: unknown
+}
+
+function structuredNote(markdown: string) {
+  const parsed = sections(markdown)
+  return {
+    objectives: withoutIds(parsed.objectives),
+    updates: withoutIds(parsed.updates),
+    important: parsed.important,
+    chat: parsed.chat,
+    logs: readRows(parsed.logs).reverse(),
+    todos: items(parsed.todo).map(item => ({
+      ...item,
+      source: sourceOf(parsed, item),
+      history: item.id === undefined ? [] : historyOf(parsed.logs, item.id, actorLabel),
+    })),
+  }
 }
 
 type Result = {
@@ -49,12 +71,10 @@ type Result = {
   message: string
   warnings: string[]
   items?: ReturnType<typeof items>
-  workspace?: {
-    objectives: string
-    updates: string
-    important: string
-    todos: ReturnType<typeof items>
-  }
+  workspace?: ReturnType<typeof structuredNote> & { history: ReturnType<typeof history>; revision: string }
+  preview?: ReturnType<typeof structuredNote>
+  document?: { text: string; revision: string }
+  prompt?: string
 }
 
 const MAX_BODY = 64 * 1024
@@ -70,7 +90,7 @@ function notesDir(): string {
 }
 
 function stateDir(): string {
-  return resolve(process.env.NOTES_KEEPING_CODEX_STATE || process.env.PLUGIN_DATA || join(notesDir(), '.codex'))
+  return resolve(process.env.NOTES_KEEPING_CODEX_STATE || join(notesDir(), '.codex'))
 }
 
 function under(path: string, root: string): boolean {
@@ -161,6 +181,26 @@ function notify(path: string, lines: string[]): { notified: boolean; warning?: s
   return { notified: false, warning: `Firstmate notification failed: ${(done.stderr || done.error || done.status).toString().trim().split('\n').pop()}` }
 }
 
+function history(path: string) {
+  const files = readdirSync(notesDir(), { withFileTypes: true }).filter(entry => entry.isFile())
+  return newestFirst(files.map(entry => entry.name))
+    .filter(name => name !== basename(path))
+    .slice(0, 20)
+    .flatMap(name => {
+      try {
+        const markdown = readFileSync(join(notesDir(), name), 'utf8')
+        const parts = nameParts(name)
+        return [{
+          name,
+          label: parts === undefined ? name : `${parts.date} ${parts.time}  ${parts.project}  ${parts.shortId}`,
+          summary: summary(markdown),
+        }]
+      } catch {
+        return []
+      }
+    })
+}
+
 function validateInput(input: Input): asserts input is Input & { kind: string; actor: ActorId; transport: string; eventId: string; at: number } {
   if (input.version !== 1) fail('unsupported request version')
   if (typeof input.kind !== 'string') fail('request has no operation kind')
@@ -169,6 +209,21 @@ function validateInput(input: Input): asserts input is Input & { kind: string; a
   if (typeof input.eventId !== 'string' || !/^[a-f0-9-]{16,64}$/i.test(input.eventId)) fail('request has invalid event ID')
   if (typeof input.at !== 'number' || !Number.isFinite(input.at)) fail('request has invalid time')
   if (input.text !== undefined && (typeof input.text !== 'string' || Buffer.byteLength(input.text) > MAX_BODY || input.text.includes('\0'))) fail('request text is invalid or too large')
+  if (input.source !== undefined && (typeof input.source !== 'string' || basename(input.source) !== input.source || !isNotesFile(input.source))) fail('request source is invalid')
+  if (input.sessionId !== undefined && typeof input.sessionId !== 'string') fail('invalid session ID')
+}
+
+function queuePairs(input: unknown): Pair[] {
+  if (!Array.isArray(input) || input.length === 0 || input.length > 50) fail('queue is empty or too large')
+  return input.map(pair => {
+    if (pair === null || typeof pair !== 'object' || typeof pair.agent !== 'string' || typeof pair.user !== 'string') {
+      fail('queue entry is invalid')
+    }
+    return {
+      agent: pair.agent, user: pair.user,
+      pasted: pair.pasted === true ? { whole: typeof pair.whole === 'string' ? pair.whole : undefined } : undefined,
+    }
+  })
 }
 
 function execute(path: string, raw: string): Result {
@@ -181,6 +236,9 @@ function execute(path: string, raw: string): Result {
   if (prior !== undefined) return prior
 
   const before = existsSync(path) ? readFileSync(path, 'utf8') : ''
+  if (typeof input.sessionId === 'string' && !sections(before).sessions.includes(input.sessionId)) {
+    fail('note no longer belongs to the mapped Codex session')
+  }
   const marker = `event=${input.eventId} hash=${requestHash}`
   if (before.includes(marker)) {
     const recovered: Result = { ok: true, saved: true, committed: false, notified: false, replayed: true, message: 'Recovered prior saved mutation', warnings: ['Recovered after interrupted acknowledgment; note was not written twice'] }
@@ -197,13 +255,16 @@ function execute(path: string, raw: string): Result {
       if (typeof input.expectedRevision !== 'string') fail('replace needs the revision that was read')
       if (revisionOf(before) !== input.expectedRevision) fail('note changed after it was read; retry without overwriting the newer change')
     }
+    if (typeof input.sessionId === 'string' && !sections(input.text).sessions.includes(input.sessionId)) {
+      fail('editing cannot remove the mapped Codex session from the note')
+    }
     atomicWrite(path, input.text)
     const git = input.commit === false ? { committed: false } : commit(path, typeof input.subject === 'string' ? input.subject : 'notes')
     const warnings = git.warning ? [git.warning] : []
     return { ok: true, saved: true, committed: git.committed, notified: true, replayed: false, message: 'Notes saved', warnings }
   }
 
-  if (input.kind === 'list' || input.kind === 'view') {
+  if (input.kind === 'list' || input.kind === 'view' || input.kind === 'check' || input.kind === 'document') {
     if (!existsSync(path)) fail('notes file does not exist')
     const parsed = sections(before)
     return {
@@ -216,13 +277,56 @@ function execute(path: string, raw: string): Result {
       warnings: [],
       items: items(parsed.todo),
       workspace: input.kind === 'view'
-        ? { objectives: parsed.objectives, updates: parsed.updates, important: parsed.important, todos: items(parsed.todo) }
+        ? { ...structuredNote(before), history: history(path), revision: revisionOf(before) }
         : undefined,
+      document: input.kind === 'document' ? { text: before, revision: revisionOf(before) } : undefined,
     }
   }
 
+  if (input.kind === 'attach' || input.kind === 'preview') {
+    if (typeof input.source !== 'string') fail('history needs a source note')
+    const sourceFile = join(notesDir(), input.source)
+    if (!lstatSync(sourceFile).isFile()) fail('history source note is invalid')
+    const sourcePath = trustedPath(sourceFile)
+    if (sourcePath === path) fail('history source is the current note')
+    const previous = readFileSync(sourcePath, 'utf8')
+    if (input.kind === 'preview') {
+      return { ok: true, saved: false, committed: false, notified: true, replayed: false, message: 'History read', warnings: [], preview: structuredNote(previous) }
+    }
+    const beforeItems = items(sections(before).todo)
+    const carried = carryOver(before, previous, input.source)
+    const afterItems = items(sections(carried).todo)
+    const had = new Set(beforeItems.map(item => keyOf(item.text)))
+    const rows = [
+      logRow({ at: input.at, actor: input.actor, action: 'attach', note: `${input.source} transport=${input.transport} ${marker}` }),
+      ...carriedGoals(before, previous).map(goal => logRow({ at: input.at, actor: input.actor, action: 'objective', note: `copied from ${input.source}: ${withoutIds(goal)}` })),
+      ...afterItems.filter(item => !had.has(keyOf(item.text))).map(item => logRow({ at: input.at, actor: input.actor, action: 'added', item, to: item.status, note: `copied from ${input.source}` })),
+    ]
+    atomicWrite(path, addLogs(carried, rows))
+    const git = commit(path, 'continue')
+    const warnings = git.warning ? [git.warning] : []
+    const result: Result = { ok: true, saved: true, committed: git.committed, notified: true, replayed: false, message: `Attached ${input.source}; original unchanged`, warnings }
+    writeReceipt(input.eventId, requestHash, path, result)
+    return result
+  }
+
   if (!existsSync(path)) fail('notes file does not exist')
-  if (!['status', 'add', 'objective', 'update', 'important'].includes(input.kind)) fail(`unknown operation: ${input.kind}`)
+  if (input.kind === 'queue-format' || input.kind === 'queue-record') {
+    const pairs = queuePairs(input.pairs)
+    if (input.kind === 'queue-format') {
+      return { ok: true, saved: false, committed: false, notified: true, replayed: false, message: 'Queue formatted', warnings: [], prompt: queuedBlocks(pairs, false).join('\n\n') }
+    }
+    const marked = addLogs(addQueued(before, pairs), [logRow({ at: input.at, actor: input.actor, action: 'reply', note: `transport=${input.transport} ${marker}` })])
+    atomicWrite(path, marked)
+    const git = commit(path, 'reply')
+    const result: Result = { ok: true, saved: true, committed: git.committed, notified: true, replayed: false, message: 'Queued replies recorded', warnings: git.warning ? [git.warning] : [] }
+    writeReceipt(input.eventId, requestHash, path, result)
+    return result
+  }
+  if (input.kind === 'set-objectives' && input.expectedRevision !== revisionOf(before)) {
+    fail('note changed while the objectives were being edited; reopen the editor')
+  }
+  if (!['status', 'add', 'objective', 'set-objectives', 'update', 'important'].includes(input.kind)) fail(`unknown operation: ${input.kind}`)
   if (input.status !== undefined && (typeof input.status !== 'string' || !STATUSES.includes(input.status as Status))) fail('request has invalid status')
   const request: MutationRequest = {
     kind: input.kind as MutationRequest['kind'],

@@ -7,9 +7,9 @@ It defines observable behavior, component boundaries, protocols, state transitio
 
 ## Outcome
 
-Pressing `C-a N` in a mapped Codex tmux pane always opens one centered five-view workspace for that exact pane, session, and note.
+Pressing `C-a N` in a mapped Codex tmux pane always opens one centered notes workspace for that exact pane, session, and note.
 A fresh explicit tmux selection starts on Notes with the selection prefilled; no fresh selection starts on Todos with an empty draft.
-Todos, Objectives, Updates, Important, and Notes remain navigable without closing. Durable writes require an explicit category or status action.
+Todos, Objectives, Updates, Important, Notes, Paste, Chat, Queue, History, Logs, and Work remain navigable without closing. Durable writes require an explicit category or status action.
 Unsaved draft, cancel, invalid input, missing infrastructure, stale mapping, and ambiguous targets never mutate a note.
 
 ## Problem
@@ -77,7 +77,7 @@ The cost is lifecycle management and a local socket, bounded by explicit start, 
 | --- | --- | --- |
 | tmux custom copy binding | Installer could break copy behavior | Probe exact supported binding shapes and fail without editing on any mismatch |
 | Service exits with a draft | Unsaved draft disappears | State this v1 limit, never imply recovery, and require discard confirmation while service lives |
-| Pane reuse | Selection could target an old session | Bind socket, pane, tmux session, pane process, generation, cwd, renewable lease, session binding, and note `Sessions:` line |
+| Pane reuse | Selection could target an old session | Bind socket, pane, tmux session, pane and Codex process, generation, cwd, session binding, and note `Sessions:` line |
 | ACK loss or service restart | Caller may retry a completed mutation | Persist request hash and result receipt; recover from full event marker atomically written with note |
 | Concurrent Claude, Codex, or popup write | Newer content could be lost | Serialize semantic operations under repository lock; compare-and-swap trusted full-document replacements |
 | Dirty notes Git repository | Unrelated notes could enter commit | Stage and commit only the intended note path and return saved-with-warning on Git failure |
@@ -100,11 +100,13 @@ The repository has no tracked `package.json` or lockfile, so implementation must
 
 ### Service start
 
-`notes-keeping-tui serve` starts one per-user background service for popup state and mutations.
-`notes-keeping-tui start` starts it in the background, and `notes-keeping-tui stop` stops only that owned service.
-The installer may arrange startup, but startup failure must remain visible and must not be hidden by a fallback transport.
-The service creates no selected-text files.
-The standalone TUI may also connect to this service for manual browsing and same-real-cwd selection.
+One owner-only runtime serves the installed `notes-keeping` CLI, independent of host plugin caches. Claude calls it through its native `session.start` module. Codex starts it before interactive launch through `notes-keeping codex`; Codex's native `SessionStart` runs on the first turn and supplies the exact session ID. That hook also ensures the runtime and registers the pane. The tmux shortcut can recover a stopped runtime for a pane that is already mapped.
+
+The tmux launcher selects Codex's local engine with `--no-daemon` when supported. The shared Codex app server can outlive the source TUI and does not provide the launcher's pane environment to the plugin hook. The local engine passes that identity to the hook. This choice is independent of the shared notes runtime.
+
+Startup holds an advisory lock until the peer-authenticated socket answers a health request. The service holds a separate lifetime lock, so concurrent start requests converge on one process. Host-specific `PLUGIN_DATA` does not choose a runtime or mutation lock.
+
+`bin/install-cli` installs immutable revisions from published `main` with a stable PATH launcher and an atomic active symlink. `notes-keeping version` identifies the release; `notes-keeping update` stages a newer published revision before activation and leaves the current runtime and user state intact. The service uses the active package the next time it starts.
 
 ### Copy and capture
 
@@ -125,13 +127,13 @@ Selection content must never become shell syntax, a tmux format, an argv element
 Selection-derived text appears only in the inert popup body.
 HTTP/HTTPS and Markdown links in that inert body are blue, underlined OSC 8 hyperlinks. Whether and how a click opens them is controlled by tmux and the terminal.
 
-### Five-view workspace
+### Notes workspace
 
 The service resolves the exact pane mapping and asks the shared engine for structured Todos, Objectives, Updates, and Important data; the TUI never parses Markdown.
-The fifth Notes view owns an in-memory draft. Fresh capture prefills it and focuses Notes; an ordinary open leaves it empty and focuses Todos.
-`1`-`5`, Shift+T/O/U/I/N, and Tab switch views without closing or losing the draft.
+Notes owns an in-memory draft. Fresh capture prefills it and focuses Notes; an ordinary open leaves it empty and focuses Todos.
+`1`–`0`, Shift+T/O/U/I/N/P/C/Q/H/L/W, and Tab switch views without closing or losing the draft.
 Todos shows all statuses, supports `j`/`k` and arrows, and cycles the selected item with Enter through the existing status semantics.
-Objectives, Updates, and Important are readable views of their shared-engine sections. Notes supports edit, explicit category save, and discard confirmation.
+Objectives supports replacement against the read revision. The full-file editor saves through the same revision check. Updates, Important, Chat, and Logs read structured sections. Notes supports editing, category save, replies, and discard confirmation. Paste accepts explicitly entered text and annotations. Queue keeps pairs in the service across popup reopen and records an explicit insertion in Chat. History previews a prior note and uses the engine to attach only its carryable content. Work uses the configured Firstmate bridge and requires explicit commands for answers and report edits.
 `q` or `Esc` closes without a write unless a category or status action already succeeded. A dirty unsaved Notes draft requires discard confirmation.
 All status and category writes use actor `captain`, transport `tmux/codex`, the shared lock, action log, local Git commit, and bridge notification.
 URLs and Markdown links in every view use the same terminal-supported OSC 8 rendering.
@@ -173,7 +175,7 @@ After normal session-to-note binding, it registers the current tmux source when 
 Absence of tmux never breaks normal notes hooks, but it leaves direct capture unavailable.
 
 On a non-compaction `SessionStart`, registration receives a fresh random generation.
-On `UserPromptSubmit` and compaction `SessionStart`, registration refreshes liveness without changing generation and renews a ten-minute lease.
+On `UserPromptSubmit` and compaction `SessionStart`, registration refreshes process evidence without changing generation. Existing lease fields are informational.
 A configured `SessionEnd` removes a record only when session ID and generation still match, so an old end event cannot remove a replacement session in a reused pane.
 An already-running Codex session can be mapped once with `notes-keeping-codex register-current <codex-session-id>`; the command resolves the existing note by its `Sessions:` entry and accepts no note path.
 
@@ -214,9 +216,9 @@ The service accepts direct capture only if all of these checks pass at the same 
 - The registry file is owned by the current UID and is not group-writable or world-writable.
 - The requested tmux server and pane exactly match the registry key and record.
 - The pane currently exists on that server and still belongs to the recorded tmux session.
-- The pane process identity still matches and the renewable lease has not expired.
+- The pane process still matches. When recorded, the Codex PID and process start identity still match. Mapping age alone never expires a live pane.
 - The pane's current real cwd equals the registered real cwd.
-- The record generation is current for that pane.
+- The record generation is current for that pane. The popup pins that generation through every save.
 - The Codex session-to-note binding still names the same note.
 - Parsing the note shows the recorded Codex session ID in `Sessions:`.
 - The note exists as a regular file.
@@ -321,7 +323,7 @@ The Python server verifies peer UID with libc `getpeereid` through `ctypes` on m
 Filesystem permissions alone do not satisfy this check.
 
 Each message uses a four-byte unsigned big-endian header length, a bounded UTF-8 JSON header, a four-byte unsigned big-endian body length, and exactly that many body bytes.
-The maximum header is 16 KiB, and the maximum body is 64 KiB.
+Headers are capped at 16 KiB. Capture and mutation bodies are capped at 64 KiB. Structured read responses are capped at 8 MiB.
 Unknown versions, message types, fields, trailing bytes, invalid UTF-8 where text is required, NUL bytes, and length mismatch are rejected before state changes.
 
 A capture request header contains protocol version, message type, event ID, tmux server identity, pane ID, tmux session ID, buffer name, copied-at time, and SHA-256 body hash.
@@ -364,7 +366,7 @@ A reused pane with a new Codex startup always gets a new generation.
 ```text
 binding -> fresh selection -> workspace(Notes, prefilled draft)
         -> no fresh selection -> workspace(Todos, empty draft)
-workspace -> any of five views -> any other view
+workspace -> any workspace view -> any other view
           -> Notes edit -> in-memory draft -> explicit category save -> saved view
                                       -> close -> discard confirmation -> closed/stay
           -> Todo status action -> refreshed Todos
@@ -424,11 +426,12 @@ Logs must omit content, preview text, clipboard text, and note body excerpts.
 | Create | `hooks/mutation.ts` | Pure semantic operations for status, add, objective, update, and Important |
 | Create | `bin/notes-keeping-engine` | Locked atomic persistence, event receipts, exact-path Git commits, and bridge notification |
 | Modify | `hooks/register.tsx` | Preserve native Claude pane and route durable replacements through engine compare-and-swap |
-| Modify | `bin/notes-keeping-codex` | Keep hook/CLI UX, register lease/generation, and delegate mutations to generic engine |
+| Modify | `bin/notes-keeping-codex` | Keep hook/CLI UX, register process identity and generation, and delegate mutations to generic engine |
 | Modify | `hooks/codex-hooks.json` | Refresh on start/prompt and generation-checked cleanup on supported end |
 | Create | `bin/notes-keeping-tui` | Python peer-authenticated service, in-memory events/drafts, mapping validation, capture sender, and popup client |
 | Create | `bin/notes-keeping-tmux` | Marked tmux config installer, compatibility probes, rollback, and `Prefix Shift+N` binding |
-| Modify | `bin/install-codex` | Probe dependencies, install plugin/tmux block, and start owned service |
+| Modify | `bin/install-codex` | Probe dependencies and install the Codex plugin and tmux block |
+| Create | `bin/install-cli`, `bin/notes-keeping` | Install and update published revisions, launch hosts, and resolve the shared runtime |
 | Modify | `README.md` | Setup, interaction, privacy, recovery, compatibility, and uninstall contract |
 | Modify | `bin/notes-keeping-codex.test.sh` | Adapter regression plus Important and objective branching |
 | Create | `bin/notes-keeping-tui.test.sh` | Private two-pane fixture, exact routing, cancel, replay, permissions, and Git assertions |
@@ -491,12 +494,12 @@ No test may accept lost newer data, silent fallback, double write, cross-note wr
 
 ### Captain usability pass
 
-From a real Codex pane, verify Notes focus and prefill after a fresh copy; Todos focus without one; in-popup navigation across all five views; OSC 8 link styling; all four category saves; Todo status; cancel; dirty-draft confirmation; absent-service recovery; and same-cwd disambiguation without consulting documentation.
+From a real Codex pane, verify Notes focus and prefill after a fresh copy; Todos focus without one; in-popup navigation across all workspace views; OSC 8 link styling; all four category saves; Todo status; cancel; dirty-draft confirmation; absent-service recovery; and same-cwd disambiguation without consulting documentation.
 
 ## Acceptance criteria
 
 V1 is acceptable only when two live Codex panes in one directory can make different multiline Unicode selections and all four direct categories always update only the correct bound note exactly once.
-The binding must always open the full five-view popup for a valid mapped pane: Notes focused with fresh explicit selection, Todos focused otherwise.
+The binding must always open the full notes popup for a valid mapped pane: Notes focused with fresh explicit selection, Todos focused otherwise.
 Every view must remain reachable from either entry state without closing or losing an unsaved draft.
 Draft must change no file before explicit save.
 Cancel and every defined failure must be visible and non-destructive.
@@ -510,5 +513,5 @@ Ship behind explicit tmux configuration so existing Codex notes behavior remains
 Rollout order is shared mutation boundary, pane registration, service and protocol, popup, tmux binding, then documentation.
 The installer must stop if the service or target tmux capabilities are unavailable.
 Rollback removes only the marked tmux block and stops the per-user TUI service.
-The exact commands are `bin/notes-keeping-tmux uninstall` and `bin/notes-keeping-tui stop`.
+The commands are `notes-keeping tmux uninstall` and `notes-keeping stop`.
 Rollback must leave notes, their local Git history, existing Codex hook bindings, and ordinary adapter commands intact.

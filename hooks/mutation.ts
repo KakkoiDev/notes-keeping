@@ -3,7 +3,7 @@ import { logRow } from './logs'
 import { AGENT_TAG, addImportant, addLogs, addUpdate, sections, setObjectives, setTodo, stamp } from './notes'
 import { cycleItem, format, idOf, items, keyOf, parse, type Change, type Status, withIds } from './todo'
 
-export type MutationKind = 'status' | 'add' | 'objective' | 'update' | 'important'
+export type MutationKind = 'status' | 'add' | 'objective' | 'set-objectives' | 'update' | 'important'
 
 export type MutationRequest = {
   kind: MutationKind
@@ -128,7 +128,7 @@ export function applyMutation(markdown: string, request: MutationRequest): Mutat
     }
   }
 
-  const text = textOf(request)
+  const text = request.kind === 'set-objectives' ? request.text?.trim() ?? '' : textOf(request)
   if (request.kind === 'add') {
     const current = sections(markdown).todo
     const duplicate = items(current).find(item => keyOf(item.text) === keyOf(text))
@@ -164,6 +164,17 @@ export function applyMutation(markdown: string, request: MutationRequest): Mutat
       subject: action,
       message: isSet ? 'Objectives set' : 'Added as update',
       saved: true,
+      changes: [],
+    }
+  }
+
+  if (request.kind === 'set-objectives') {
+    const out = setObjectives(markdown, text)
+    return {
+      markdown: addLogs(out, [logRow({ at: request.at, actor: request.actor, action: 'objective', note: contentNote(text, request) })]),
+      subject: 'objectives',
+      message: 'Objectives replaced',
+      saved: out !== markdown,
       changes: [],
     }
   }

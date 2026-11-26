@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TMP_ROOT="${TMPDIR:-/tmp}"
 H="$(mktemp -d "$TMP_ROOT/nk-tui.XXXXXX")"
+export PYTHONDONTWRITEBYTECODE=1
 export NOTES_KEEPING_DIR="$H/notes"
 export NOTES_KEEPING_CODEX_STATE="$H/state"
 export GIT_AUTHOR_NAME='notes-keeping test'
@@ -58,10 +59,10 @@ else:
 PY
 }
 
-hook codex-one "${PANES[0]}"
-hook codex-two "${PANES[1]}"
-NOTE_ONE="$(binding codex-one)"
-NOTE_TWO="$(binding codex-two)"
+hook codex001 "${PANES[0]}"
+hook codex002 "${PANES[1]}"
+NOTE_ONE="$(binding codex001)"
+NOTE_TWO="$(binding codex002)"
 "$ROOT/bin/notes-keeping-tui" start >/dev/null
 
 TUI="$ROOT/bin/notes-keeping-tui" SOCKET="$SOCKET" PANE="${PANES[0]}" python3 - <<'PY'
@@ -76,7 +77,7 @@ preview = module.linked('See [docs](https://example.com/a) and https://example.c
 assert preview.count('\x1b]8;;https://') == 2
 assert 'https://example.com/b\x1b\\' in preview and '\x1b\\.' in preview
 assert 'javascript:alert(1)' in module.linked('javascript:alert(1)')
-assert module.VIEWS == ('Todos', 'Objectives', 'Updates', 'Important', 'Notes')
+assert module.VIEWS == ('Todos', 'Objectives', 'Updates', 'Important', 'Notes', 'Paste', 'Chat', 'Queue', 'History', 'Logs', 'Work')
 assert module.NAVIGATION['1'] == 0 and module.NAVIGATION['5'] == 4
 PY
 
@@ -113,7 +114,7 @@ workspace = json.loads(body)
 items = workspace['todos']
 item = next(one for one in items if one['text'] == 'pane one α')
 assert response['status'] == 'workspace' and item['status'] == 'todo'
-assert set(workspace) == {'todos', 'objectives', 'updates', 'important'}
+assert set(workspace) == {'todos', 'objectives', 'updates', 'important', 'chat', 'logs', 'history', 'revision'}
 assert 'pane one update γ' in workspace['updates']
 selector = f"id:{item['id']}"
 changed, _ = module.request({'type': 'status', **header, 'selector': selector, 'todoStatus': 'in-progress'})
@@ -127,10 +128,57 @@ saved, _ = module.request(
 assert saved['status'] == 'result' and saved['saved']
 _, body = module.request({'type': 'workspace', **header})
 assert 'workspace important view' in json.loads(body)['important']
+# Lease timestamps are refresh evidence. Exact process, binding and generation
+# still control access, including after a popup has already opened.
+record_path = module.key_path('panes', header['tmuxServer'], header['paneId'])
+original = module.checked_record(record_path)
+aged = {**original, 'refreshedAt': '2000-01-01T00:00:00Z', 'leaseExpiresAt': '2000-01-01T00:10:00Z'}
+module.atomic_json(record_path, aged)
+opened, body = module.request({'type': 'workspace', **header})
+current = json.loads(body)
+for wrong in (
+    {'panePid': 1},
+    {'generation': 'wrong-generation'},
+    {'tmuxSessionId': '$wrong'},
+    {'codexSessionId': 'codex002'},
+):
+    module.atomic_json(record_path, {**aged, **wrong})
+    try:
+        module.request({'type': 'workspace', **header})
+        raise AssertionError(wrong)
+    except ValueError:
+        pass
+module.atomic_json(record_path, aged)
+try:
+    module.request({'type': 'workspace', **header, 'generation': 'replaced-while-open'})
+    raise AssertionError('a popup must keep its original generation')
+except ValueError:
+    pass
+
+source = next(item['name'] for item in current['history'] if 'codex002' in item['name'])
+_, prior = module.request({'type': 'preview', **header, 'source': source})
+assert 'pane two objective δ' in json.loads(prior)['objectives']
+source_path = module.notes_dir() / source
+saved_source = source_path.read_bytes()
+try:
+    module.request({'type': 'attach', **header, 'source': '../' + source})
+    raise AssertionError('outside sources must be rejected')
+except ValueError:
+    pass
+queue, _ = module.request({'type': 'queue-read', **header})
+pairs = [{'agent': 'queued cited text', 'user': 'queued reply'}]
+module.request({'type': 'queue-write', **header, 'revision': queue['revision']}, json.dumps(pairs).encode())
+reopen, queue_body = module.request({'type': 'queue-read', **header})
+assert json.loads(queue_body) == pairs
+module.request({'type': 'queue-send', **header, 'revision': reopen['revision']})
+_, body = module.request({'type': 'workspace', **header})
+assert '[AI_AGENT] queued cited text' in json.loads(body)['chat']
+assert source_path.read_bytes() == saved_source
+
 PY
 
 TUI="$ROOT/bin/notes-keeping-tui" SOCKET="$SOCKET" PANE="${PANES[0]}" SESSION="$SESSION" python3 - <<'PY'
-import hashlib, importlib.machinery, os, pty, select, subprocess, time
+import hashlib, importlib.machinery, json, os, pty, select, subprocess, time
 module = importlib.machinery.SourceFileLoader('notes_keeping_tui_navigation', os.environ['TUI']).load_module()
 
 def run(args, keys):
@@ -157,16 +205,28 @@ def run(args, keys):
     return output.decode(errors='replace')
 
 header = {'tmuxServer': os.environ['SOCKET'], 'paneId': os.environ['PANE'], 'tmuxSessionId': os.environ['SESSION']}
-ordinary = run([os.environ['TUI'], 'workspace-popup', os.environ['SOCKET'], os.environ['PANE'], os.environ['SESSION']], b'23451q')
-for expected in ('pane one α', 'No objectives yet.', 'pane one update γ', 'workspace important view', 'Draft (in memory only'):
-    assert expected in ordinary
+ordinary = run([os.environ['TUI'], 'workspace-popup', os.environ['SOCKET'], os.environ['PANE'], os.environ['SESSION']], b'234567890W1q')
+for expected in ('pane one α', 'No objectives yet.', 'pane one update γ', 'workspace important view', 'Draft (in memory only', 'Paste scratch', 'queued cited text', 'No replies queued.', 'pane two objective δ', 'No Firstmate bridge'):
+    assert expected in ordinary, (expected, ordinary)
 
 event_id = '99999999999999999999999999999999'
 body = 'prefilled Notes navigation ζ'.encode()
 module.request({'type': 'capture', 'eventId': event_id, 'bufferName': 'test-buffer', 'copiedAt': time.time(), 'bodyHash': hashlib.sha256(body).hexdigest(), **header}, body)
-selected = run([os.environ['TUI'], 'popup', event_id], b'1234q')
+selected = run([os.environ['TUI'], 'popup', event_id], b'1234qy')
 assert selected.index('prefilled Notes navigation ζ') < selected.index('pane one α')
 assert 'pane one update γ' in selected and 'workspace important view' in selected
+snapshot = next(item for item in json.loads(module.request({'type': 'workspace', **header})[1])['history'] if 'codex002' in item['name'])
+source = module.notes_dir() / snapshot['name']
+original = source.read_bytes()
+current = module.notes_dir() / module.request({'type': 'workspace', **header})[0]['target']
+before = current.read_bytes()
+run([os.environ['TUI'], 'workspace-popup', os.environ['SOCKET'], os.environ['PANE'], os.environ['SESSION']], b'9\ranq')
+assert current.read_bytes() == before
+run([os.environ['TUI'], 'workspace-popup', os.environ['SOCKET'], os.environ['PANE'], os.environ['SESSION']], b'9\rayq')
+assert 'Continuation of: ' + source.name in current.read_text()
+assert '| captain | attach |' in current.read_text()
+assert source.read_bytes() == original
+
 PY
 
 BEFORE="$(shasum -a 256 "$NOTE_ONE")"
@@ -179,8 +239,12 @@ printf '%s\n' "$REQUEST" | "$ROOT/bin/notes-keeping-engine" --file "$NOTE_ONE" >
 printf '%s\n' "$REQUEST" | "$ROOT/bin/notes-keeping-engine" --file "$NOTE_ONE" >/dev/null
 [ "$(grep -c '^replay once$' "$NOTE_ONE")" -eq 1 ]
 
-[ "$(stat -f '%Lp' "$NOTES_KEEPING_CODEX_STATE/runtime")" = 700 ]
-[ "$(stat -f '%Lp' "$NOTES_KEEPING_CODEX_STATE/runtime/tui.sock")" = 600 ]
+python3 - "$NOTES_KEEPING_CODEX_STATE/runtime" <<'PYTEST'
+import pathlib, stat, sys
+runtime = pathlib.Path(sys.argv[1])
+assert stat.S_IMODE(runtime.stat().st_mode) == 0o700
+assert stat.S_IMODE((runtime / "tui.sock").stat().st_mode) == 0o600
+PYTEST
 [ "$(git -C "$NOTES_KEEPING_DIR" rev-list --count HEAD)" -ge 4 ]
 
 printf 'ok   two panes map to distinct notes\n'
@@ -188,4 +252,4 @@ printf 'ok   cancel makes no write\n'
 printf 'ok   event replay writes once\n'
 printf 'ok   runtime transport is owner-only\n'
 printf 'ok   no-selection opens full workspace on Todos and same-cwd targets stay explicit\n'
-printf 'ok   all five views, direct category save, Todo status, and OSC 8 links work\n'
+printf 'ok   all workspace views, direct category save, Todo status, and OSC 8 links work\n'
