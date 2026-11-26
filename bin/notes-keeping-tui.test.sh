@@ -199,7 +199,7 @@ def run(args, keys):
                     break
             if process.poll() is not None:
                 break
-        assert process.wait(timeout=1) == 0
+        assert process.wait(timeout=1) == 0, output.decode(errors='replace')
     finally:
         os.close(master)
     return output.decode(errors='replace')
@@ -220,6 +220,14 @@ source = module.notes_dir() / snapshot['name']
 original = source.read_bytes()
 current = module.notes_dir() / module.request({'type': 'workspace', **header})[0]['target']
 before = current.read_bytes()
+older = module.notes_dir() / '2000-01-01-00-00-archive-feed0001.md'
+older_text = '# Objectives\n\nEarlier objective\n\n# Important\n\nOlder preview detail\n'
+older.write_text(older_text)
+popup = [os.environ['TUI'], 'workspace-popup', os.environ['SOCKET'], os.environ['PANE'], os.environ['SESSION']]
+history = run(popup, b'9\x1b[B\r\x1b[Ab\x1b[A\rb291\x1bOBq')
+assert history.index('Older preview detail') < history.index('pane two β') < history.index('No objectives yet.')
+assert 'pane one α' in history[history.index('No objectives yet.'):]
+assert current.read_bytes() == before and source.read_bytes() == original and older.read_text() == older_text
 run([os.environ['TUI'], 'workspace-popup', os.environ['SOCKET'], os.environ['PANE'], os.environ['SESSION']], b'9\ranq')
 assert current.read_bytes() == before
 run([os.environ['TUI'], 'workspace-popup', os.environ['SOCKET'], os.environ['PANE'], os.environ['SESSION']], b'9\rayq')
@@ -253,3 +261,4 @@ printf 'ok   event replay writes once\n'
 printf 'ok   runtime transport is owner-only\n'
 printf 'ok   no-selection opens full workspace on Todos and same-cwd targets stay explicit\n'
 printf 'ok   all workspace views, direct category save, Todo status, and OSC 8 links work\n'
+printf 'ok   History arrows, preview, return, and view refresh preserve the workspace mapping\n'

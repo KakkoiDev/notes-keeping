@@ -1114,23 +1114,16 @@ def workspace_panel(server: str, pane: str, session: str, *, initial_view: int, 
                 message = ""
 
             key = read_key()
+            if key == "\x1b":
+                ready, _, _ = select.select([sys.stdin], [], [], 0.03)
+                if ready:
+                    sequence = os.read(sys.stdin.fileno(), 2)
+                    if view in (0, 8):
+                        if sequence in (b"[A", b"OA"):
+                            key = "k"
+                        elif sequence in (b"[B", b"OB"):
+                            key = "j"
             if key in ("q", "\x1b"):
-                if key == "\x1b":
-                    ready, _, _ = select.select([sys.stdin], [], [], 0.03)
-                    if ready:
-                        sequence = os.read(sys.stdin.fileno(), 2)
-                        if sequence == b"[A" and view in (0, 8):
-                            target = "todo" if view == 0 else "history"
-                            length = len(todo_items if view == 0 else history_items)
-                            if length:
-                                cursors[target] = max(0, cursors[target] - 1)
-                            continue
-                        if sequence == b"[B" and view in (0, 8):
-                            target = "todo" if view == 0 else "history"
-                            length = len(todo_items if view == 0 else history_items)
-                            if length:
-                                cursors[target] = min(length - 1, cursors[target] + 1)
-                            continue
                 if confirm_close(dirty):
                     return
                 continue
