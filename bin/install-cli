@@ -1,0 +1,132 @@
+#!/usr/bin/env python3
+"""Install a versioned snapshot of notes-keeping with an atomic current link."""
+
+import argparse
+import fcntl
+import json
+import os
+import shutil
+import subprocess
+import tempfile
+from pathlib import Path
+
+UPSTREAM = "https://github.com/KakkoiDev/notes-keeping.git"
+PACKAGE = ("bin", "hooks", "types", ".agents", ".claude-plugin", ".codex-plugin", "README.md", "LICENSE")
+
+
+def git(repo, *args):
+    return subprocess.check_output(["git", "-C", repo, *args], text=True).strip()
+
+
+def ancestor(repo, before, after):
+    return subprocess.run(
+        ["git", "-C", repo, "merge-base", "--is-ancestor", before, after],
+        capture_output=True, check=False,
+    ).returncode == 0
+
+
+def point(link, target):
+    with tempfile.TemporaryDirectory(dir=link.parent) as scratch:
+        staged = Path(scratch) / "link"
+        staged.symlink_to(target)
+        staged.replace(link)
+
+
+def package(repo, revision, versions, base):
+    destination = versions / revision
+    if destination.is_dir():
+        return destination
+    with tempfile.TemporaryDirectory(dir=versions) as scratch:
+        stage = Path(scratch) / "package"
+        stage.mkdir(mode=0o700)
+        for name in PACKAGE:
+            source = repo / name
+            if source.is_dir():
+                shutil.copytree(source, stage / name)
+            else:
+                shutil.copy2(source, stage / name)
+        (stage / ".release.json").write_text(json.dumps({"revision": revision, "base": base}) + "\n")
+        subprocess.run([stage / "bin/notes-keeping", "version"], check=True, stdout=subprocess.DEVNULL)
+        stage.rename(destination)
+    return destination
+
+
+def install(args, prefix):
+    bindir = prefix / "bin"
+    data = prefix / "share/notes-keeping"
+    versions = data / "versions"
+    current = data / "current"
+    launcher = bindir / "notes-keeping"
+    entrypoint = current / "bin/notes-keeping"
+    bindir.mkdir(parents=True, exist_ok=True)
+    versions.mkdir(parents=True, exist_ok=True, mode=0o700)
+    with (data / "install.lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        if launcher.is_symlink():
+            if launcher.readlink() != entrypoint:
+                raise ValueError(f"{launcher} already points to a different install")
+        elif launcher.exists():
+            raise ValueError(f"{launcher} already exists")
+        previous = json.loads((current / ".release.json").read_text()) if current.is_dir() else None
+        if args.update and previous is None:
+            raise ValueError("no managed installation at this prefix")
+        with tempfile.TemporaryDirectory() as scratch:
+            repo = Path(scratch) / "source"
+            if args.source:
+                source = args.source.resolve()
+                revision = git(source, "rev-parse", "--verify", f"{args.ref}^{{commit}}")
+                base = git(source, "merge-base", revision, args.main_ref)
+                subprocess.run(["git", "clone", "--quiet", "--no-checkout", "--", source, repo], check=True)
+                git(repo, "checkout", "--quiet", "--detach", revision)
+            else:
+                remote = os.environ.get("NOTES_KEEPING_RELEASE_SOURCE", UPSTREAM)
+                subprocess.run(["git", "clone", "--quiet", "--single-branch", "--branch", "main", "--", remote, repo], check=True)
+                revision = git(repo, "rev-parse", "HEAD")
+                base = revision
+            if previous and not args.source:
+                if not (repo / "bin/notes-keeping").is_file():
+                    print(f"No standalone CLI release on main yet. Keeping {previous['revision'][:12]}.")
+                    return
+                if revision == previous["base"] or ancestor(repo, revision, previous["base"]):
+                    print(f"notes-keeping is up to date ({previous['revision'][:12]})")
+                    return
+                if not ancestor(repo, previous["base"], revision):
+                    raise ValueError("published main does not descend from the installed release")
+            destination = package(repo, revision, versions, base)
+        if previous and previous["revision"] == revision:
+            print(f"notes-keeping is up to date ({revision[:12]})")
+            return
+        # Prepare the stable launcher before activating the new package. The old
+        # package remains available throughout an update and on any staging error.
+        if not launcher.is_symlink():
+            point(launcher, entrypoint)
+        point(current, destination)
+    print(f"Installed notes-keeping {revision[:12]} at {launcher}")
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--prefix", type=Path, default=None)
+    parser.add_argument("--source", type=Path, help="install a committed preview from a local checkout")
+    parser.add_argument("--ref", default="HEAD", help="local preview revision")
+    parser.add_argument("--main-ref", default="origin/main", help="local ref for published main")
+    parser.add_argument("--update", action="store_true")
+    args = parser.parse_args()
+    if args.update and args.source:
+        parser.error("updates are published from main")
+    embedded = Path(__file__).resolve().parent.parent
+    prefix = args.prefix or (embedded.parents[3] if args.update else Path.home() / ".local")
+    for command in ("git", "bun"):
+        if not shutil.which(command):
+            parser.error(f"{command} is required")
+    lock = "lockf" if os.uname().sysname == "Darwin" else "flock"
+    if not shutil.which(lock):
+        parser.error(f"{lock} is required")
+    try:
+        install(args, prefix.expanduser().resolve())
+    except (OSError, ValueError, subprocess.CalledProcessError) as error:
+        parser.exit(1, f"install-cli: {error}\n")
+
+
+if __name__ == "__main__":
+    main()

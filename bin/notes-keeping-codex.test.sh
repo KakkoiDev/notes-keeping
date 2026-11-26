@@ -4,6 +4,7 @@ set -uo pipefail
 ADAPTER="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/notes-keeping-codex"
 TMP_ROOT="${TMPDIR:-/tmp}"
 H="$(mktemp -d "$TMP_ROOT/nk-codex.XXXXXX")"
+trap '"${ADAPTER%/*}/notes-keeping-tui" stop >/dev/null 2>&1 || true' EXIT
 export NOTES_KEEPING_DIR="$H/notes"
 export NOTES_KEEPING_CODEX_STATE="$H/state"
 export GIT_AUTHOR_NAME='notes-keeping test'
@@ -55,13 +56,20 @@ check 'prompt hook includes a paused reason' yes "$(hook UserPromptSubmit | grep
 check 'compaction start restores todo context' yes "$(printf '{"session_id":"thread-123","cwd":"/work/sample","hook_event_name":"SessionStart","source":"compact"}\n' | "$ADAPTER" hook | grep -q 'paused: waiting for review' && echo yes || echo no)"
 
 $ADAPTER --file "$file" objective 'Deliver Codex support' >/dev/null
+$ADAPTER --file "$file" objective 'Second objective becomes update' >/dev/null
 $ADAPTER --file "$file" update 'Adapter tests pass' >/dev/null
+$ADAPTER --file "$file" important 'Keep this exact fact' >/dev/null
 check 'objective command uses the existing notes section' yes "$(grep -q '^Deliver Codex support$' "$file" && echo yes || echo no)"
-check 'update command uses the existing update format' yes "$(grep -q '^\[UPDATE\] ' "$file" && echo yes || echo no)"
-check 'objective and update changes are logged' 2 "$(grep -Ec '\| codex \| (objective|update) \|' "$file" | tr -d ' ')"
+check 'later objective uses the existing update format' yes "$(grep -q '^Second objective becomes update$' "$file" && echo yes || echo no)"
+check 'update command uses the existing update format' 2 "$(grep -c '^\[UPDATE\] ' "$file" | tr -d ' ')"
+check 'objective and update changes are logged' 3 "$(grep -Ec '\| codex \| (objective|update) \|' "$file" | tr -d ' ')"
+check 'important command uses AI attribution and logs it' yes "$(grep -q '^\[AI_AGENT\] Keep this exact fact$' "$file" && grep -q '| codex | important |' "$file" && echo yes || echo no)"
 
 same="$(hook SessionStart >/dev/null; find "$H/notes" -maxdepth 1 -name '*.md' | wc -l | tr -d ' ')"
 check 'repeated session start reuses the binding' 1 "$same"
+
+printf '{"session_id":"never-started","cwd":"/work/sample","hook_event_name":"SessionEnd"}\n' | "$ADAPTER" hook >/dev/null
+check 'session end never creates an orphan note or binding' no "$([ -e "$H/state/sessions/never-started.json" ] && echo yes || echo no)"
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

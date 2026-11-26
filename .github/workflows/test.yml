@@ -46,3 +46,12 @@ jobs:
       - uses: oven-sh/setup-bun@v2
       - name: Codex adapter tests
         run: bin/notes-keeping-codex.test.sh
+      - name: Standalone install and update tests
+        run: bin/notes-keeping-cli.test.sh
+      - name: tmux workspace tests
+        run: |
+          if ! command -v tmux; then
+            sudo apt-get update
+            sudo apt-get install -y tmux
+          fi
+          bin/notes-keeping-tui.test.sh

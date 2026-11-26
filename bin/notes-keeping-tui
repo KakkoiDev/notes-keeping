@@ -1,0 +1,1473 @@
+#!/usr/bin/env python3
+"""Owner-only tmux selection transport, popup client, and local notes service."""
+
+from __future__ import annotations
+
+import ctypes
+import errno
+import fcntl
+import hashlib
+import json
+import os
+import re
+import select
+import shlex
+import shutil
+import signal
+import socket
+import stat
+import struct
+import subprocess
+import sys
+import tempfile
+import termios
+import time
+import tty
+import uuid
+from pathlib import Path
+from typing import Any, NoReturn
+
+MAX_HEADER = 16 * 1024
+MAX_BODY = 64 * 1024
+MAX_RESPONSE = 8 * 1024 * 1024
+STAMP_SECONDS = 30
+EVENT_SECONDS = 60
+
+
+def die(message: str, code: int = 2) -> NoReturn:
+    print(f"notes-keeping-tui: {message}", file=sys.stderr)
+    raise SystemExit(code)
+
+
+def notes_dir() -> Path:
+    return Path(os.environ.get("NOTES_KEEPING_DIR", Path.home() / ".notes-keeping")).resolve()
+
+
+def state_dir() -> Path:
+    return Path(os.environ.get("NOTES_KEEPING_CODEX_STATE", notes_dir() / ".codex")).resolve()
+
+
+def runtime_dir() -> Path:
+    root = state_dir()
+    if root.parent == notes_dir():
+        notes_dir().mkdir(mode=0o700, parents=True, exist_ok=True)
+    path = root / "runtime"
+    for folder in (root, path):
+        if folder.is_symlink():
+            die(f"runtime state path is a symlink: {folder}")
+        folder.mkdir(mode=0o700, parents=True, exist_ok=True)
+        info = folder.stat()
+        if info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o700:
+            die(f"{folder} must be owned by the current user with mode 0700")
+    return path
+
+
+def socket_path() -> Path:
+    return runtime_dir() / "tui.sock"
+
+
+def atomic_json(path: Path, value: object) -> None:
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    os.chmod(path.parent, 0o700)
+    temp = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+    with temp.open("x", encoding="utf-8") as handle:
+        os.chmod(temp, 0o600)
+        json.dump(value, handle, separators=(",", ":"))
+        handle.write("\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(temp, path)
+
+
+def key_path(folder: str, server: str, pane: str) -> Path:
+    key = hashlib.sha256(f"{server}\0{pane}".encode()).hexdigest()
+    return state_dir() / folder / f"{key}.json"
+
+
+def exact_read(sock: socket.socket, size: int) -> bytes:
+    chunks: list[bytes] = []
+    left = size
+    while left:
+        chunk = sock.recv(left)
+        if not chunk:
+            raise ValueError("truncated frame")
+        chunks.append(chunk)
+        left -= len(chunk)
+    return b"".join(chunks)
+
+
+def recv_frame(sock: socket.socket, *, limit: int = MAX_BODY) -> tuple[dict[str, Any], bytes]:
+    header_size = struct.unpack(">I", exact_read(sock, 4))[0]
+    if header_size > MAX_HEADER:
+        raise ValueError("header is too large")
+    header_bytes = exact_read(sock, header_size)
+    body_size = struct.unpack(">I", exact_read(sock, 4))[0]
+    if body_size > limit:
+        raise ValueError("body is too large")
+    body = exact_read(sock, body_size)
+    try:
+        header = json.loads(header_bytes.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ValueError("invalid JSON header") from error
+    if not isinstance(header, dict):
+        raise ValueError("header must be an object")
+    return header, body
+
+
+def send_frame(sock: socket.socket, header: dict[str, Any], body: bytes = b"", *, limit: int = MAX_BODY) -> None:
+    encoded = json.dumps(header, separators=(",", ":")).encode()
+    if len(encoded) > MAX_HEADER or len(body) > limit:
+        raise ValueError("response is too large")
+    sock.sendall(struct.pack(">I", len(encoded)) + encoded + struct.pack(">I", len(body)) + body)
+
+
+def peer_uid(conn: socket.socket) -> int:
+    if sys.platform == "darwin":
+        libc = ctypes.CDLL(None, use_errno=True)
+        uid = ctypes.c_uint()
+        gid = ctypes.c_uint()
+        if libc.getpeereid(conn.fileno(), ctypes.byref(uid), ctypes.byref(gid)) != 0:
+            raise OSError(ctypes.get_errno(), "getpeereid failed")
+        return int(uid.value)
+    if hasattr(socket, "SO_PEERCRED"):
+        credentials = conn.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i"))
+        _, uid, _ = struct.unpack("3i", credentials)
+        return uid
+    raise OSError(errno.ENOTSUP, "peer credentials unavailable")
+
+
+def tmux(server: str, *args: str, input_bytes: bytes | None = None) -> subprocess.CompletedProcess[bytes]:
+    return subprocess.run(["tmux", "-S", server, *args], input=input_bytes, capture_output=True, check=False)
+
+
+def checked_record(path: Path) -> dict[str, Any]:
+    if path.is_symlink():
+        raise ValueError("mapping is a symlink")
+    info = path.stat()
+    if info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) & 0o022:
+        raise ValueError("mapping permissions are unsafe")
+    value = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(value, dict):
+        raise ValueError("mapping is invalid")
+    return value
+
+
+def validate_mapping(header: dict[str, Any]) -> dict[str, Any]:
+    server = header.get("tmuxServer")
+    pane = header.get("paneId")
+    session = header.get("tmuxSessionId")
+    if not all(isinstance(value, str) for value in (server, pane, session)):
+        raise ValueError("capture source is incomplete")
+    pane_path = key_path("panes", server, pane)
+    if not pane_path.exists():
+        raise ValueError("Codex pane mapping is missing; restart Codex or submit a prompt and retry")
+    record = checked_record(pane_path)
+    if record.get("tmuxServer") != server or record.get("paneId") != pane or record.get("tmuxSessionId") != session:
+        raise ValueError("Codex pane mapping does not match this pane")
+    # Hook timestamps are useful refresh evidence, not an interaction lease. Exact
+    # session, process, cwd, generation, binding and note ownership below are the
+    # authority, so an unchanged live Codex pane can always reopen the popup.
+    shown = tmux(server, "display-message", "-p", "-t", pane, "#{session_id}\t#{pane_current_path}\t#{pane_pid}\t#{pane_current_command}\t#{pane_dead}")
+    if shown.returncode != 0:
+        raise ValueError("source tmux pane no longer exists")
+    live_session, live_cwd, live_pid, live_command, dead = shown.stdout.decode().strip().split("\t")
+    if live_session != session or Path(live_cwd).resolve().as_posix() != Path(str(record.get("realCwd"))).resolve().as_posix():
+        raise ValueError("source pane identity changed")
+    if dead == "1" or int(live_pid) != record.get("panePid"):
+        raise ValueError("source pane process changed")
+    if isinstance(record.get("hostPid"), int):
+        host = subprocess.run(["ps", "-p", str(record["hostPid"]), "-o", "lstart="], capture_output=True, text=True, check=False)
+        if host.returncode != 0 or host.stdout.strip() != record.get("hostStarted"):
+            raise ValueError("mapped Codex process is no longer running")
+    elif live_command != record.get("paneCommand", "codex"):
+        raise ValueError("source pane command changed")
+    codex_session = record.get("codexSessionId")
+    if not isinstance(codex_session, str):
+        raise ValueError("Codex session mapping is missing")
+    binding_path = state_dir() / "sessions" / f"{''.join(ch if ch.isalnum() or ch in '_.-' else '_' for ch in codex_session)}.json"
+    if not binding_path.exists():
+        raise ValueError("Codex session binding is missing; submit a prompt and retry")
+    binding = checked_record(binding_path)
+    generation = record.get("generation")
+    if not isinstance(generation, str) or binding.get("sessionId") != codex_session or binding.get("path") != record.get("notePath") or binding.get("generation") != generation:
+        raise ValueError("Codex pane mapping generation is stale")
+    if header.get("generation", generation) != generation:
+        raise ValueError("Codex session changed while this popup was open")
+    note = Path(str(record.get("notePath"))).resolve()
+    root = notes_dir().resolve()
+    if not note.is_file() or root != note.parent:
+        raise ValueError("unsafe note mapping rejected")
+    return record
+
+
+def engine_path() -> Path:
+    return Path(__file__).resolve().parent / "notes-keeping-engine"
+
+
+def mutate(record: dict[str, Any], event_id: str, kind: str, body: bytes, revision: str | None = None) -> dict[str, Any]:
+    try:
+        text = body.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise ValueError("selection is not valid UTF-8") from error
+    request = {
+        "version": 1,
+        "kind": kind,
+        "text": text,
+        "actor": "captain",
+        "transport": "tmux/codex",
+        "eventId": event_id,
+        "at": int(time.time() * 1000),
+    }
+    if revision is not None:
+        request["expectedRevision"] = revision
+    result = engine_request(record, request)
+    result["note"] = Path(str(record["notePath"])).name
+    return result
+
+
+def engine_request(record: dict[str, Any], request_value: dict[str, Any]) -> dict[str, Any]:
+    request_value = {
+        "version": 1, "actor": "captain", "transport": "tmux/codex",
+        "eventId": uuid.uuid4().hex, "at": int(time.time() * 1000),
+        **request_value, "sessionId": record["codexSessionId"],
+    }
+    done = subprocess.run(
+        [str(engine_path()), "--file", str(record["notePath"])],
+        input=(json.dumps(request_value) + "\n").encode(),
+        capture_output=True,
+        check=False,
+        cwd=record["realCwd"],
+    )
+    if done.returncode != 0:
+        details = (done.stderr or done.stdout).decode(errors="replace").strip().splitlines()
+        raise ValueError(details[-1] if details else f"notes engine exited {done.returncode}")
+    value = json.loads(done.stdout)
+    if not isinstance(value, dict):
+        raise ValueError("notes engine returned an invalid result")
+    return value
+
+
+def read_workspace(record: dict[str, Any]) -> dict[str, Any]:
+    result = engine_request(record, {"kind": "view"})
+    workspace = result.get("workspace")
+    if not isinstance(workspace, dict) or not isinstance(workspace.get("todos"), list):
+        raise ValueError("notes engine returned an invalid workspace")
+    if not all(isinstance(workspace.get(key), str) for key in ("objectives", "updates", "important", "chat")):
+        raise ValueError("notes engine returned invalid note sections")
+    if not isinstance(workspace.get("logs"), list) or not isinstance(workspace.get("history"), list):
+        raise ValueError("notes engine returned invalid history")
+    return workspace
+
+
+def bridge_run(record: dict[str, Any], *args: str, body: bytes | None = None) -> bytes:
+    cwd = Path(record["realCwd"])
+    root = subprocess.run(["git", "-C", str(cwd), "rev-parse", "--show-toplevel"], capture_output=True, text=True, check=False)
+    bridge = (Path(root.stdout.strip()) if root.returncode == 0 else cwd) / "config" / "notes-keeping-bridge"
+    if not bridge.is_file() or not os.access(bridge, os.X_OK):
+        raise FileNotFoundError("No Firstmate bridge is configured for this pane.")
+    done = subprocess.run([str(bridge), *args], input=body, capture_output=True, check=False, timeout=10, cwd=cwd)
+    if done.returncode != 0:
+        details = (done.stderr or done.stdout).decode(errors="replace").strip().splitlines()
+        raise ValueError(details[-1] if details else f"Firstmate bridge exited {done.returncode}")
+    return done.stdout
+
+
+def fleet(record: dict[str, Any]) -> dict[str, Any]:
+    work = json.loads(bridge_run(record, "fleet", record["notePath"]))
+    if not isinstance(work, dict) or not isinstance(work.get("rows"), list):
+        raise ValueError("Firstmate bridge returned invalid work data")
+    return work
+
+
+def work_action(record: dict[str, Any], header: dict[str, Any], body: bytes) -> tuple[dict[str, Any], bytes]:
+    action = header["type"]
+    try:
+        work = fleet(record)
+    except FileNotFoundError:
+        return {"status": "work", "available": False}, b"{}"
+    if action == "work":
+        return {"status": "work", "available": True}, json.dumps(work, ensure_ascii=False).encode()
+    row = next((row for row in work["rows"] if row.get("task") == header.get("task")), None)
+    if row is None:
+        raise ValueError("the work item is no longer available")
+    if action == "work-answer":
+        if (row.get("call") or {}).get("state") != "open" or row.get("flag") != "!":
+            raise ValueError("the call is no longer open")
+        answer = " ".join(body.decode().split())
+        if not answer or len(answer) > 512:
+            raise ValueError("answer must contain 1–512 characters")
+        flags = [] if row.get("kind") == "captain" else ["--release"]
+        bridge_run(record, "call-answer", row["task"], *flags, body=answer.encode())
+        return {"status": "result", "message": "Answer sent to Firstmate."}, b""
+    path = Path(row.get("report") or "")
+    if (not path.is_absolute() or path.is_symlink() or not path.is_file()
+            or path.stat().st_uid != os.getuid() or notes_dir() in path.resolve().parents):
+        raise ValueError("work report is unavailable")
+    before = path.read_bytes()
+    revision = hashlib.sha256(before).hexdigest()
+    if action == "work-report":
+        return {"status": "report", "revision": revision}, before
+    if header.get("revision") != revision:
+        raise ValueError("report changed while the editor was open")
+    body.decode("utf-8")
+    if b"\0" in body:
+        raise ValueError("report contains NUL")
+    with tempfile.TemporaryDirectory(dir=path.parent) as directory:
+        staged = Path(directory) / path.name
+        staged.write_bytes(body)
+        staged.chmod(stat.S_IMODE(path.stat().st_mode))
+        staged.replace(path)
+    return {"status": "result", "message": "Report saved."}, b""
+
+
+def serve() -> None:
+    os.umask(0o077)
+    path = socket_path()
+    lock_handle = (runtime_dir() / "service.lock").open("a+")
+    try:
+        fcntl.flock(lock_handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        die("service is already running")
+    if path.exists() or path.is_symlink():
+        if path.is_symlink() or not stat.S_ISSOCK(path.lstat().st_mode) or path.lstat().st_uid != os.getuid():
+            die("refusing unsafe pre-existing service socket")
+        path.unlink()
+    server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    server.bind(path.as_posix())
+    os.chmod(path, 0o600)
+    server.listen(8)
+    pid_path = runtime_dir() / "service.pid"
+    atomic_json(pid_path, {"version": 1, "pid": os.getpid()})
+
+    def shutdown(_signum: int, _frame: object) -> None:
+        server.close()
+        path.unlink(missing_ok=True)
+        pid_path.unlink(missing_ok=True)
+        raise SystemExit(0)
+
+    signal.signal(signal.SIGTERM, shutdown)
+    signal.signal(signal.SIGINT, shutdown)
+    events: dict[str, dict[str, Any]] = {}
+    queues: dict[str, tuple[str, list[dict[str, Any]]]] = {}
+    while True:
+        conn, _ = server.accept()
+        with conn:
+            conn.settimeout(5)
+            try:
+                if peer_uid(conn) != os.getuid():
+                    raise ValueError("local transport rejected")
+                header, body = recv_frame(conn)
+                if header.get("version") != 1 or not isinstance(header.get("type"), str):
+                    raise ValueError("unsupported protocol request")
+                now = time.time()
+                events = {key: value for key, value in events.items() if now - value["acceptedAt"] <= EVENT_SECONDS}
+                request_type = header["type"]
+                event_id = header.get("eventId")
+                if request_type == "ping":
+                    send_frame(conn, {"version": 1, "status": "ready", "pid": os.getpid()})
+                    continue
+                if request_type in ("panel", "workspace"):
+                    record = validate_mapping(header)
+                    workspace = read_workspace(record)
+                    encoded_workspace = json.dumps(workspace, ensure_ascii=False, separators=(",", ":")).encode()
+                    send_frame(
+                        conn,
+                        {
+                            "version": 1,
+                            "status": "workspace",
+                            "target": Path(record["notePath"]).name,
+                            "pane": record["paneId"],
+                            "session": record["codexSessionId"][:8],
+                            "generation": record["generation"],
+                        },
+                        encoded_workspace,
+                        limit=MAX_RESPONSE,
+                    )
+                    continue
+                if request_type == "direct-mutate":
+                    record = validate_mapping(header)
+                    kind = header.get("kind")
+                    direct_event_id = header.get("eventId")
+                    if kind not in ("add", "update", "objective", "set-objectives", "important", "replace"):
+                        raise ValueError("unknown category")
+                    if not isinstance(direct_event_id, str) or not 16 <= len(direct_event_id) <= 64 or any(
+                        ch not in "0123456789abcdef-" for ch in direct_event_id.lower()
+                    ):
+                        raise ValueError("event ID is invalid")
+                    if len(body) > MAX_BODY or b"\0" in body:
+                        raise ValueError("note draft is empty, contains NUL, or is too large")
+                    try:
+                        content = body.decode("utf-8")
+                    except UnicodeDecodeError as error:
+                        raise ValueError("note draft is not valid UTF-8") from error
+                    if kind != "replace":
+                        content = content.strip()
+                    if not content and kind != "set-objectives":
+                        raise ValueError("note draft is empty")
+                    revision = header.get("revision")
+                    if kind in ("replace", "set-objectives") and not isinstance(revision, str):
+                        raise ValueError("the editor needs the note revision it opened")
+                    result = mutate(record, direct_event_id, kind, content.encode(), revision)
+                    send_frame(conn, {"version": 1, "status": "result", **result})
+                    continue
+                if request_type == "document":
+                    record = validate_mapping(header)
+                    body = json.dumps(engine_request(record, {"kind": "document"})["document"]).encode()
+                    send_frame(conn, {"version": 1, "status": "document"}, body, limit=MAX_RESPONSE)
+                    continue
+                if request_type in ("queue-read", "queue-write", "queue-send"):
+                    record = validate_mapping(header)
+                    queue_id = record["codexSessionId"]
+                    revision, pairs = queues.get(queue_id, ("", []))
+                    if request_type == "queue-read":
+                        send_frame(conn, {"version": 1, "status": "queue", "revision": revision}, json.dumps(pairs).encode())
+                        continue
+                    if header.get("revision") != revision:
+                        raise ValueError("queue changed in another popup; retry")
+                    if request_type == "queue-write":
+                        pairs = json.loads(body)
+                        if not isinstance(pairs, list):
+                            raise ValueError("queue is invalid")
+                        if pairs:
+                            engine_request(record, {"kind": "queue-format", "pairs": pairs})
+                            queues[queue_id] = (uuid.uuid4().hex, pairs)
+                        else:
+                            queues.pop(queue_id, None)
+                        send_frame(conn, {"version": 1, "status": "queue"})
+                        continue
+                    prompt = engine_request(record, {"kind": "queue-format", "pairs": pairs})["prompt"]
+                    send_to_pane(record["tmuxServer"], record["paneId"], prompt)
+                    queues.pop(queue_id, None)
+                    try:
+                        recorded = engine_request(record, {"kind": "queue-record", "pairs": pairs})
+                        message = "Queue inserted and recorded. Press Enter in Codex to send it."
+                        if recorded.get("warnings"):
+                            message += " " + "; ".join(recorded["warnings"])
+                    except (OSError, ValueError) as error:
+                        message = f"Queue inserted, but Chat could not be recorded: {error}"
+                    send_frame(conn, {"version": 1, "status": "result", "message": message})
+                    continue
+                if request_type in ("attach", "preview"):
+                    record = validate_mapping(header)
+                    source = header.get("source")
+                    if not isinstance(source, str) or Path(source).name != source:
+                        raise ValueError("history source is invalid")
+                    result = engine_request(record, {"kind": request_type, "source": source})
+                    preview = result.pop("preview", None)
+                    body = json.dumps(preview, ensure_ascii=False).encode() if preview is not None else b""
+                    send_frame(conn, {"version": 1, "status": "result", "note": Path(record["notePath"]).name, **result}, body, limit=MAX_RESPONSE)
+                    continue
+                if request_type in ("work", "work-answer", "work-report", "work-report-save"):
+                    record = validate_mapping(header)
+                    engine_request(record, {"kind": "check"})
+                    result, data = work_action(record, header, body)
+                    send_frame(conn, {"version": 1, **result}, data, limit=MAX_RESPONSE)
+                    continue
+                if request_type == "status":
+                    record = validate_mapping(header)
+                    selector = header.get("selector")
+                    status_value = header.get("todoStatus")
+                    if not isinstance(selector, str) or not selector or status_value not in MARKS:
+                        raise ValueError("todo status request is invalid")
+                    status_request = {
+                        "version": 1,
+                        "kind": "status",
+                        "selector": selector,
+                        "status": status_value,
+                        "reason": header.get("reason"),
+                        "actor": "captain",
+                        "transport": "tmux/codex",
+                        "eventId": uuid.uuid4().hex,
+                        "at": int(time.time() * 1000),
+                    }
+                    result = engine_request(record, status_request)
+                    send_frame(conn, {"version": 1, "status": "result", "note": Path(record["notePath"]).name, **result})
+                    continue
+                if request_type == "targets":
+                    requested_cwd = header.get("cwd")
+                    if not isinstance(requested_cwd, str):
+                        raise ValueError("manual target cwd is missing")
+                    cwd = Path(requested_cwd).resolve()
+                    targets: list[dict[str, str]] = []
+                    for path in (state_dir() / "panes").glob("*.json"):
+                        try:
+                            candidate = checked_record(path)
+                            if Path(str(candidate.get("realCwd"))).resolve() != cwd:
+                                continue
+                            record = validate_mapping({"tmuxServer": candidate["tmuxServer"], "paneId": candidate["paneId"], "tmuxSessionId": candidate["tmuxSessionId"]})
+                            engine_request(record, {"kind": "check"})
+                            targets.append({"id": path.stem, "pane": candidate["paneId"], "session": candidate["codexSessionId"][:8], "note": Path(candidate["notePath"]).name})
+                        except (KeyError, OSError, ValueError, json.JSONDecodeError):
+                            continue
+                    send_frame(conn, {"version": 1, "status": "targets", "targets": targets})
+                    continue
+                if not isinstance(event_id, str):
+                    raise ValueError("event ID is missing")
+                if request_type in ("capture", "manual"):
+                    if len(body) == 0 or len(body) > MAX_BODY or b"\0" in body:
+                        raise ValueError("selection is empty, contains NUL, or is too large")
+                    if not body.decode("utf-8").strip():
+                        raise ValueError("selection is empty")
+                    if hashlib.sha256(body).hexdigest() != header.get("bodyHash"):
+                        raise ValueError("selection hash mismatch")
+                    if request_type == "capture":
+                        copied_at = header.get("copiedAt")
+                        if not isinstance(copied_at, (int, float)) or now - copied_at > STAMP_SECONDS or copied_at > now + 2:
+                            raise ValueError("selection expired; copy it again")
+                        record = validate_mapping(header)
+                    else:
+                        target_id = header.get("targetId")
+                        if not isinstance(target_id, str) or not all(ch in "0123456789abcdef" for ch in target_id) or len(target_id) != 64:
+                            raise ValueError("manual target is invalid")
+                        target = checked_record(state_dir() / "panes" / f"{target_id}.json")
+                        record = validate_mapping({"tmuxServer": target["tmuxServer"], "paneId": target["paneId"], "tmuxSessionId": target["tmuxSessionId"]})
+                    engine_request(record, {"kind": "check"})
+                    prior = events.get(event_id)
+                    if prior is not None and prior["body"] != body:
+                        raise ValueError("event ID reused with different content")
+                    events[event_id] = {"body": body, "record": record, "acceptedAt": now, "claimed": False}
+                    send_frame(conn, {"version": 1, "status": "accepted", "bytes": len(body)})
+                elif request_type == "claim":
+                    event = events.get(event_id)
+                    if event is None:
+                        raise ValueError("selection expired")
+                    if event["claimed"]:
+                        raise ValueError("selection already claimed")
+                    event["claimed"] = True
+                    send_frame(
+                        conn,
+                        {
+                            "version": 1,
+                            "status": "claimed",
+                            "bytes": len(event["body"]),
+                            "target": Path(event["record"]["notePath"]).name,
+                            "pane": event["record"]["paneId"],
+                            "session": event["record"]["codexSessionId"][:8],
+                            "tmuxServer": event["record"]["tmuxServer"],
+                            "tmuxSessionId": event["record"]["tmuxSessionId"],
+                            "generation": event["record"]["generation"],
+                        },
+                        event["body"],
+                    )
+                elif request_type == "cancel":
+                    events.pop(event_id, None)
+                    send_frame(conn, {"version": 1, "status": "cancelled"})
+                elif request_type == "mutate":
+                    event = events.get(event_id)
+                    if event is None or not event["claimed"]:
+                        raise ValueError("selection is not claimed")
+                    kind = header.get("kind")
+                    if kind not in ("add", "update", "objective", "important"):
+                        raise ValueError("unknown category")
+                    content = body if body else event["body"]
+                    initial = event["record"]
+                    record = validate_mapping(initial)
+                    result = mutate(record, event_id, kind, content)
+                    if result.get("ok"):
+                        events.pop(event_id, None)
+                    send_frame(conn, {"version": 1, "status": "result", **result})
+                else:
+                    raise ValueError("unknown request type")
+            except Exception as error:  # visible, content-free failure response
+                try:
+                    send_frame(conn, {"version": 1, "status": "error", "message": str(error).splitlines()[-1]})
+                except OSError:
+                    pass
+
+
+def request(header: dict[str, Any], body: bytes = b"", *, timeout: float = 15) -> tuple[dict[str, Any], bytes]:
+    path = socket_path()
+    if not path.exists():
+        raise ValueError("notes-keeping runtime is unavailable")
+    client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    client.settimeout(timeout)
+    try:
+        client.connect(path.as_posix())
+        send_frame(client, {"version": 1, **header}, body)
+        response, response_body = recv_frame(client, limit=MAX_RESPONSE)
+    finally:
+        client.close()
+    if response.get("status") == "error":
+        raise ValueError(str(response.get("message", "request failed")))
+    return response, response_body
+
+
+def display_error(server: str, pane: str, message: str) -> None:
+    tmux(server, "display-message", "-t", pane, message.replace("\n", " ")[:200])
+
+
+def mapping_header(server: str, pane: str, session: str) -> dict[str, str]:
+    return {"tmuxServer": server, "paneId": pane, "tmuxSessionId": session}
+
+
+def open_workspace(server: str, pane: str, session: str, cwd: str) -> None:
+    response, _ = request({"type": "workspace", **mapping_header(server, pane, session)})
+    command = shlex.join([sys.executable, str(Path(__file__).resolve()), "workspace-popup", server, pane, session, response["generation"]])
+    opened = tmux(
+        server,
+        "display-popup",
+        "-EE",
+        "-t",
+        pane,
+        "-d",
+        cwd,
+        "-w",
+        "80%",
+        "-h",
+        "70%",
+        "-T",
+        f"Notes — {response['target']}",
+        command,
+    )
+    if opened.returncode != 0:
+        raise ValueError(opened.stderr.decode(errors="replace").strip() or "popup could not open")
+
+
+def stamp_copy(server: str, pane: str) -> None:
+    shown = tmux(server, "display-message", "-p", "-t", pane, "#{session_id}")
+    if shown.returncode != 0:
+        display_error(server, pane, "notes-keeping: copied, but source session could not be resolved")
+        return
+    session = shown.stdout.decode().strip()
+    try:
+        mapping = validate_mapping(mapping_header(server, pane, session))
+    except (OSError, ValueError):
+        return
+    prefix = f"notes-keeping-{pane}-"
+    listed = tmux(server, "list-buffers", "-F", "#{buffer_created}\t#{buffer_name}")
+    if listed.returncode != 0:
+        display_error(server, pane, "notes-keeping: copied, but selection stamp failed")
+        return
+    candidates: list[tuple[int, int, str]] = []
+    for line in listed.stdout.decode().splitlines():
+        created, _, name = line.partition("\t")
+        if name.startswith(prefix):
+            try:
+                candidates.append((int(created), int(name.removeprefix(prefix)), name))
+            except ValueError:
+                pass
+    if not candidates:
+        display_error(server, pane, "notes-keeping: copied, but exact selection buffer was not found")
+        return
+    _, _, name = max(candidates)
+    atomic_json(key_path("stamps", server, pane), {"version": 1, **mapping_header(server, pane, session), "generation": mapping["generation"], "bufferName": name, "copiedAt": time.time()})
+
+
+def capture(server: str, pane: str) -> None:
+    try:
+        start(quiet=True)
+        shown = tmux(server, "display-message", "-p", "-t", pane, "#{session_id}\t#{pane_current_path}")
+        if shown.returncode != 0:
+            raise ValueError("source tmux pane no longer exists")
+        session, cwd = shown.stdout.decode().strip().split("\t")
+        stamp_path = key_path("stamps", server, pane)
+        if not stamp_path.exists():
+            open_workspace(server, pane, session, cwd)
+            return
+        record = checked_record(stamp_path)
+        if record.get("tmuxServer") != server or record.get("paneId") != pane or record.get("tmuxSessionId") != session:
+            stamp_path.unlink(missing_ok=True)
+            open_workspace(server, pane, session, cwd)
+            return
+        copied_at = record.get("copiedAt")
+        if not isinstance(copied_at, (int, float)) or time.time() - copied_at > STAMP_SECONDS:
+            stamp_path.unlink(missing_ok=True)
+            open_workspace(server, pane, session, cwd)
+            return
+        mapping = validate_mapping(mapping_header(server, pane, session))
+        if record.get("generation") != mapping["generation"]:
+            stamp_path.unlink(missing_ok=True)
+            open_workspace(server, pane, session, cwd)
+            return
+        buffer_name = record.get("bufferName")
+        if not isinstance(buffer_name, str):
+            raise ValueError("selection stamp is invalid")
+        saved = tmux(server, "save-buffer", "-b", buffer_name, "-")
+        if saved.returncode != 0:
+            stamp_path.unlink(missing_ok=True)
+            open_workspace(server, pane, session, cwd)
+            return
+        if len(saved.stdout) > MAX_BODY or b"\0" in saved.stdout:
+            raise ValueError("selection contains NUL or is larger than 64 KiB")
+        try:
+            saved.stdout.decode("utf-8")
+        except UnicodeDecodeError as error:
+            raise ValueError("selection is not valid UTF-8") from error
+        body = saved.stdout
+        event_id = uuid.uuid4().hex
+        response, _ = request({"type": "capture", "eventId": event_id, **mapping_header(server, pane, session), "generation": mapping["generation"], "bufferName": buffer_name, "copiedAt": copied_at, "bodyHash": hashlib.sha256(body).hexdigest()}, body)
+        stamp_path.unlink(missing_ok=True)
+        title = f"Send selection ({response['bytes']} bytes)"
+        command = shlex.join([sys.executable, str(Path(__file__).resolve()), "popup", event_id])
+        opened = tmux(server, "display-popup", "-EE", "-t", pane, "-d", cwd, "-w", "80%", "-h", "70%", "-T", title, command)
+        if opened.returncode != 0:
+            request({"type": "cancel", "eventId": event_id})
+            raise ValueError(opened.stderr.decode(errors="replace").strip() or "popup could not open")
+    except Exception as error:
+        display_error(server, pane, f"notes-keeping: {error}")
+        return
+
+
+def sanitized(text: str) -> str:
+    return "".join(ch if ch in "\n\t" or ord(ch) >= 32 and not 127 <= ord(ch) <= 159 else f"<{ord(ch):02x}>" for ch in text)
+
+
+LINK = re.compile(r"\[([^\]\n]+)\]\((https?://[^\s)]+)\)|(https?://[^\s<>]+)")
+
+
+def linked(text: str) -> str:
+    """Render terminal-supported OSC 8 links; never invent transcript anchors."""
+
+    def render(match: re.Match[str]) -> str:
+        label = match.group(1) or match.group(3) or ""
+        url = match.group(2) or match.group(3) or ""
+        trailing = ""
+        if match.group(3):
+            while label.endswith((".", ",", ";", ":")):
+                trailing = label[-1] + trailing
+                label = label[:-1]
+                url = url[:-1]
+        return f"\x1b]8;;{url}\x1b\\\x1b[34;4m{label}\x1b[0m\x1b]8;;\x1b\\{trailing}"
+
+    return LINK.sub(render, text)
+
+
+def read_key() -> str:
+    first = os.read(sys.stdin.fileno(), 1)
+    if not first:
+        raise ValueError("popup input closed")
+    lead = first[0]
+    extra = 3 if 0xF0 <= lead <= 0xF4 else 2 if 0xE0 <= lead <= 0xEF else 1 if 0xC2 <= lead <= 0xDF else 0
+    for _ in range(extra):
+        first += os.read(sys.stdin.fileno(), 1)
+    return first.decode("utf-8", errors="ignore")
+
+
+MARKS = {"todo": "[ ]", "in-progress": "[~]", "done": "[x]", "declined": "[-]", "blocked": "[!]", "paused": "[/]"}
+NEXT_STATUS = {"todo": "in-progress", "in-progress": "done", "done": "declined", "declined": "todo", "blocked": "todo", "paused": "todo"}
+VIEWS = ("Todos", "Objectives", "Updates", "Important", "Notes", "Paste", "Chat", "Queue", "History", "Logs", "Work")
+NAVIGATION = {
+    "1": 0, "T": 0,
+    "2": 1, "O": 1,
+    "3": 2, "U": 2,
+    "4": 3, "I": 3,
+    "5": 4, "N": 4,
+    "6": 5, "P": 5,
+    "7": 6, "C": 6,
+    "8": 7, "Q": 7,
+    "9": 8, "H": 8,
+    "0": 9, "L": 9,
+    "W": 10,
+}
+SAVE_KINDS = {"t": "add", "u": "update", "o": "objective", "i": "important"}
+SAVED_VIEW = {"add": 0, "objective": 1, "update": 2, "important": 3}
+
+
+def workspace(target: dict[str, str]) -> tuple[dict[str, Any], dict[str, Any]]:
+    response, body = request({"type": "workspace", **target})
+    value = json.loads(body)
+    if not isinstance(value, dict) or not isinstance(value.get("todos"), list):
+        raise ValueError("notes engine returned an invalid workspace")
+    return response, value
+
+
+def edit_draft(text: str, title: str = "Notes draft") -> tuple[str, bool]:
+    original = text
+    edited = list(text)
+    print(f"\x1b[2J\x1b[H{title} (in memory only). Ctrl+S keeps edits; Esc asks before abandoning them.\r\n\r")
+    print(sanitized(text), end="", flush=True)
+    while True:
+        char = read_key()
+        if char == "\x13":
+            result = "".join(edited).strip()
+            return result, result != original
+        if char == "\x1b":
+            print("\r\nAbandon these draft edits? [y/N]: ", end="", flush=True)
+            if read_key().lower() == "y":
+                return original, False
+            print("\r\nContinuing edit.\r\n", end="", flush=True)
+            continue
+        if char in ("\x7f", "\b"):
+            if edited:
+                edited.pop()
+                print("\b \b", end="", flush=True)
+        elif char in ("\r", "\n"):
+            edited.append("\n")
+            print("\r\n", end="", flush=True)
+        elif char.isprintable() or char == "\t":
+            edited.append(char)
+            print(char, end="", flush=True)
+
+
+def confirm_close(dirty: bool) -> bool:
+    if not dirty:
+        return True
+    print("\r\nDiscard unsaved Notes draft? [y/N]: ", end="", flush=True)
+    return read_key().lower() == "y"
+
+
+def todo_selector(item: dict[str, Any]) -> str:
+    return f"id:{item['id']}" if item.get("id") else str(item.get("text", ""))
+
+
+def set_status(target: dict[str, str], item: dict[str, Any], status_value: str, reason: str | None = None) -> dict[str, Any]:
+    header: dict[str, Any] = {
+        "type": "status",
+        **target,
+        "selector": todo_selector(item),
+        "todoStatus": status_value,
+    }
+    if reason is not None:
+        header["reason"] = reason
+    result, _ = request(header)
+    return result
+
+
+def save_text(target: dict[str, str], kind: str, text: str, revision: str | None = None) -> dict[str, Any]:
+    result, _ = request(
+        {
+            "type": "direct-mutate",
+            **target,
+            "eventId": uuid.uuid4().hex,
+            "kind": kind,
+            "revision": revision,
+        },
+        text.encode("utf-8"),
+    )
+    return result
+
+
+def external_edit(content: bytes, terminal: list[Any]) -> bytes:
+    editor = shlex.split(os.environ.get("VISUAL") or os.environ.get("EDITOR") or "")
+    if not editor:
+        raise ValueError("set VISUAL or EDITOR to open the editor")
+    with tempfile.TemporaryDirectory(dir=runtime_dir()) as directory:
+        path = Path(directory) / "note.md"
+        path.write_bytes(content)
+        termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, terminal)
+        try:
+            result = subprocess.run([*editor, str(path)], check=False)
+        finally:
+            tty.setraw(sys.stdin.fileno())
+        if result.returncode != 0:
+            raise ValueError("editor exited without saving")
+        return path.read_bytes()
+
+
+def edit_note(target: dict[str, str], terminal: list[Any]) -> str:
+    _, body = request({"type": "document", **target})
+    document = json.loads(body)
+    edited = external_edit(document["text"].encode(), terminal).decode("utf-8")
+    if edited == document["text"]:
+        return "Note unchanged."
+    return str(save_text(target, "replace", edited, document["revision"])["message"])
+
+
+def send_to_pane(server: str, pane: str, text: str) -> None:
+    if any(ch not in "\n\t" and (ord(ch) < 32 or 127 <= ord(ch) <= 159) for ch in text):
+        raise ValueError("queue contains a control character that cannot be inserted into Codex")
+    name = f"notes-keeping-queue-{uuid.uuid4().hex}"
+    loaded = tmux(server, "load-buffer", "-b", name, "-", input_bytes=text.encode())
+    if loaded.returncode != 0:
+        raise ValueError("tmux could not stage the queued text")
+    pasted = tmux(server, "paste-buffer", "-d", "-p", "-r", "-b", name, "-t", pane)
+    if pasted.returncode != 0:
+        tmux(server, "delete-buffer", "-b", name)
+        raise ValueError("tmux could not insert the queued text")
+
+
+def queue_write(target: dict[str, str], revision: str, pairs: list[dict[str, Any]]) -> None:
+    request({"type": "queue-write", **target, "revision": revision}, json.dumps(pairs, ensure_ascii=False).encode())
+
+
+def window_at(items: list[Any], cursor: int, height: int) -> enumerate:
+    start = max(0, min(cursor - height // 2, len(items) - height))
+    return enumerate(items[start:start + height], start)
+
+
+def result_message(result: dict[str, Any], default: str) -> str:
+    return ". ".join([str(result.get("message", default)), *result.get("warnings", [])])
+
+
+def age(at: int | None) -> str:
+    elapsed = max(0, int(time.time()) - at) if at is not None else 0
+    for size, unit in ((86400, "d"), (3600, "h"), (60, "m")):
+        if elapsed >= size:
+            return f"{elapsed // size}{unit}"
+    return f"{elapsed}s" if at is not None else "-"
+
+
+def workspace_panel(server: str, pane: str, session: str, *, initial_view: int, draft: str, generation: str | None = None) -> None:
+    old = termios.tcgetattr(sys.stdin.fileno())
+    view = initial_view
+    cursors = {"todo": 0, "queue": 0, "history": 0, "work": 0}
+    dirty = bool(draft)
+    message = ""
+    paste_text = ""
+    queued: list[dict[str, Any]] = []
+    history_open: str | None = None
+    history_confirm = False
+    item_open = False
+    hidden: set[str] = set()
+    work_open = False
+    work_mode = "unlinked"
+    report_task: str | None = None
+    work_task: str | None = None
+    scroll = 0
+    target = mapping_header(server, pane, session)
+    if generation is not None:
+        target["generation"] = generation
+    try:
+        tty.setraw(sys.stdin.fileno())
+        while True:
+            response, value = workspace(target)
+            target["generation"] = response["generation"]
+            queue_revision = ""
+            if view in (4, 5, 7):
+                queue_header, queue_body = request({"type": "queue-read", **target})
+                queue_revision = queue_header["revision"]
+                queued = json.loads(queue_body)
+                cursors["queue"] = min(cursors["queue"], max(0, len(queued) - 1))
+            height = max(3, shutil.get_terminal_size().lines - 9)
+            todo_items = sorted(
+                (item for item in value["todos"] if item["status"] == "blocked" or item["status"] not in hidden),
+                key=lambda item: item["status"] != "blocked",
+            )
+            cursors["todo"] = min(cursors["todo"], max(0, len(todo_items) - 1))
+            history_items = value["history"]
+            cursors["history"] = min(cursors["history"], max(0, len(history_items) - 1))
+            print("\x1b[2J\x1b[H", end="")
+            tab_keys = ("1/T", "2/O", "3/U", "4/I", "5/N", "6/P", "7/C", "8/Q", "9/H", "0/L", "W")
+            tabs = "  ".join(f"\x1b[7m{tab_keys[index]}:{name}\x1b[0m" if index == view else f"{tab_keys[index]}:{name}" for index, name in enumerate(VIEWS))
+            print(f"{tabs}\r")
+            print(f"Target: {response['target']}  Codex: {response['session']}  Pane: {response['pane']}\r")
+            print("\r")
+            work = {}
+            linked_rows = []
+            if view in (0, 10):
+                try:
+                    work_response, work_body = request({"type": "work", **target})
+                    if work_response.get("available"):
+                        work = json.loads(work_body)
+                except (OSError, ValueError) as error:
+                    message = f"Work unavailable: {error}"
+                if view == 0 and todo_items:
+                    linked_rows = [row for row in work.get("rows", []) if todo_items[cursors["todo"]].get("id") in row.get("todos", [])]
+
+            def body_lines(content: str, *, start: int = scroll) -> None:
+                lines = content.splitlines()
+                at = min(start, max(0, len(lines) - height))
+                print(linked(sanitized("\n".join(lines[at:at + height]))).replace("\n", "\r\n"))
+                if len(lines) > height:
+                    print(f"[j/k] Scroll  {at + 1}–{min(len(lines), at + height)} of {len(lines)}\r")
+
+            if view == 0:
+                if item_open and todo_items:
+                    item = todo_items[cursors["todo"]]
+                    print(f"Todo detail\r\n{MARKS.get(str(item.get('status')), '[?]')} {linked(sanitized(str(item.get('text', ''))))}\r")
+                    if item.get("label"):
+                        print(f"Label: {sanitized(str(item['label']))}\r")
+                    if item.get("id"):
+                        print(f"ID: {sanitized(str(item['id']))}\r")
+                    if item.get("reason"):
+                        print(f"Reason: {sanitized(str(item['reason']))}\r")
+                    if item.get("source"):
+                        source = item["source"]
+                        print(f"From {source['section']}: {linked(sanitized(source['text']))}\r")
+                    for change in item.get("history", []):
+                        print(sanitized(change) + "\r")
+                    for row in linked_rows:
+                        print(f"   {row.get('flag', '')} {linked(sanitized(str(row.get('title') or row['task'])))}\r")
+                        if row.get("call"):
+                            print(f"     {linked(sanitized(row['call']['question']))}\r")
+                    if linked_rows:
+                        print("[w] Linked work  [a] Open call  [v] Work report\r")
+                    print("\r\n[f] Next status  [p] Previous  [z] Pause with reason  [b] Back\r")
+                else:
+                    visible = [status for status in MARKS if status not in hidden]
+                    print(f"Filter: {', '.join(visible) or 'blocked'}  [m] Cycle  [v then 1–6] Toggle status\r")
+                    shown_ids = {item.get("id") for item in todo_items}
+                    calls = sum(row.get("flag") == "!" and (not row.get("todos") or shown_ids.intersection(row["todos"])) for row in work.get("rows", []))
+                    if calls:
+                        print(f"Open calls: {calls}\r")
+                    if not value["todos"]:
+                        print("No todos in this session. [5/N] Draft a todo.\r")
+                        if history_items:
+                            print("[9/H] History → [Enter] Preview → [a] Attach open todos.\r")
+                    elif not todo_items:
+                        print("No todos match this filter. [m] Cycle filters or [v] show a status.\r")
+                    for index, item in window_at(todo_items, cursors["todo"], max(1, height // (2 if work else 1))):
+                        status_value = str(item.get("status", "todo"))
+                        text = str(item.get("label") or item.get("text") or "")
+                        reason = f" — {item['reason']}" if item.get("reason") else ""
+                        selected = "\x1b[7m" if index == cursors["todo"] else ""
+                        reset = "\x1b[0m" if selected else ""
+                        print(f"{selected}{'>' if index == cursors['todo'] else ' '} {MARKS.get(status_value, '[?]')} {linked(sanitized(text + reason))}{reset}\r")
+                        for row in work.get("rows", []):
+                            if item.get("id") in row.get("todos", []):
+                                title = str(row.get("title") or row["task"])
+                                print(f"   {row.get('flag', '')} {linked(sanitized(title))} · {row['word']} · {age(row.get('at'))}\r")
+                    print("\r\n[j/k or arrows] Move  [Enter] Cycle  [f/p] Step  [z] Pause  [d] Detail  [m] Filter\r")
+            elif view == 1:
+                body_lines(value["objectives"] or "No objectives yet.")
+                print("\r\n[u] Add objective or update  [e] Edit objectives\r")
+            elif view == 2:
+                body_lines(value["updates"] or "No updates yet.")
+            elif view == 3:
+                body_lines(value["important"] or "No important notes yet.")
+            elif view == 4:
+                print("Draft (in memory only; no write until an explicit save):\r\n")
+                body_lines(draft or "Empty draft. Press e to edit.")
+                print("\r\n[e] Edit  Save [t] Todo [o] Objective [u] Update [i] Important  [r] Draft reply\r")
+            elif view == 5:
+                print("Paste scratch (memory only; never reads the clipboard automatically):\r\n")
+                body_lines(paste_text or "Empty. Press e to enter text.")
+                for pair in queued:
+                    if paste_text and pair.get("whole") == paste_text:
+                        print(f"\x1b[33mNoted\x1b[0m {linked(sanitized(pair['agent']))}\r")
+                print("\r\n[e] Edit  [a] Add to queue  [n] Note a passage  [x] Clear\r")
+            elif view == 6:
+                body_lines(value["chat"] or "No chat recorded yet.")
+            elif view == 7:
+                if not queued:
+                    print("No replies queued.\r")
+                for index, pair in window_at(queued, cursors["queue"], max(1, height // 2)):
+                    selected = "\x1b[7m" if index == cursors["queue"] else ""
+                    reset = "\x1b[0m" if selected else ""
+                    print(f"{selected}{'>' if index == cursors['queue'] else ' '} {linked(sanitized(pair['agent']))}{reset}\r")
+                    if pair["user"]:
+                        print(f"   Reply: {linked(sanitized(pair['user']))}\r")
+                print("\r\n[j/k] Move  [e] Edit  [x] Remove  [s] Insert queue into Codex prompt\r")
+            elif view == 8:
+                opened = next((item for item in history_items if item["name"] == history_open), None)
+                if opened is not None:
+                    if history_confirm:
+                        print(f"Attach {opened['name']}?\r\nObjectives, updates, and open todos are copied; original unchanged. [y/N]\r")
+                    else:
+                        print(f"{opened['label']}  {opened['summary']}\r\n\r")
+                        _, preview = request({"type": "preview", **target, "source": opened["name"]})
+                        previous = json.loads(preview)
+                        content_lines = []
+                        for title, field in (("Objectives", "objectives"), ("Updates", "updates"), ("Todo", "todos"), ("Important", "important"), ("Chat", "chat")):
+                            content = previous[field]
+                            if field == "todos":
+                                content = "\n".join(f"{MARKS.get(str(row.get('status')), '[?]')} {row.get('label') or row.get('text')}" for row in content)
+                            content_lines.append(f"{title}\n{content or '(empty)'}")
+                        body_lines("\n\n".join(content_lines))
+                        print("[a] Attach  [b] Back\r")
+                else:
+                    if not history_items:
+                        print("No earlier notes.\r")
+                    for index, item in window_at(history_items, cursors["history"], height):
+                        selected = "\x1b[7m" if index == cursors["history"] else ""
+                        reset = "\x1b[0m" if selected else ""
+                        print(f"{selected}{'>' if index == cursors['history'] else ' '} {item['label']}  {sanitized(item['summary'])}{reset}\r")
+                    print("\r\n[j/k or arrows] Move  [Enter] Preview\r")
+            elif view == 9:
+                logs = value["logs"]
+                if not logs:
+                    print("No action log rows.\r")
+                body_lines("\n".join(f"{row['time']}  {row['actor']}  {row['action']}  {row['item']}  {row['change']}  {row['note']}".rstrip() for row in logs))
+            else:
+                all_rows = work.get("rows", [])
+                rows = [row for row in all_rows if row.get("gone")] if work_mode == "gone" else [
+                    row for row in all_rows if not row.get("gone") and not row.get("todos") and (row["word"] == "call" or row.get("live"))
+                ]
+                cursors["work"] = min(cursors["work"], max(0, len(rows) - 1))
+                row = next((row for row in all_rows if row["task"] == work_task), None)
+                if not work:
+                    print("No Firstmate bridge is configured for this pane.\r")
+                elif report_task is not None:
+                    _, report = request({"type": "work-report", **target, "task": report_task})
+                    body_lines(report.decode("utf-8", errors="replace"))
+                    print("[e] Edit report  [b] Back\r")
+                elif work_open and row is not None:
+                    print(f"{row.get('flag', '')} {linked(sanitized(str(row.get('title') or row['task'])))} · {row['word']} · {age(row.get('at'))}\r")
+                    summary = row.get("summary") or {}
+                    for key in ("title", "outcome", "ask"):
+                        if summary.get(key):
+                            print(linked(sanitized(summary[key])) + "\r")
+                    for key in ("waiting", "pr", "report", "window"):
+                        if row.get(key):
+                            print(f"{key}: {linked(sanitized(str(row[key])))}\r")
+                    call = row.get("call")
+                    if call:
+                        print(f"\r\nCall {call['state']} · {age(call.get('at'))} · {linked(sanitized(call['question']))}\r")
+                        for index, choice in enumerate(call.get("options", []), start=1):
+                            print(f"  {index}. {linked(sanitized(choice))}\r")
+                    for step in row.get("trail") or []:
+                        print(f"  {age(step.get('at'))} {step['who']} · {linked(sanitized(step['text']))}\r")
+                    print("[b] Back  [y] Copy link  [g] Go to window  [o] Open PR  [v] Read report  [a] Answer open call\r")
+                elif work_mode == "closed":
+                    closed = work.get("closed") or []
+                    body_lines("\n".join(f"{one['title']} {one.get('evidence') or ''}" for one in closed) or "No closed calls today.")
+                    print("[x] Back to work  [G] Gone workers\r")
+                else:
+                    if not rows:
+                        print("No Firstmate work rows.\r")
+                    for index, row in window_at(rows, cursors["work"], max(1, height // 2)):
+                        mark = ">" if index == cursors["work"] else " "
+                        print(f"{mark} {row.get('flag', '')} {linked(sanitized(str(row.get('title') or row['task'])))} · {row['word']} · {age(row.get('at'))}\r")
+                        detail = (row.get("summary") or {}).get("outcome") or row.get("waiting")
+                        if detail:
+                            print("   " + linked(sanitized(detail)) + "\r")
+                    print(f"[j/k] Move  [Enter] Details  [G] Gone ({work.get('gone', 0)})  [x] Closed today ({work.get('closedToday', 0)})\r")
+            print("\r\n[1-0, Shift+T/O/U/I/N/P/C/Q/H/L/W] Views  [Tab] Next  [E] Edit note  [q/Esc] Close\r")
+            if message:
+                print(f"{sanitized(message)}\r")
+                message = ""
+
+            key = read_key()
+            if key == "\x1b":
+                ready, _, _ = select.select([sys.stdin], [], [], 0.03)
+                if ready:
+                    sequence = os.read(sys.stdin.fileno(), 2)
+                    if view in (0, 8):
+                        if sequence in (b"[A", b"OA"):
+                            key = "k"
+                        elif sequence in (b"[B", b"OB"):
+                            key = "j"
+            if key in ("q", "\x1b"):
+                if confirm_close(dirty):
+                    return
+                continue
+            if key in NAVIGATION:
+                view = NAVIGATION[key]
+                scroll = 0
+                continue
+            if key == "\t":
+                view = (view + 1) % len(VIEWS)
+                scroll = 0
+                continue
+            if key in ("j", "k") and (view in (1, 2, 3, 4, 5, 6, 9) or view == 8 and history_open or view == 10 and (report_task or work_mode == "closed")):
+                scroll = max(0, scroll + (1 if key == "j" else -1))
+                continue
+            try:
+                if key == "E":
+                    message = edit_note(target, old)
+                    continue
+                if view == 0 and key == "k" and todo_items:
+                    cursors["todo"] = max(0, cursors["todo"] - 1)
+                elif view == 0 and key == "j" and todo_items:
+                    cursors["todo"] = min(len(todo_items) - 1, cursors["todo"] + 1)
+                elif view == 0 and key in ("\r", "\n") and todo_items:
+                    item = todo_items[cursors["todo"]]
+                    status_value = NEXT_STATUS.get(str(item.get("status")), "todo")
+                    result = set_status(target, item, status_value)
+                    message = str(result.get("message", "Todo updated"))
+                elif view == 0 and key in ("f", "p") and todo_items:
+                    item = todo_items[cursors["todo"]]
+                    order = ("todo", "in-progress", "done", "declined")
+                    at = order.index(item["status"]) if item["status"] in order else -1
+                    to = max(0, min(len(order) - 1, at + (1 if key == "f" else -1)))
+                    message = str(set_status(target, item, order[to]).get("message", "Todo updated"))
+                elif view == 0 and key == "z" and todo_items:
+                    reason, changed = edit_draft("", "Pause reason")
+                    if changed and reason:
+                        message = str(set_status(target, todo_items[cursors["todo"]], "paused", reason).get("message", "Todo paused"))
+                elif view == 0 and key == "d" and todo_items:
+                    item_open = True
+                elif view == 0 and key == "b":
+                    item_open = False
+                elif view == 0 and key == "m":
+                    statuses = list(MARKS)
+                    visible = [status for status in statuses if status not in hidden]
+                    at = statuses.index(visible[0]) + 1 if len(visible) == 1 else 0
+                    hidden = set(statuses) - {statuses[at]} if at < len(statuses) else set()
+                elif view == 0 and key == "v" and not item_open:
+                    print("Toggle [1] Todo [2] In progress [3] Done [4] Declined [5] Blocked [6] Paused: ", end="", flush=True)
+                    choice = read_key()
+                    if choice in "123456" and choice:
+                        status_value = tuple(MARKS)[int(choice) - 1]
+                        hidden.symmetric_difference_update({status_value})
+                elif view == 0 and item_open and key in ("w", "a", "v") and linked_rows:
+                    if key == "a":
+                        chosen = next((item for item in linked_rows if (item.get("call") or {}).get("state") == "open"), None)
+                    elif key == "v":
+                        chosen = next((item for item in linked_rows if item.get("report")), None)
+                    else:
+                        chosen = linked_rows[0]
+                    if chosen:
+                        view = 10
+                        work_task = chosen["task"]
+                        work_open = True
+                        report_task = work_task if key == "v" else None
+                elif view == 4 and key == "e":
+                    draft, changed = edit_draft(draft)
+                    dirty = dirty or changed
+                elif view == 4 and key == "r" and draft.strip():
+                    reply, changed = edit_draft("", "Reply to selected text")
+                    if changed and reply:
+                        queue_write(target, queue_revision, [*queued, {"agent": draft, "user": reply}])
+                        cursors["queue"] = len(queued)
+                        message = "Reply queued."
+                elif view == 4 and key in SAVE_KINDS:
+                    try:
+                        result = save_text(target, SAVE_KINDS[key], draft)
+                        warnings = result.get("warnings") or []
+                        message = "Saved: " + str(result.get("message", SAVE_KINDS[key]))
+                        if warnings:
+                            message += " | " + " | ".join(str(warning) for warning in warnings)
+                        dirty = False
+                        view = SAVED_VIEW[SAVE_KINDS[key]]
+                    except ValueError as error:
+                        message = f"Not saved: {error}"
+                elif view == 1 and key == "u":
+                    text, changed = edit_draft("", "Objective update")
+                    if changed and text:
+                        message = "Saved: " + str(save_text(target, "objective", text).get("message", "Objectives updated"))
+                elif view == 1 and key == "e":
+                    text, changed = edit_draft(str(value["objectives"]), "Objectives")
+                    if changed:
+                        message = "Saved: " + str(save_text(target, "set-objectives", text, value["revision"]).get("message", "Objectives replaced"))
+                elif view == 5 and key == "e":
+                    paste_text, _ = edit_draft(paste_text, "Paste scratch")
+                elif view == 5 and key == "a" and paste_text.strip():
+                    queue_write(target, queue_revision, [*queued, {"agent": paste_text, "user": "", "pasted": True}])
+                    cursors["queue"] = len(queued)
+                    message = "Paste scratch added to queue."
+                elif view == 5 and key == "n" and paste_text.strip():
+                    passage, changed = edit_draft("", "Exact passage from Paste")
+                    if changed and passage in paste_text:
+                        reply, changed = edit_draft("", "Note on that passage")
+                        if changed and reply:
+                            queue_write(target, queue_revision, [*queued, {"agent": passage, "user": reply, "pasted": True, "whole": paste_text}])
+                            message = "Passage and note queued."
+                    elif changed:
+                        message = "That passage is absent from Paste."
+                elif view == 5 and key == "x":
+                    paste_text = ""
+                elif view == 7 and key in ("j", "k") and queued:
+                    cursors["queue"] = max(0, min(len(queued) - 1, cursors["queue"] + (1 if key == "j" else -1)))
+                elif view == 7 and key == "e" and queued:
+                    pair = queued[cursors["queue"]]
+                    pair["user"], changed = edit_draft(pair["user"], "Queued reply")
+                    if changed:
+                        queue_write(target, queue_revision, queued)
+                elif view == 7 and key == "x" and queued:
+                    queued.pop(cursors["queue"])
+                    queue_write(target, queue_revision, queued)
+                    cursors["queue"] = min(cursors["queue"], max(0, len(queued) - 1))
+                elif view == 7 and key == "s" and queued:
+                    result, _ = request({"type": "queue-send", **target, "revision": queue_revision})
+                    message = result["message"]
+                elif view == 8 and history_open is None and key in ("j", "k") and history_items:
+                    cursors["history"] = max(0, min(len(history_items) - 1, cursors["history"] + (1 if key == "j" else -1)))
+                elif view == 8 and history_open is None and key in ("\r", "\n") and history_items:
+                    history_open = str(history_items[cursors["history"]]["name"])
+                    scroll = 0
+                elif view == 8 and history_open is not None and key == "a" and not history_confirm:
+                    history_confirm = True
+                elif view == 8 and history_open is not None and history_confirm and key == "y":
+                    result, _ = request({"type": "attach", **target, "source": history_open})
+                    message = str(result.get("message", "History attached"))
+                    history_open = None
+                    history_confirm = False
+                elif view == 8 and history_open is not None and key in ("n", "b"):
+                    if history_confirm:
+                        history_confirm = False
+                    else:
+                        history_open = None
+                elif view == 10:
+                    if key == "b":
+                        if report_task is not None:
+                            report_task = None
+                            scroll = 0
+                        elif work_open:
+                            work_open = False
+                            work_task = None
+                    elif report_task is not None and key == "e":
+                        report_header, original = request({"type": "work-report", **target, "task": report_task})
+                        edited = external_edit(original, old)
+                        if edited != original:
+                            result, _ = request({"type": "work-report-save", **target, "task": report_task, "revision": report_header["revision"]}, edited)
+                            message = result["message"]
+                    elif work_open and row is not None:
+                        if key == "y":
+                            copied = str(row.get("pr") or row.get("report") or row["task"])
+                            tmux(server, "load-buffer", "-", input_bytes=copied.encode())
+                            message = f"Copied: {copied}"
+                        elif key == "g" and row.get("window"):
+                            moved = tmux(server, "switch-client", "-t", str(row["window"]))
+                            if moved.returncode != 0:
+                                raise ValueError("worker window could not be opened")
+                        elif key == "v" and row.get("report"):
+                            report_task = row["task"]
+                            scroll = 0
+                        elif key == "o" and row.get("pr"):
+                            url = row["pr"]
+                            if not re.fullmatch(r"https://github\.com/[\w.-]+/[\w.-]+/pull/\d+(?:[/?#][^\s\x00-\x1f]*)?", url):
+                                raise ValueError("work item does not contain a valid GitHub PR URL")
+                            opener = "open" if sys.platform == "darwin" else "xdg-open"
+                            opened = subprocess.run([opener, url], check=False, capture_output=True)
+                            if opened.returncode != 0:
+                                raise ValueError("PR link could not be opened")
+                        elif key == "a" and (row.get("call") or {}).get("state") == "open":
+                            answer, changed = edit_draft("", "Answer (option number or text)")
+                            if changed and answer:
+                                options = row["call"].get("options", [])
+                                if answer.isdecimal() and 1 <= int(answer) <= len(options):
+                                    answer = options[int(answer) - 1]
+                                result, _ = request({"type": "work-answer", **target, "task": row["task"]}, answer.encode())
+                                message = result["message"]
+                    elif key in ("G", "x"):
+                        mode = "gone" if key == "G" else "closed"
+                        work_mode = "unlinked" if work_mode == mode else mode
+                        cursors["work"] = 0
+                        scroll = 0
+                    elif key in ("j", "k") and rows:
+                        cursors["work"] = max(0, min(len(rows) - 1, cursors["work"] + (1 if key == "j" else -1)))
+                    elif key in ("\r", "\n") and rows:
+                        work_task = rows[cursors["work"]]["task"]
+                        work_open = True
+            except (OSError, ValueError) as error:
+                message = str(error)
+    finally:
+        termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, old)
+
+
+def popup(event_id: str) -> None:
+    response, body = request({"type": "claim", "eventId": event_id})
+    request({"type": "cancel", "eventId": event_id})
+    workspace_panel(
+        str(response["tmuxServer"]),
+        str(response["pane"]),
+        str(response["tmuxSessionId"]),
+        initial_view=4,
+        draft=body.decode("utf-8"),
+        generation=response["generation"],
+    )
+
+
+def workspace_popup(server: str, pane: str, session: str, generation: str | None = None) -> None:
+    workspace_panel(server, pane, session, initial_view=0, draft="", generation=generation)
+
+
+def manual() -> None:
+    start(quiet=True)
+    response, _ = request({"type": "targets", "cwd": str(Path.cwd().resolve())})
+    targets = response.get("targets")
+    if not isinstance(targets, list) or not targets:
+        die("no live Codex pane is mapped to this directory")
+    if len(targets) == 1:
+        target = targets[0]
+    else:
+        print("Choose target; no note changes until a category is saved:")
+        for index, item in enumerate(targets, start=1):
+            print(f"  {index}. {item['note']}  Codex {item['session']}  pane {item['pane']}")
+        try:
+            chosen = int(input("Target number: "))
+            target = targets[chosen - 1]
+        except (ValueError, IndexError):
+            die("no target selected")
+    if input("Press p then Enter to read the clipboard into an unsaved preview: ").strip().lower() != "p":
+        die("clipboard preview cancelled", 1)
+    pasted = subprocess.run(["pbpaste"], capture_output=True, check=False)
+    if pasted.returncode != 0:
+        die("pbpaste failed")
+    try:
+        body = pasted.stdout.decode("utf-8").strip().encode("utf-8")
+    except UnicodeDecodeError:
+        die("clipboard is not valid UTF-8")
+    if not body or len(body) > MAX_BODY or b"\0" in body:
+        die("clipboard is empty, contains NUL, or is larger than 64 KiB")
+    event_id = uuid.uuid4().hex
+    request({"type": "manual", "eventId": event_id, "targetId": target["id"], "bodyHash": hashlib.sha256(body).hexdigest()}, body)
+    popup(event_id)
+
+
+def live_service() -> bool:
+    try:
+        response, _ = request({"type": "ping"}, timeout=1)
+        return response.get("status") == "ready"
+    except OSError as error:
+        if error.errno in (errno.ENOENT, errno.ECONNREFUSED):
+            return False
+        raise
+    except ValueError as error:
+        # The pre-ping runtime used the same socket. Probe it without touching
+        # any real capture so upgraded clients can still recognize it.
+        if str(error) == "event ID is missing":
+            response, _ = request({"type": "cancel", "eventId": uuid.uuid4().hex}, timeout=1)
+            return response.get("status") == "cancelled"
+        if not socket_path().exists():
+            return False
+        raise
+
+
+def start(*, quiet: bool = False) -> None:
+    path = socket_path()
+    startup = os.open(runtime_dir() / "startup.lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(startup, "a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        if not live_service():
+            log_fd = os.open(runtime_dir() / "service.log", os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+            with os.fdopen(log_fd, "ab") as log:
+                child = subprocess.Popen(
+                    [sys.executable, str(Path(__file__).resolve()), "serve"],
+                    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=log,
+                    start_new_session=True, cwd=runtime_dir(),
+                )
+                for _ in range(80):
+                    if live_service():
+                        break
+                    if child.poll() is not None:
+                        raise ValueError(f"runtime failed to start; see {path.parent / 'service.log'}")
+                    time.sleep(0.05)
+                else:
+                    raise ValueError(f"runtime did not become ready at {path}")
+    if not quiet:
+        print(f"notes-keeping runtime ready at {path}")
+
+
+def stop() -> None:
+    pid_path = runtime_dir() / "service.pid"
+    if not pid_path.exists():
+        socket_path().unlink(missing_ok=True)
+        print("notes-keeping TUI is not running")
+        return
+    record = checked_record(pid_path)
+    pid = record.get("pid")
+    if not isinstance(pid, int) or pid <= 1:
+        die("service PID file is invalid")
+    shown = subprocess.run(["ps", "-p", str(pid), "-o", "command="], capture_output=True, text=True, check=False)
+    if shown.returncode != 0 or "notes-keeping-tui serve" not in shown.stdout:
+        die("service PID is stale; refusing to signal an unrelated process")
+    os.kill(pid, signal.SIGTERM)
+    for _ in range(50):
+        if not socket_path().exists():
+            print("notes-keeping TUI stopped")
+            return
+        time.sleep(0.05)
+    die("service did not stop")
+
+
+def main() -> None:
+    if len(sys.argv) < 2:
+        die("usage: notes-keeping-tui serve|start|stop|manual|stamp|capture|popup|workspace-popup")
+    command = sys.argv[1]
+    if command == "serve":
+        serve()
+    elif command == "start" and sys.argv[2:] in ([], ["--quiet"]):
+        start(quiet="--quiet" in sys.argv[2:])
+    elif command == "stop":
+        stop()
+    elif command == "manual":
+        manual()
+    elif command == "stamp" and len(sys.argv) == 4:
+        stamp_copy(*sys.argv[2:4])
+    elif command == "capture" and len(sys.argv) == 4:
+        capture(*sys.argv[2:4])
+    elif command == "popup" and len(sys.argv) == 3:
+        popup(sys.argv[2])
+    elif command == "workspace-popup" and len(sys.argv) in (5, 6):
+        workspace_popup(*sys.argv[2:])
+    else:
+        die("invalid command or arguments")
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except (OSError, ValueError) as error:
+        die(str(error), 1)

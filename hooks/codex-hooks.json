@@ -24,6 +24,17 @@
           }
         ]
       }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bun \"${PLUGIN_ROOT}/bin/notes-keeping-codex\" hook",
+            "statusMessage": "Releasing session notes mapping"
+          }
+        ]
+      }
     ]
   }
 }

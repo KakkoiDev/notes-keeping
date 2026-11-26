@@ -4,25 +4,55 @@ A Claude Code mod: a session notes file that survives compaction, a notes panel,
 
 ## Install
 
+Install the standalone CLI from the repository's published `main`. It requires Git, Bun, Python 3, and `lockf` on macOS or `flock` on Linux. The Codex popup also requires tmux 3.3 or newer.
+
 ```sh
-git clone https://github.com/KakkoiDev/notes-keeping ~/Code/notes-keeping
+git clone --branch main https://github.com/KakkoiDev/notes-keeping.git
+./notes-keeping/bin/install-cli
+notes-keeping version
 ```
 
-Add the clone to `CLAUDE_CODE_PLUGIN_DIRS` (colon-separated absolute paths) in the `env` of your Claude Code settings, then restart Claude Code.
+The installer puts `notes-keeping` in `~/.local/bin` and the active package at `~/.local/share/notes-keeping/current`. Add `~/.local/bin` to `PATH` if needed. The installed CLI can run after the clone is removed. Use `notes-keeping update` to install a newer published revision from `main`. It reports when you already have the latest revision and leaves notes, settings, and the previous package intact if staging fails. A running service stays available during an update. It picks up the new package the next time it starts.
+
+### Claude Code
+
+Add `~/.local/share/notes-keeping/current` as an absolute path in `CLAUDE_CODE_PLUGIN_DIRS` in your Claude Code settings. The native panel and selection band remain available. Claude's `session.start` hook starts or reuses the installed runtime.
 
 ### Codex CLI
 
-The Codex adapter uses native `SessionStart` and `UserPromptSubmit` hooks to create one notes file per Codex session and put the current todo list into developer context before every prompt.
-It was verified with [Codex CLI 0.170.0](https://github.com/openai/codex/releases/tag/rust-v0.170.0) and requires `codex`, `bun`, and the native hook and plugin commands available in that release.
-
-From this checkout, install the local plugin:
+From inside tmux, run:
 
 ```sh
-bin/install-codex
+~/.local/share/notes-keeping/current/bin/install-codex
+notes-keeping codex
 ```
 
-Restart Codex, run `/hooks`, review the `notes-keeping` hooks, and trust them.
-Codex deliberately skips newly installed or changed plugin hooks until you do this, as described in the [Codex hooks documentation](https://learn.chatgpt.com/docs/hooks#review-and-trust-hooks).
+For the same behavior when typing `codex` in an interactive shell, add `alias codex='notes-keeping codex'` to your shell configuration. Launchers can call `notes-keeping codex` directly. The launcher starts or reuses the same runtime as Claude. Codex CLI runs its native `SessionStart` hook on the first turn. Trust the notes-keeping hooks through `/hooks`, then start the first turn to bind a new session to its exact note. An active mapped pane can use the popup while idle. Hooks refresh that mapping, and the mapping stays valid as long as its exact session, process, and note identities match.
+
+Inside tmux, the launcher uses Codex's `--no-daemon` flag when available so hooks inherit the source pane identity. The notes runtime remains shared across the hosts.
+
+An older session can be registered once with `bin/notes-keeping-codex register-current <codex-session-id>` in its tmux pane. It resolves the note from the session ID.
+
+The installer updates one marked block in `~/.tmux.conf` and loads that block into the running server. It preserves the existing `copy-command` and checks that the copy keys are compatible before extending them.
+
+### Codex notes popup
+
+Press the tmux prefix, then Shift+N. A fresh explicit copy made in the last 30 seconds opens Notes with the selection as an in-memory draft. Without a fresh copy, the popup starts on Todos. Both entry points offer the full workspace for the source pane's note.
+
+- Switch views with `1`–`0`, Shift+T/O/U/I/N/P/C/Q/H/L/W, or Tab. The views are Todos, Objectives, Updates, Important, Notes, Paste, Chat, Queue, History, Logs, and Work.
+- In Todos, use arrows or `j`/`k` to move, Enter to cycle status, `z` to pause with a reason, and `d` for source and status history. Use `m` to cycle filters or `v` followed by a number to toggle a status.
+- In Notes, `e` edits the draft and Ctrl+S keeps the edit in memory. Use `t`, `u`, `o`, or `i` to save to Todo, Update, Objective, or Important. Objective sets an empty objectives section and otherwise appends an update. `E` opens a copy of the full note in `VISUAL` or `EDITOR` and saves only against the revision it opened.
+- In History, Enter previews an earlier note. `a` asks for confirmation to copy its objectives, updates, and open todos into the current note. The earlier note stays intact.
+- Draft replies from Notes or add text and passage annotations from Paste. The shared runtime retains the queue across popup reopen. Queue inserts and records those entries in Chat. Press Enter in Codex when ready to submit.
+- In Work, a configured Firstmate bridge supplies linked work, calls, and reports. PR URLs are terminal links. Call answers, report edits, and window navigation require their own actions.
+
+Press `q` or Esc to close. Unsaved Notes drafts can be discarded without a note write. HTTP/HTTPS and Markdown links are blue, underlined OSC 8 hyperlinks. Click behavior depends on tmux and the terminal. Claude's native selection and transcript anchors remain in its native panel.
+
+The popup reads only the tmux buffer produced by the explicit copy. Selected text is kept in memory before you choose an action. The runtime does not read scrollback, scrape the screen, or track clipboard history. `notes-keeping manual` is an explicit clipboard fallback. It reads `pbpaste` when you press `p`.
+
+Both hosts use `~/.notes-keeping/.codex/runtime/tui.sock` by default. The directory is mode `0700`, the socket is mode `0600`, and the runtime checks the peer UID. Use the same `NOTES_KEEPING_DIR` for both hosts when overriding the default notes directory. An active mapped Codex pane also recovers a stopped runtime when you open the popup.
+
+`notes-keeping tmux uninstall` removes the marked config block. Restart tmux to restore its prior bindings. `notes-keeping stop` stops the owned runtime when needed.
 
 The adapter stores notes in the same `~/.notes-keeping` directory and uses the same headings, todo markers, ids, pause reasons, and `# Logs` rows as the Claude Code plugin.
 The hook tells Codex the exact notes path and command on every turn.
@@ -35,16 +65,15 @@ bin/notes-keeping-codex --file /path/to/note.md status ITEM_ID in-progress
 bin/notes-keeping-codex --file /path/to/note.md status ITEM_ID paused --reason 'waiting for review'
 bin/notes-keeping-codex --file /path/to/note.md objective 'Deliver Codex support'
 bin/notes-keeping-codex --file /path/to/note.md update 'Adapter tests pass'
+bin/notes-keeping-codex --file /path/to/note.md important 'Keep this exact fact'
 ```
 
 Each write commits in the notes directory's local git repository, just like the Claude Code plugin.
-Status, add, objective, and update commands also append a `codex` action row to `# Logs`.
+Status, add, objective, update, and important commands also append a `codex` action row to `# Logs`.
 The existing panel and firstmate bridge continue to read the same file format.
 When a session root has `config/notes-keeping-bridge`, add and status commands also send their shared-format change lines through its existing `notify` entry point.
 
-Codex CLI does not host the Claude Code React pane, prompt button, selection band, queued-reply editor, or Laya `turn.complete` integration.
-The closest Codex substitutes are per-turn hook context and the `show` and mutation commands above; opening the same notes file in Claude Code still gives its native panel.
-Codex supports bundled lifecycle hooks but does not expose Claude Code's `claude-code` pane API; see the [plugin hook packaging documentation](https://developers.openai.com/plugins/build/plugins#bundled-mcp-servers-and-lifecycle-hooks).
+Use the same commands from the installed CLI with `notes-keeping --file /path/to/note.md`. Those writes are attributed to the person using the CLI.
 
 License: MIT.
 
