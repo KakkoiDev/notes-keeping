@@ -37,7 +37,9 @@ The installer updates one marked block in `~/.tmux.conf` and loads that block in
 
 ### Codex notes popup
 
-Press the tmux prefix, then Shift+N. A fresh explicit copy made in the last 30 seconds opens Notes with the selection as an in-memory draft. Without a fresh copy, the popup starts on Todos. Both entry points offer the full workspace for the source pane's note.
+Press the tmux prefix, then Shift+N. A range marked in tmux copy mode opens Notes with that text as an in-memory draft. The shortcut captures the range directly. A copy made with a supported tmux copy key in the last 30 seconds also prefills Notes. With neither kind of selection, the popup starts on Todos. All paths open the workspace for the source pane's note.
+
+For a terminal-emulator selection on macOS, press Cmd+C, then open the popup with your tmux prefix and Shift+N. Press `5`, then `e`, paste with Cmd+V, and press Ctrl+S to keep the draft. With the configured Ctrl+A prefix, the sequence is Cmd+C → Ctrl+A → Shift+N → `5` → `e` → Cmd+V → Ctrl+S.
 
 - Switch views with `1`–`0`, Shift+T/O/U/I/N/P/C/Q/H/L/W, or Tab. The views are Todos, Objectives, Updates, Important, Notes, Paste, Chat, Queue, History, Logs, and Work.
 - In Todos, use arrows or `j`/`k` to move, Enter to cycle status, `z` to pause with a reason, and `d` for source and status history. Use `m` to cycle filters or `v` followed by a number to toggle a status.
@@ -48,7 +50,7 @@ Press the tmux prefix, then Shift+N. A fresh explicit copy made in the last 30 s
 
 Press `q` or Esc to close. Unsaved Notes drafts can be discarded without a note write. HTTP/HTTPS and Markdown links are blue, underlined OSC 8 hyperlinks. Click behavior depends on tmux and the terminal. Claude's native selection and transcript anchors remain in its native panel.
 
-The popup reads only the tmux buffer produced by the explicit copy. Selected text is kept in memory before you choose an action. The runtime does not read scrollback, scrape the screen, or track clipboard history. `notes-keeping manual` is an explicit clipboard fallback. It reads `pbpaste` when you press `p`.
+The shortcut receives only the marked tmux range or the exact buffer produced by an explicit tmux copy. Direct capture uses tmux's selection pipe and leaves the clipboard and paste buffers alone. Selected text stays in memory before you choose an action. The runtime does not scrape the screen or track clipboard history. `notes-keeping manual` is also available as an explicit clipboard fallback from a shell. It reads `pbpaste` when you press `p`.
 
 Both hosts use `~/.notes-keeping/.codex/runtime/tui.sock` by default. The directory is mode `0700`, the socket is mode `0600`, and the runtime checks the peer UID. Use the same `NOTES_KEEPING_DIR` for both hosts when overriding the default notes directory. An active mapped Codex pane also recovers a stopped runtime when you open the popup.
 

@@ -653,13 +653,59 @@ def stamp_copy(server: str, pane: str) -> None:
     atomic_json(key_path("stamps", server, pane), {"version": 1, **mapping_header(server, pane, session), "generation": mapping["generation"], "bufferName": name, "copiedAt": time.time()})
 
 
+def open_capture(target: dict[str, str], cwd: str, copied_at: float, body: bytes, stamp_path: Path | None = None) -> None:
+    if len(body) > MAX_BODY or b"\0" in body:
+        raise ValueError("selection contains NUL or is larger than 64 KiB")
+    try:
+        body.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise ValueError("selection is not valid UTF-8") from error
+    event_id = uuid.uuid4().hex
+    response, _ = request({
+        "type": "capture",
+        "eventId": event_id,
+        **target,
+        "copiedAt": copied_at,
+        "bodyHash": hashlib.sha256(body).hexdigest(),
+    }, body)
+    if stamp_path is not None:
+        stamp_path.unlink(missing_ok=True)
+    title = f"Send selection ({response['bytes']} bytes)"
+    command = shlex.join([sys.executable, str(Path(__file__).resolve()), "popup", event_id])
+    opened = tmux(target["tmuxServer"], "display-popup", "-EE", "-t", target["paneId"], "-d", cwd, "-w", "80%", "-h", "70%", "-T", title, command)
+    if opened.returncode != 0:
+        request({"type": "cancel", "eventId": event_id})
+        raise ValueError(opened.stderr.decode(errors="replace").strip() or "popup could not open")
+
+
+def capture_selection(server: str, pane: str, session: str, generation: str, copied_at: str) -> None:
+    try:
+        target = {**mapping_header(server, pane, session), "generation": generation}
+        mapping = validate_mapping(target)
+        open_capture(target, mapping["realCwd"], float(copied_at), sys.stdin.buffer.read(MAX_BODY + 1))
+    except (OSError, ValueError) as error:
+        display_error(server, pane, f"notes-keeping: {error}")
+
+
 def capture(server: str, pane: str) -> None:
     try:
         start(quiet=True)
-        shown = tmux(server, "display-message", "-p", "-t", pane, "#{session_id}\t#{pane_current_path}")
+        shown = tmux(server, "display-message", "-p", "-t", pane, "#{session_id}\t#{pane_current_path}\t#{selection_present}")
         if shown.returncode != 0:
             raise ValueError("source tmux pane no longer exists")
-        session, cwd = shown.stdout.decode().strip().split("\t")
+        session, cwd, selection = shown.stdout.decode().rstrip("\n").split("\t")
+        target = mapping_header(server, pane, session)
+        if selection == "1":
+            mapping = validate_mapping(target)
+            command = shlex.join([
+                sys.executable, str(Path(__file__).resolve()), "capture-selection",
+                server, pane, session, mapping["generation"], str(time.time()),
+            ])
+            # Pipe the marked range without changing tmux buffers or the clipboard.
+            sent = tmux(server, "send-keys", "-t", pane, "-X", "pipe-and-cancel", command)
+            if sent.returncode != 0:
+                raise ValueError("could not capture the tmux selection")
+            return
         stamp_path = key_path("stamps", server, pane)
         if not stamp_path.exists():
             open_workspace(server, pane, session, cwd)
@@ -674,7 +720,7 @@ def capture(server: str, pane: str) -> None:
             stamp_path.unlink(missing_ok=True)
             open_workspace(server, pane, session, cwd)
             return
-        mapping = validate_mapping(mapping_header(server, pane, session))
+        mapping = validate_mapping(target)
         if record.get("generation") != mapping["generation"]:
             stamp_path.unlink(missing_ok=True)
             open_workspace(server, pane, session, cwd)
@@ -687,22 +733,7 @@ def capture(server: str, pane: str) -> None:
             stamp_path.unlink(missing_ok=True)
             open_workspace(server, pane, session, cwd)
             return
-        if len(saved.stdout) > MAX_BODY or b"\0" in saved.stdout:
-            raise ValueError("selection contains NUL or is larger than 64 KiB")
-        try:
-            saved.stdout.decode("utf-8")
-        except UnicodeDecodeError as error:
-            raise ValueError("selection is not valid UTF-8") from error
-        body = saved.stdout
-        event_id = uuid.uuid4().hex
-        response, _ = request({"type": "capture", "eventId": event_id, **mapping_header(server, pane, session), "generation": mapping["generation"], "bufferName": buffer_name, "copiedAt": copied_at, "bodyHash": hashlib.sha256(body).hexdigest()}, body)
-        stamp_path.unlink(missing_ok=True)
-        title = f"Send selection ({response['bytes']} bytes)"
-        command = shlex.join([sys.executable, str(Path(__file__).resolve()), "popup", event_id])
-        opened = tmux(server, "display-popup", "-EE", "-t", pane, "-d", cwd, "-w", "80%", "-h", "70%", "-T", title, command)
-        if opened.returncode != 0:
-            request({"type": "cancel", "eventId": event_id})
-            raise ValueError(opened.stderr.decode(errors="replace").strip() or "popup could not open")
+        open_capture({**target, "generation": mapping["generation"]}, cwd, copied_at, saved.stdout, stamp_path)
     except Exception as error:
         display_error(server, pane, f"notes-keeping: {error}")
         return
@@ -1458,6 +1489,8 @@ def main() -> None:
         stamp_copy(*sys.argv[2:4])
     elif command == "capture" and len(sys.argv) == 4:
         capture(*sys.argv[2:4])
+    elif command == "capture-selection" and len(sys.argv) == 7:
+        capture_selection(*sys.argv[2:])
     elif command == "popup" and len(sys.argv) == 3:
         popup(sys.argv[2])
     elif command == "workspace-popup" and len(sys.argv) in (5, 6):

@@ -22,7 +22,7 @@ V1 therefore uses tmux only for explicit capture and one dependency-free notes m
 ## Non-negotiable ground rule
 
 No selected text enters notes-keeping until the captain explicitly presses `C-a N`.
-The implementation must not scrape a pane, read scrollback, poll Codex transcripts, poll terminal selection, or automatically read the macOS clipboard.
+The implementation must not scrape a pane, read outside the explicitly selected range, poll Codex transcripts, poll terminal selection, or automatically read the macOS clipboard.
 
 ## Approved v1 decisions
 
@@ -116,7 +116,7 @@ Startup holds an advisory lock until the peer-authenticated socket answers a hea
 4. The stamp never contains selection bytes, a note path, or a Codex session ID.
 5. The captain stays in the source pane and presses `C-a N`; if no fresh stamp exists, the exact mapped workspace opens focused on Todos.
 6. The sender verifies the stamp belongs to the current pane and is no older than 30 seconds.
-7. The sender reads only the stamped tmux buffer with `save-buffer -b <exact-name> -`.
+7. If a range is still marked, tmux pipes that range into the capture command, exits copy mode, and keeps the clipboard and paste buffers intact. Otherwise, the sender reads only the stamped tmux buffer with `save-buffer -b <exact-name> -`.
 8. The sender validates size, NUL absence, and UTF-8 before sending one bounded frame to the local service.
 9. The service validates the source registration, stores the snapshot in memory under a random event ID, and acknowledges acceptance.
 10. Only after acceptance does the sender open a centered popup targeted at the source pane.
@@ -406,7 +406,7 @@ Logs must omit content, preview text, clipboard text, and note body excerpts.
 
 ## Security and privacy
 
-- Direct capture reads one explicitly stamped tmux buffer and nothing else.
+- Direct capture reads the marked tmux range or one explicitly stamped tmux buffer.
 - `capture-pane`, scrollback APIs, transcript polling, selection polling, and automatic `pbpaste` are prohibited.
 - Selected bytes travel only in stdin, memory, or a bounded local socket body.
 - Selected bytes never appear in argv, environment, process title, tmux status, popup command, registry, stamp, or logs.
