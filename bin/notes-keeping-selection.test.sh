@@ -124,6 +124,25 @@ try:
         expect(b'selected fixture URI')
     assert not copy_log.exists(), 'direct capture ran the normal copy command'
     assert not tmux('list-buffers', '-F', '#{buffer_name}'), 'direct capture added a paste buffer'
+
+    keys(b'r')
+    composer = expect(b'Your reply')
+    assert b'Reply to selected text' in composer and selected.encode() in composer
+    keys(b'Unsaved reply\x1b')
+    expect(b'Abandon these draft edits')
+    keys(b'y')
+    expect(b'Draft (in memory only')
+    _, queue = module.request({'type': 'queue-read', **target})
+    assert json.loads(queue) == []
+
+    keys(b'r')
+    expect(b'Your reply')
+    keys(b'Synthetic reply\x13')
+    expect(b'Reply queued.')
+    keys(b'8')
+    expect(b'Reply: Synthetic reply')
+    _, queue = module.request({'type': 'queue-read', **target})
+    assert json.loads(queue) == [{'agent': selected, 'user': 'Synthetic reply'}]
     close_draft()
 
     select_line_part()
@@ -144,7 +163,13 @@ try:
     subprocess.run([cli, 'stop'], check=True, stdout=subprocess.DEVNULL)
     keys(b'\x01N')
     expect(b'No todos in this session.')
-    keys(b'5e')
+    keys(b'r')
+    expect(b'Open Notes with a marked tmux selection')
+    keys(b'5')
+    expect(b'Empty draft.')
+    keys(b'r')
+    expect(b'Open Notes with a marked tmux selection')
+    keys(b'e')
     expect(b'Ctrl+S')
     keys(b'External terminal paste fixture\x13')
     pasted = expect(b'Draft (in memory only')
@@ -152,7 +177,7 @@ try:
         expect(b'External terminal paste fixture')
     close_draft()
     assert note.read_bytes() == original
-    print('ok   real tmux shortcut captured a live selection, preserved explicit copying, restarted into Todos, and accepted a terminal paste without writing a note')
+    print('ok   real tmux capture, quoted reply, queue and cancel, copy preservation, empty-draft guidance, and terminal paste without note writes')
 finally:
     os.close(master)
     if client.poll() is None:

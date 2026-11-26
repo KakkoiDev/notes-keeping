@@ -21,6 +21,7 @@ import subprocess
 import sys
 import tempfile
 import termios
+import textwrap
 import time
 import tty
 import uuid
@@ -880,10 +881,22 @@ def workspace(target: dict[str, str]) -> tuple[dict[str, Any], dict[str, Any]]:
     return response, value
 
 
-def edit_draft(text: str, title: str = "Notes draft") -> tuple[str, bool]:
+def edit_draft(text: str, title: str = "Notes draft", *, quote: str = "") -> tuple[str, bool]:
     original = text
     edited = list(text)
     print(f"\x1b[2J\x1b[H{title} (in memory only). Ctrl+S keeps edits; Esc asks before abandoning them.\r\n\r")
+    if quote:
+        size = shutil.get_terminal_size()
+        wrapper = textwrap.TextWrapper(width=max(1, size.columns - 2))
+        lines = []
+        for line in sanitized(quote).split("\n"):
+            lines.extend(wrapper.wrap(line) or [""])
+        limit = max(1, min(8, size.lines // 3))
+        print("Selected text\r")
+        print("\r\n".join(lines[:limit]), end="\r\n")
+        if len(lines) > limit:
+            print("(Preview only. The full selection will be queued.)\r")
+        print("\r\nYour reply\r")
     print(sanitized(text), end="", flush=True)
     while True:
         char = read_key()
@@ -1304,8 +1317,14 @@ def workspace_panel(server: str, pane: str, session: str, *, initial_view: int, 
                 elif view == 4 and key == "e":
                     draft, changed = edit_draft(draft)
                     dirty = dirty or changed
-                elif view == 4 and key == "r" and draft.strip():
-                    reply, changed = edit_draft("", "Reply to selected text")
+                elif key == "r" and view in (0, 4):
+                    if view == 0 and draft.strip():
+                        message = "Press 5 to return to Notes, then r to reply to your draft."
+                        continue
+                    if not draft.strip():
+                        message = "Open Notes with a marked tmux selection (Space then arrows), or use 5 then e to enter a quote."
+                        continue
+                    reply, changed = edit_draft("", "Reply to selected text", quote=draft)
                     if changed and reply:
                         queue_write(target, queue_revision, [*queued, {"agent": draft, "user": reply}])
                         cursors["queue"] = len(queued)
