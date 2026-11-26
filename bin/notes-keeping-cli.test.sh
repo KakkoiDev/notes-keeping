@@ -28,10 +28,14 @@ export PATH="$prefix/bin:$PATH"
 [[ "$(notes-keeping version)" == *"+$first" ]]
 notes-keeping update | grep -F "is up to date ($first)"
 
+starts=()
 for _ in 1 2 3 4; do
   notes-keeping start --quiet &
+  starts+=("$!")
 done
-wait
+for pid in "${starts[@]}"; do
+  wait "$pid"
+done
 runtime="$NOTES_KEEPING_DIR/.codex/runtime"
 before="$(cat "$runtime/service.pid")"
 notes-keeping start --quiet
@@ -62,4 +66,8 @@ fi
 cmp "$note" "$scratch/saved-note"
 cmp "$scratch/config" "$scratch/saved-config"
 notes-keeping update | grep -F "is up to date ($second)"
+git init -qb main "$scratch/legacy"
+git -C "$scratch/legacy" commit -qm 'main predates the standalone CLI' --allow-empty
+NOTES_KEEPING_RELEASE_SOURCE="$scratch/legacy" notes-keeping update | grep -F 'No standalone CLI release on main yet'
+[[ "$(notes-keeping version)" == *"+$second" ]]
 printf 'ok   PATH install, shared startup, published update, up-to-date retry, failed update preservation\n'

@@ -300,7 +300,8 @@ def work_action(record: dict[str, Any], header: dict[str, Any], body: bytes) -> 
         bridge_run(record, "call-answer", row["task"], *flags, body=answer.encode())
         return {"status": "result", "message": "Answer sent to Firstmate."}, b""
     path = Path(row.get("report") or "")
-    if not path.is_absolute() or path.is_symlink() or not path.is_file() or path.stat().st_uid != os.getuid():
+    if (not path.is_absolute() or path.is_symlink() or not path.is_file()
+            or path.stat().st_uid != os.getuid() or notes_dir() in path.resolve().parents):
         raise ValueError("work report is unavailable")
     before = path.read_bytes()
     revision = hashlib.sha256(before).hexdigest()
@@ -505,10 +506,8 @@ def serve() -> None:
                 if request_type in ("capture", "manual"):
                     if len(body) == 0 or len(body) > MAX_BODY or b"\0" in body:
                         raise ValueError("selection is empty, contains NUL, or is too large")
-                    text = body.decode("utf-8").strip()
-                    if not text:
+                    if not body.decode("utf-8").strip():
                         raise ValueError("selection is empty")
-                    body = text.encode("utf-8")
                     if hashlib.sha256(body).hexdigest() != header.get("bodyHash"):
                         raise ValueError("selection hash mismatch")
                     if request_type == "capture":
@@ -691,9 +690,10 @@ def capture(server: str, pane: str) -> None:
         if len(saved.stdout) > MAX_BODY or b"\0" in saved.stdout:
             raise ValueError("selection contains NUL or is larger than 64 KiB")
         try:
-            body = saved.stdout.decode("utf-8").strip().encode("utf-8")
+            saved.stdout.decode("utf-8")
         except UnicodeDecodeError as error:
             raise ValueError("selection is not valid UTF-8") from error
+        body = saved.stdout
         event_id = uuid.uuid4().hex
         response, _ = request({"type": "capture", "eventId": event_id, **mapping_header(server, pane, session), "generation": mapping["generation"], "bufferName": buffer_name, "copiedAt": copied_at, "bodyHash": hashlib.sha256(body).hexdigest()}, body)
         stamp_path.unlink(missing_ok=True)
@@ -1018,6 +1018,9 @@ def workspace_panel(server: str, pane: str, session: str, *, initial_view: int, 
             elif view == 5:
                 print("Paste scratch (memory only; never reads the clipboard automatically):\r\n")
                 body_lines(paste_text or "Empty. Press e to enter text.")
+                for pair in queued:
+                    if paste_text and pair.get("whole") == paste_text:
+                        print(f"\x1b[33mNoted\x1b[0m {linked(sanitized(pair['agent']))}\r")
                 print("\r\n[e] Edit  [a] Add to queue  [n] Note a passage  [x] Clear\r")
             elif view == 6:
                 body_lines(value["chat"] or "No chat recorded yet.")
@@ -1090,7 +1093,7 @@ def workspace_panel(server: str, pane: str, session: str, *, initial_view: int, 
                             print(f"  {index}. {linked(sanitized(choice))}\r")
                     for step in row.get("trail") or []:
                         print(f"  {age(step.get('at'))} {step['who']} · {linked(sanitized(step['text']))}\r")
-                    print("[b] Back  [y] Copy link  [g] Go to window  [v] Read report  [a] Answer open call\r")
+                    print("[b] Back  [y] Copy link  [g] Go to window  [o] Open PR  [v] Read report  [a] Answer open call\r")
                 elif work_mode == "closed":
                     closed = work.get("closed") or []
                     body_lines("\n".join(f"{one['title']} {one.get('evidence') or ''}" for one in closed) or "No closed calls today.")
@@ -1294,6 +1297,14 @@ def workspace_panel(server: str, pane: str, session: str, *, initial_view: int, 
                         elif key == "v" and row.get("report"):
                             report_task = row["task"]
                             scroll = 0
+                        elif key == "o" and row.get("pr"):
+                            url = row["pr"]
+                            if not re.fullmatch(r"https://github\.com/[\w.-]+/[\w.-]+/pull/\d+(?:[/?#][^\s\x00-\x1f]*)?", url):
+                                raise ValueError("work item does not contain a valid GitHub PR URL")
+                            opener = "open" if sys.platform == "darwin" else "xdg-open"
+                            opened = subprocess.run([opener, url], check=False, capture_output=True)
+                            if opened.returncode != 0:
+                                raise ValueError("PR link could not be opened")
                         elif key == "a" and (row.get("call") or {}).get("state") == "open":
                             answer, changed = edit_draft("", "Answer (option number or text)")
                             if changed and answer:

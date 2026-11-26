@@ -84,6 +84,9 @@ def install(args, prefix):
                 revision = git(repo, "rev-parse", "HEAD")
                 base = revision
             if previous and not args.source:
+                if not (repo / "bin/notes-keeping").is_file():
+                    print(f"No standalone CLI release on main yet. Keeping {previous['revision'][:12]}.")
+                    return
                 if revision == previous["base"] or ancestor(repo, revision, previous["base"]):
                     print(f"notes-keeping is up to date ({previous['revision'][:12]})")
                     return
