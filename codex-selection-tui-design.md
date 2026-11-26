@@ -114,7 +114,7 @@ Startup holds an advisory lock until the peer-authenticated socket answers a hea
 2. The normal tmux copy action still writes the tmux paste buffer and still invokes the existing `pbcopy` command.
 3. After tmux completes that explicit copy, a small helper stamps only tmux server identity, source pane ID, exact buffer name, and monotonic and wall-clock copy times.
 4. The stamp never contains selection bytes, a note path, or a Codex session ID.
-5. The captain stays in the source pane and presses `C-a N`; if no fresh stamp exists, the exact mapped workspace opens focused on Todos.
+5. The captain stays in the source pane and presses `C-a N`. If there is neither a marked range nor a fresh stamp, the exact mapped workspace opens focused on Todos.
 6. The sender verifies the stamp belongs to the current pane and is no older than 30 seconds.
 7. If a range is still marked, tmux pipes that range into the capture command, exits copy mode, and keeps the clipboard and paste buffers intact. Otherwise, the sender reads only the stamped tmux buffer with `save-buffer -b <exact-name> -`.
 8. The sender validates size, NUL absence, and UTF-8 before sending one bounded frame to the local service.

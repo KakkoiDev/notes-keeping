@@ -179,7 +179,8 @@ assert source_path.read_bytes() == saved_source
 PY
 
 TUI="$ROOT/bin/notes-keeping-tui" ADAPTER="$ROOT/bin/notes-keeping-codex" CWD="$H/project" SOCKET="$SOCKET" PANE="${PANES[0]}" SESSION="$SESSION" python3 - <<'PY'
-import hashlib, importlib.machinery, json, os, pty, select, subprocess, time
+import hashlib, importlib.machinery, json, os, pty, select, shlex, subprocess, time
+from pathlib import Path
 module = importlib.machinery.SourceFileLoader('notes_keeping_tui_navigation', os.environ['TUI']).load_module()
 
 def run(args, keys):
@@ -308,6 +309,18 @@ large_history.write_text('# Objectives\n\n# Chat\n\n' + large_chat + '\n')
 _, preview = module.request({'type': 'preview', **fixture_header, 'source': large_history.name})
 assert json.loads(preview)['chat'] == large_chat
 
+_, current_body = module.request({'type': 'workspace', **header})
+linked_id = next(item['id'] for item in json.loads(current_body)['todos'] if item['text'] == 'pane one α')
+bridge = Path(os.environ['CWD']) / 'config/notes-keeping-bridge'
+bridge.parent.mkdir()
+fleet = {'rows': [{'task': 'linked-fixture', 'title': 'Linked fixture call', 'flag': '!', 'word': 'call', 'todos': [linked_id]}]}
+bridge.write_text("#!/bin/sh\nprintf '%s\\n' " + shlex.quote(json.dumps(fleet)) + '\n')
+bridge.chmod(0o700)
+call_frames = run(popup, b'mq').split('\x1b[2J\x1b[H')
+todo_frames = [frame for frame in call_frames if 'Filter:' in frame]
+assert 'Open calls: 1' in todo_frames[0] and 'Linked fixture call' in todo_frames[0]
+assert 'Open calls:' not in todo_frames[-1]
+
 PY
 
 BEFORE="$(shasum -a 256 "$NOTE_ONE")"
@@ -337,3 +350,4 @@ printf 'ok   all workspace views, direct category save, Todo status, and OSC 8 l
 printf 'ok   History arrows, preview, return, and view refresh preserve the workspace mapping\n'
 printf 'ok   all six Todo statuses, filter persistence, and empty-session History attach work\n'
 printf 'ok   large History previews survive the mutation lock and IPC frame\n'
+printf 'ok   visible linked calls are counted and filtered calls are hidden\n'

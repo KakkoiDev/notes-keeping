@@ -1018,7 +1018,7 @@ def workspace_panel(server: str, pane: str, session: str, *, initial_view: int, 
                     visible = [status for status in MARKS if status not in hidden]
                     print(f"Filter: {', '.join(visible) or 'blocked'}  [m] Cycle  [v then 1–6] Toggle status\r")
                     shown_ids = {item.get("id") for item in todo_items}
-                    calls = sum(row.get("flag") == "!" and (not row.get("todos") or shown_ids.intersection(row["todos"])) for row in work.get("rows", []))
+                    calls = sum(row.get("flag") == "!" and (not row.get("todos") or not shown_ids.isdisjoint(row["todos"])) for row in work.get("rows", []))
                     if calls:
                         print(f"Open calls: {calls}\r")
                     if not value["todos"]:
