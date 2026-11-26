@@ -30,7 +30,7 @@ PY
     exec codex "$@"
     ;;
   tmux) shift; NOTES_KEEPING_COMMAND="${NOTES_KEEPING_COMMAND:-$0}" exec "$ROOT/bin/notes-keeping-tmux" "$@" ;;
-  start|stop|serve|manual|stamp|capture|popup|workspace-popup) exec "$ROOT/bin/notes-keeping-tui" "$@" ;;
+  start|stop|serve|manual|stamp|arm-clipboard|capture|popup|workspace-popup) exec "$ROOT/bin/notes-keeping-tui" "$@" ;;
   --file) NOTES_KEEPING_STANDALONE=1 exec "$ROOT/bin/notes-keeping-codex" "$@" ;;
   ''|-h|--help)
     cat <<'HELP'

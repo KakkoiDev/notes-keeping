@@ -592,7 +592,7 @@ def request(header: dict[str, Any], body: bytes = b"", *, timeout: float = 15) -
     return response, response_body
 
 
-def display_error(server: str, pane: str, message: str) -> None:
+def pane_message(server: str, pane: str, message: str) -> None:
     tmux(server, "display-message", "-t", pane, message.replace("\n", " ")[:200])
 
 
@@ -626,7 +626,7 @@ def open_workspace(server: str, pane: str, session: str, cwd: str) -> None:
 def stamp_copy(server: str, pane: str) -> None:
     shown = tmux(server, "display-message", "-p", "-t", pane, "#{session_id}")
     if shown.returncode != 0:
-        display_error(server, pane, "notes-keeping: copied, but source session could not be resolved")
+        pane_message(server, pane, "notes-keeping: copied, but source session could not be resolved")
         return
     session = shown.stdout.decode().strip()
     try:
@@ -636,7 +636,7 @@ def stamp_copy(server: str, pane: str) -> None:
     prefix = f"notes-keeping-{pane}-"
     listed = tmux(server, "list-buffers", "-F", "#{buffer_created}\t#{buffer_name}")
     if listed.returncode != 0:
-        display_error(server, pane, "notes-keeping: copied, but selection stamp failed")
+        pane_message(server, pane, "notes-keeping: copied, but selection stamp failed")
         return
     candidates: list[tuple[int, int, str]] = []
     for line in listed.stdout.decode().splitlines():
@@ -647,13 +647,16 @@ def stamp_copy(server: str, pane: str) -> None:
             except ValueError:
                 pass
     if not candidates:
-        display_error(server, pane, "notes-keeping: copied, but exact selection buffer was not found")
+        pane_message(server, pane, "notes-keeping: copied, but exact selection buffer was not found")
         return
     _, _, name = max(candidates)
     atomic_json(key_path("stamps", server, pane), {"version": 1, **mapping_header(server, pane, session), "generation": mapping["generation"], "bufferName": name, "copiedAt": time.time()})
 
 
-def open_capture(target: dict[str, str], cwd: str, copied_at: float, body: bytes, stamp_path: Path | None = None) -> None:
+def open_capture(
+    target: dict[str, str], cwd: str, copied_at: float, body: bytes,
+    stamp_path: Path | None = None, *, label: str = "Send selection",
+) -> None:
     if len(body) > MAX_BODY or b"\0" in body:
         raise ValueError("selection contains NUL or is larger than 64 KiB")
     try:
@@ -670,7 +673,7 @@ def open_capture(target: dict[str, str], cwd: str, copied_at: float, body: bytes
     }, body)
     if stamp_path is not None:
         stamp_path.unlink(missing_ok=True)
-    title = f"Send selection ({response['bytes']} bytes)"
+    title = f"{label} ({response['bytes']} bytes)"
     command = shlex.join([sys.executable, str(Path(__file__).resolve()), "popup", event_id])
     opened = tmux(target["tmuxServer"], "display-popup", "-EE", "-t", target["paneId"], "-d", cwd, "-w", "80%", "-h", "70%", "-T", title, command)
     if opened.returncode != 0:
@@ -684,7 +687,95 @@ def capture_selection(server: str, pane: str, session: str, generation: str, cop
         mapping = validate_mapping(target)
         open_capture(target, mapping["realCwd"], float(copied_at), sys.stdin.buffer.read(MAX_BODY + 1))
     except (OSError, ValueError) as error:
-        display_error(server, pane, f"notes-keeping: {error}")
+        pane_message(server, pane, f"notes-keeping: {error}")
+
+
+def clipboard_revision() -> int:
+    if sys.platform != "darwin":
+        raise ValueError("one-shot clipboard capture is available on macOS")
+    done = subprocess.run(
+        ["/usr/bin/osascript", "-l", "JavaScript", "-e",
+         'ObjC.import("AppKit"); $.NSPasteboard.generalPasteboard.changeCount'],
+        capture_output=True, text=True, check=False, timeout=3,
+    )
+    if done.returncode != 0:
+        raise ValueError("could not read the clipboard change count")
+    return int(done.stdout.strip())
+
+
+def read_clipboard() -> bytes:
+    try:
+        pasted = subprocess.run(["pbpaste"], capture_output=True, check=False, timeout=3)
+    except subprocess.TimeoutExpired as error:
+        raise ValueError("pbpaste timed out") from error
+    if pasted.returncode != 0:
+        raise ValueError("pbpaste failed")
+    return pasted.stdout
+
+
+def arm_clipboard(server: str, pane: str) -> None:
+    try:
+        shown = tmux(server, "display-message", "-p", "-t", pane, "#{session_id}")
+        if shown.returncode != 0:
+            raise ValueError("source tmux pane no longer exists")
+        target = mapping_header(server, pane, shown.stdout.decode().strip())
+        record = validate_mapping(target)
+        atomic_json(key_path("clipboard-arms", server, pane), {
+            "version": 1,
+            **target,
+            "generation": record["generation"],
+            "revision": clipboard_revision(),
+            "armedAt": time.time(),
+        })
+        pane_message(server, pane, "Clipboard armed for 30s. Copy in Codex, then press Prefix and Shift+N.")
+    except (OSError, ValueError, subprocess.SubprocessError) as error:
+        pane_message(server, pane, f"notes-keeping: {error}")
+
+
+def take_clipboard_arm(server: str, pane: str) -> dict[str, Any] | None:
+    path = key_path("clipboard-arms", server, pane)
+    claimed = path.with_name(f".{path.name}.{uuid.uuid4().hex}.claimed")
+    try:
+        path.rename(claimed)
+    except FileNotFoundError:
+        return None
+    try:
+        return checked_record(claimed)
+    finally:
+        claimed.unlink(missing_ok=True)
+
+
+def clipboard_preview(arm: dict[str, Any], target: dict[str, str]) -> bytes | None:
+    armed_at = arm.get("armedAt")
+    if not isinstance(armed_at, (int, float)) or not 0 <= time.time() - armed_at <= STAMP_SECONDS:
+        return None
+    if any(arm.get(key) != value for key, value in target.items()) or type(arm.get("revision")) is not int:
+        return None
+    before = clipboard_revision()
+    if before == arm["revision"]:
+        return None
+    body = read_clipboard()
+    if clipboard_revision() != before:
+        raise ValueError("clipboard changed while reading the preview; arm again and recopy")
+    return body
+
+
+def stamped_selection(target: dict[str, str], stamp_path: Path) -> tuple[float, bytes] | None:
+    try:
+        record = checked_record(stamp_path)
+    except FileNotFoundError:
+        return None
+    copied_at = record.get("copiedAt")
+    if (isinstance(copied_at, (int, float)) and 0 <= time.time() - copied_at <= STAMP_SECONDS
+            and all(record.get(key) == value for key, value in target.items())):
+        buffer_name = record.get("bufferName")
+        if not isinstance(buffer_name, str):
+            raise ValueError("selection stamp is invalid")
+        saved = tmux(target["tmuxServer"], "save-buffer", "-b", buffer_name, "-")
+        if saved.returncode == 0:
+            return copied_at, saved.stdout
+    stamp_path.unlink(missing_ok=True)
+    return None
 
 
 def capture(server: str, pane: str) -> None:
@@ -695,6 +786,7 @@ def capture(server: str, pane: str) -> None:
             raise ValueError("source tmux pane no longer exists")
         session, cwd, selection = shown.stdout.decode().rstrip("\n").split("\t")
         target = mapping_header(server, pane, session)
+        arm = take_clipboard_arm(server, pane)
         if selection == "1":
             mapping = validate_mapping(target)
             command = shlex.join([
@@ -707,35 +799,21 @@ def capture(server: str, pane: str) -> None:
                 raise ValueError("could not capture the tmux selection")
             return
         stamp_path = key_path("stamps", server, pane)
-        if not stamp_path.exists():
-            open_workspace(server, pane, session, cwd)
-            return
-        record = checked_record(stamp_path)
-        if record.get("tmuxServer") != server or record.get("paneId") != pane or record.get("tmuxSessionId") != session:
-            stamp_path.unlink(missing_ok=True)
-            open_workspace(server, pane, session, cwd)
-            return
-        copied_at = record.get("copiedAt")
-        if not isinstance(copied_at, (int, float)) or time.time() - copied_at > STAMP_SECONDS:
-            stamp_path.unlink(missing_ok=True)
-            open_workspace(server, pane, session, cwd)
-            return
-        mapping = validate_mapping(target)
-        if record.get("generation") != mapping["generation"]:
-            stamp_path.unlink(missing_ok=True)
-            open_workspace(server, pane, session, cwd)
-            return
-        buffer_name = record.get("bufferName")
-        if not isinstance(buffer_name, str):
-            raise ValueError("selection stamp is invalid")
-        saved = tmux(server, "save-buffer", "-b", buffer_name, "-")
-        if saved.returncode != 0:
-            stamp_path.unlink(missing_ok=True)
-            open_workspace(server, pane, session, cwd)
-            return
-        open_capture({**target, "generation": mapping["generation"]}, cwd, copied_at, saved.stdout, stamp_path)
+        if arm is not None or stamp_path.exists():
+            target["generation"] = validate_mapping(target)["generation"]
+            copied = stamped_selection(target, stamp_path)
+            if copied is not None:
+                copied_at, body = copied
+                open_capture(target, cwd, copied_at, body, stamp_path)
+                return
+            if arm is not None:
+                body = clipboard_preview(arm, target)
+                if body:
+                    open_capture(target, cwd, time.time(), body, label="Clipboard preview")
+                    return
+        open_workspace(server, pane, session, cwd)
     except Exception as error:
-        display_error(server, pane, f"notes-keeping: {error}")
+        pane_message(server, pane, f"notes-keeping: {error}")
         return
 
 
@@ -1393,11 +1471,8 @@ def manual() -> None:
             die("no target selected")
     if input("Press p then Enter to read the clipboard into an unsaved preview: ").strip().lower() != "p":
         die("clipboard preview cancelled", 1)
-    pasted = subprocess.run(["pbpaste"], capture_output=True, check=False)
-    if pasted.returncode != 0:
-        die("pbpaste failed")
     try:
-        body = pasted.stdout.decode("utf-8").strip().encode("utf-8")
+        body = read_clipboard().decode("utf-8").strip().encode("utf-8")
     except UnicodeDecodeError:
         die("clipboard is not valid UTF-8")
     if not body or len(body) > MAX_BODY or b"\0" in body:
@@ -1487,6 +1562,8 @@ def main() -> None:
         manual()
     elif command == "stamp" and len(sys.argv) == 4:
         stamp_copy(*sys.argv[2:4])
+    elif command == "arm-clipboard" and len(sys.argv) == 4:
+        arm_clipboard(*sys.argv[2:4])
     elif command == "capture" and len(sys.argv) == 4:
         capture(*sys.argv[2:4])
     elif command == "capture-selection" and len(sys.argv) == 7:

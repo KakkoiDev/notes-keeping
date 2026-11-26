@@ -407,6 +407,7 @@ Logs must omit content, preview text, clipboard text, and note body excerpts.
 ## Security and privacy
 
 - Direct capture reads the marked tmux range or one explicitly stamped tmux buffer.
+- On macOS, a separate Prefix then Shift+P opt-in records only the pasteboard change count, pane identity, generation, and time. The next popup shortcut consumes it. A valid arm expires after 30 seconds. With no marked range or stamped copy, an armed shortcut can preview a changed clipboard in Notes. The operating system does not supply a source pane for that clipboard, so the UI labels it a clipboard preview.
 - `capture-pane`, scrollback APIs, transcript polling, selection polling, and automatic `pbpaste` are prohibited.
 - Selected bytes travel only in stdin, memory, or a bounded local socket body.
 - Selected bytes never appear in argv, environment, process title, tmux status, popup command, registry, stamp, or logs.

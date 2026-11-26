@@ -74,6 +74,54 @@ module.open_workspace = lambda server, pane, session, cwd: opened.append((server
 module.capture(os.environ['SOCKET'], os.environ['PANE'])
 assert len(opened) == 1
 assert opened[0][0:2] == (os.environ['SOCKET'], os.environ['PANE'])
+server, pane = opened[0][:2]
+revision = [10]
+metadata_reads = []
+content_reads = []
+clipboard_drafts = []
+messages = []
+module.clipboard_revision = lambda: metadata_reads.append(revision[0]) or revision[0]
+module.read_clipboard = lambda: content_reads.append(True) or b'fresh clipboard fixture'
+module.open_capture = lambda *args, **kwargs: clipboard_drafts.append((args, kwargs))
+module.pane_message = lambda *args: messages.append(args[-1])
+
+module.capture(server, pane)
+assert not metadata_reads and not content_reads and opened[-1][:2] == (server, pane)
+module.arm_clipboard(server, pane)
+arm_path = module.key_path('clipboard-arms', server, pane)
+assert arm_path.exists() and not content_reads
+module.capture(server, pane)
+assert not arm_path.exists() and not content_reads and opened[-1][:2] == (server, pane)
+
+module.arm_clipboard(server, pane)
+revision[0] += 1
+module.capture(server, pane)
+assert len(clipboard_drafts) == len(content_reads) == 1 and not arm_path.exists()
+args, kwargs = clipboard_drafts[0]
+assert args[0]['paneId'] == pane and args[3] == b'fresh clipboard fixture'
+assert kwargs['label'] == 'Clipboard preview'
+read_count = len(metadata_reads)
+module.capture(server, pane)
+assert len(content_reads) == 1 and len(metadata_reads) == read_count and opened[-1][:2] == (server, pane)
+
+for stale in ({'generation': 'wrong-generation'}, {'armedAt': 0}):
+    module.arm_clipboard(server, pane)
+    module.atomic_json(arm_path, {**module.checked_record(arm_path), **stale})
+    revision[0] += 1
+    read_count = len(metadata_reads)
+    module.capture(server, pane)
+    assert not arm_path.exists() and len(content_reads) == 1 and len(metadata_reads) == read_count
+
+def changed_during_read():
+    revision[0] += 1
+    return b'clipboard changed concurrently'
+
+module.arm_clipboard(server, pane)
+revision[0] += 1
+module.read_clipboard = changed_during_read
+module.capture(server, pane)
+assert len(clipboard_drafts) == 1 and 'clipboard changed while reading' in messages[-1]
+
 preview = module.linked('See [docs](https://example.com/a) and https://example.com/b.')
 assert preview.count('\x1b]8;;https://') == 2
 assert 'https://example.com/b\x1b\\' in preview and '\x1b\\.' in preview
@@ -351,3 +399,4 @@ printf 'ok   History arrows, preview, return, and view refresh preserve the work
 printf 'ok   all six Todo statuses, filter persistence, and empty-session History attach work\n'
 printf 'ok   large History previews survive the mutation lock and IPC frame\n'
 printf 'ok   visible linked calls are counted and filtered calls are hidden\n'
+printf 'ok   clipboard preview requires a fresh one-shot arm and rejects a race\n'
