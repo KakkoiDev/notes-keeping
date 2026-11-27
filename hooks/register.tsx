@@ -27,6 +27,7 @@ import {
   fileName,
   inject,
   injectPrevious,
+  isNotesFile,
   logsHint,
   nameParts,
   newestFirst,
@@ -71,6 +72,7 @@ const HOLD_MS = 3_000
 const PASTE_MS = 2_000
 const PREVIEW = 60
 const HISTORY_CAP = 20
+const HISTORY_USAGE = '/notes-keeping history <n|file|path>'
 // The most of a report the Work report view draws.
 const REPORT_CHARS = 60_000
 const NOTE = 'note:'
@@ -121,7 +123,7 @@ const USAGE = [
   '  note <text>                add a note to the last pasted text; the queue view edits it',
   '  replies                    open the panel at the queue: every reply editable, s moves all into the prompt',
   '  todo [sync]                show the todo list; sync runs Laya over the objectives and the last reply now',
-  '  history [n|file]           list earlier notes; pick one to copy its objectives, updates and open todo items here',
+  '  history [n|file|path]      list or continue earlier notes. An absolute or ~/ path imports an external note',
   `  show | hide                open or close the notes panel (also ${CHORD}) at the todo list; t todos, o objectives (u update, e editor), i important, c chat, q queue, h history, l logs, s send queue`,
   '  debug                      the selection poll: how often it ran, when last, the live selection, and why recent ones opened no pane',
   `${CHORD} works once ~/.claude/keybindings.json binds it: { "bindings": [{ "context": "Global", "bindings": { "${CHORD}": "${ACTION}" } }] }`,
@@ -260,7 +262,7 @@ async function commit($: EngineInterface, dir: string, subject: string): Promise
   return said
 }
 
-async function persist($: EngineInterface, path: string, text: string, subject: string, shouldCommit: boolean): Promise<string[]> {
+async function writeNote($: EngineInterface, path: string, text: string, subject: string, shouldCommit: boolean): Promise<string[]> {
   const at = await $.clock.now()
   const input = JSON.stringify({
     version: 1,
@@ -279,14 +281,18 @@ async function persist($: EngineInterface, path: string, text: string, subject: 
   if (done.exitCode !== 0) throw new Error(`notes mutation failed: ${(done.stderr.trim() || done.stdout.trim()).split('\n').pop()}`)
   if (done.stdout.trim() === '') {
     await $.fs.write(path, text)
-    await publish($, path, text)
     revisions.set(path, revisionOf(text))
     return shouldCommit ? commit($, await notesDir($), `${subject}: ${path.split('/').pop()}`) : []
   }
   const result = JSON.parse(done.stdout) as { warnings?: string[] }
   revisions.set(path, revisionOf(text))
-  await publish($, path, text)
   return result.warnings ?? []
+}
+
+async function persist($: EngineInterface, path: string, text: string, subject: string, shouldCommit: boolean): Promise<string[]> {
+  const said = await writeNote($, path, text, subject, shouldCommit)
+  await publish($, path, text)
+  return said
 }
 
 async function save($: EngineInterface, path: string, text: string, subject: string): Promise<string[]> {
@@ -827,11 +833,14 @@ async function bashGuard($: EngineInterface, command: string): Promise<string | 
   return named !== undefined && BASH_WRITE.test(command) ? denial(named) : undefined
 }
 
-async function listNotes($: EngineInterface): Promise<string[]> {
-  const dir = await notesDir($)
+async function noteFiles($: EngineInterface, dir: string): Promise<string[]> {
   if (!(await $.fs.exists(dir))) return []
   const entries = await $.fs.list(dir)
-  return newestFirst(entries.filter(entry => entry.kind === 'file').map(entry => entry.name))
+  return entries.filter(entry => entry.kind === 'file').map(entry => entry.name)
+}
+
+async function listNotes($: EngineInterface): Promise<string[]> {
+  return newestFirst(await noteFiles($, await notesDir($)))
 }
 
 // Sets the objectives while they are empty; after that each text is an [UPDATE] under ## Updates.
@@ -897,30 +906,68 @@ async function attach($: EngineInterface, pick: string, actor: ActorId): Promise
   return { previous, said }
 }
 
-async function history($: EngineInterface, args: string, actor: ActorId): Promise<{ text: string; context?: string[] }> {
-  const current = await boundPath($)
-  const names = (await listNotes($)).filter(name => current === undefined || !current.endsWith(`/${name}`))
-  if (names.length === 0) return { text: 'No earlier notes.' }
-  const dir = await notesDir($)
-  if (args === '') {
-    const rows = await Promise.all(
-      names.slice(0, HISTORY_CAP).map(async (name, i) => {
-        const line = summary(await readText($, `${dir}/${name}`).catch(() => ''))
-        const parts = nameParts(name)
-        const label = parts === undefined ? name : `${parts.date} ${parts.time}  ${parts.project}  ${parts.shortId}`
-        return `${String(i + 1).padStart(2)}. ${label}  ${line.slice(0, PREVIEW)}`
-      }),
-    )
-    const more = names.length > HISTORY_CAP ? [`(${names.length - HISTORY_CAP} older not listed)`] : []
-    return { text: [...rows, ...more, '', 'Continue one here: /notes-keeping history <n|file>'].join('\n') }
-  }
-  const pick = /^\d+$/.test(args) ? names[Number(args) - 1] : names.find(name => name === args || name === `${args}.md`)
-  if (pick === undefined) return { text: `No earlier notes match "${args}".` }
+async function continueNote($: EngineInterface, dir: string, pick: string, actor: ActorId, imported: string[] = []): Promise<{ text: string; context: string[] }> {
   const { previous, said } = await attach($, pick, actor)
   return {
-    text: told(`Continuing ${pick}: its objectives, updates and open todo items are copied here; ${pick} is unchanged. The whole file is now in context.`, said),
+    text: told(`Continuing ${pick}: its objectives, updates and open todo items are copied here; ${pick} is unchanged. The whole file is now in context.`, [...imported, ...said]),
     context: [inject(previous, `${dir}/${pick}`)],
   }
+}
+
+async function importNote($: EngineInterface, dir: string, path: string, actor: ActorId): Promise<{ text: string; context?: string[] }> {
+  const source = await $.fs.stat(path, { resolve: true }).catch(() => undefined)
+  if (source?.kind !== 'file') return { text: `History needs a readable file at ${JSON.stringify(path)}.` }
+  const realDir = await realOf($, dir)
+  if (isUnder(path, dir) || isUnder(source.realPath ?? path, realDir ?? dir)) {
+    return { text: 'Use the filename or list number for a note already in the notes folder.' }
+  }
+  const text = await $.fs.read(path)
+  if (typeof text !== 'string') return { text: `History needs a text file at ${JSON.stringify(path)}.` }
+  const { pick, said } = await locked(async () => {
+    const taken = (await $.fs.exists(dir)) ? (await $.fs.list(dir)).map(entry => entry.name) : []
+    const id = Math.floor(Math.random() * 36 ** 8).toString(36).padStart(8, '0')
+    const pick = fileName(projectName(await $.session.root()), id, await $.clock.now(), taken)
+    return { pick, said: await writeNote($, `${dir}/${pick}`, text, 'import', true) }
+  })
+  return continueNote($, dir, pick, actor, said)
+}
+
+async function historyList($: EngineInterface, dir: string, names: string[], skipped: string[]): Promise<string> {
+  const rows = await Promise.all(
+    names.slice(0, HISTORY_CAP).map(async (name, i) => {
+      const line = summary(await readText($, `${dir}/${name}`).catch(() => ''))
+      const parts = nameParts(name)
+      const label = parts === undefined ? name : `${parts.date} ${parts.time}  ${parts.project}  ${parts.shortId}`
+      return `${String(i + 1).padStart(2)}. ${label}  ${line.slice(0, PREVIEW)}`
+    }),
+  )
+  if (rows.length === 0) rows.push('No earlier notes.')
+  if (names.length > HISTORY_CAP) rows.push(`(${names.length - HISTORY_CAP} older not listed)`)
+  if (skipped.length > 0) {
+    rows.push(`Skipped ${skipped.length} file(s) with unrecognized names: ${skipped.sort().map(name => JSON.stringify(name)).join(', ')}`)
+  }
+  if (names.length > 0) rows.push('', `Continue one here: ${HISTORY_USAGE}`)
+  return rows.join('\n')
+}
+
+async function history($: EngineInterface, args: string, actor: ActorId): Promise<{ text: string; context?: string[] }> {
+  const dir = await notesDir($)
+  if (args.startsWith('/')) return importNote($, dir, args, actor)
+  if (args.startsWith('~/')) return importNote($, dir, `${await $.env.get('HOME')}${args.slice(1)}`, actor)
+
+  const current = await boundPath($)
+  const files = (await noteFiles($, dir)).filter(name => current === undefined || !current.endsWith(`/${name}`))
+  const names = newestFirst(files)
+  const skipped = files.filter(name => !isNotesFile(name))
+  if (args === '') return { text: await historyList($, dir, names, skipped) }
+
+  const filename = files.includes(args) ? args : `${args}.md`
+  const pick = /^\d+$/.test(args) ? names[Number(args) - 1] : names.find(name => name === filename)
+  if (pick !== undefined) return continueNote($, dir, pick, actor)
+  if (skipped.includes(filename)) {
+    return { text: `Cannot continue ${JSON.stringify(filename)} because it has an unrecognized name. Use YYYY-MM-DD-HH-MM-<project>-<8 alphanumeric characters>[-<number>].md.` }
+  }
+  return { text: names.length === 0 ? 'No earlier notes.' : `No earlier notes match "${args}".` }
 }
 
 function distance(a: string, b: string): number {
