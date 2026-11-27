@@ -4,7 +4,7 @@ import type { Engine } from 'claude-code/testing'
 import { actorLabel } from '../hooks/actors'
 import { nextStatus } from '../hooks/todos'
 import { context, idFor, items, pausedContext, withoutIds } from '../hooks/todo'
-import { sections, stamp } from '../hooks/notes'
+import { isNotesFile, projectName, sections, stamp } from '../hooks/notes'
 
 const HOME = '/home/me'
 const ROOT = '/work/firstmate'
@@ -146,7 +146,9 @@ function engine(
   on('fs.list', (_$, e) => ({
     value: Object.keys(fs)
       .filter(path => path.startsWith(`${e.path}/`))
-      .map(path => ({ name: path.slice(e.path.length + 1), kind: 'file' as const, size: 0, mtimeMs: 0, isLink: false })),
+      .map(path => path.slice(e.path.length + 1))
+      .filter(name => !name.includes('/'))
+      .map(name => ({ name, kind: 'file' as const, size: 0, mtimeMs: 0, isLink: false })),
   }))
   on('process.run', async (_$, e) => {
     if (e.argv[0] === PYTHON) {
@@ -675,6 +677,72 @@ test('history lists earlier notes of every project newest first and continues th
   expect(fs[old]).toBe(before)
   expect(writes).not.toContain(old)
   expect(fs[NOW]?.match(/old change/g)?.length).toBe(2)
+})
+
+for (const atHome of [false, true]) {
+  test(`history imports and continues a note via ${atHome ? 'a home-relative' : 'an absolute'} path`, async ($, on) => {
+    const source = `${atHome ? HOME : ''}/scratch/trimmed notes.md`
+    const args = atHome ? '~/scratch/trimmed notes.md' : source
+    const original = '# Objectives\n\nImported plan\n\n# Todo\n\n- [~] Open task <!-- id:abcdef12 -->\n- [x] Finished task\n\n# Chat\n\nOriginal chat\n'
+    const writes: string[] = []
+    const fs: Fs = new Proxy<Fs>({ [source]: original }, {
+      set: (target, path, content) => (writes.push(String(path)), Reflect.set(target, path, content)),
+    })
+    engine(on, fs)
+    on('fs.stat', (_$, e) => {
+      if (e.path !== source) throw new Error(`ENOENT ${e.path}`)
+      return { value: { kind: 'file' as const, size: original.length, mtimeMs: 0, isLink: false, realPath: source } }
+    })
+    await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: false })
+
+    const result = await run($, `history ${args}`)
+    const paths = Object.keys(fs).filter(path => path.startsWith(`${DIR}/`) && isNotesFile(path.slice(DIR.length + 1)))
+    expect(paths).toHaveLength(2)
+    const copy = paths.find(path => path !== NOW)!
+    const name = copy.slice(DIR.length + 1)
+    const prefix = `2026-10-26-10-58-${projectName(ROOT)}-`
+    expect(name.startsWith(prefix)).toBe(true)
+    expect(name.slice(prefix.length)).toMatch(/^[a-zA-Z0-9]{8}\.md$/)
+    expect(fs[copy]).toBe(original)
+    expect(fs[source]).toBe(original)
+    expect(writes).not.toContain(source)
+    expect(result.text).toContain(`Continuing ${name}`)
+    expect(result.context?.[0]).toContain(`Session notes kept by notes-keeping: ${copy}`)
+    expect(result.context?.[0]).toContain(original.trimEnd())
+    expect(fs[NOW]).toContain(`Continuation of: ${name}`)
+    expect(fs[NOW]).toContain('Imported plan')
+    expect(fs[NOW]).toContain('- [~] Open task <!-- id:abcdef12 -->')
+    expect(fs[NOW]).not.toContain('Finished task')
+    expect(fs[NOW]).not.toContain('Original chat')
+    expect((await run($, 'history')).text).toContain('Imported plan')
+  })
+}
+
+test('history reports unrecognized filenames and explains the required name when selected', async ($, on) => {
+  const name = '2026-10-24-09-00-example-trimmed.md'
+  const fs: Fs = { [`${DIR}/${name}`]: '# Objectives\n\nOld plan\n' }
+  engine(on, fs)
+  await $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: false })
+
+  expect((await run($, 'history')).text?.split('\n')).toEqual([
+    'No earlier notes.',
+    `Skipped 1 file(s) with unrecognized names: "${name}"`,
+  ])
+  const noExtension = '2026-10-24-09-00-example-trimmed1'
+  const valid = `${noExtension}.md`
+  fs[`${DIR}/${noExtension}`] = '# Objectives\n\nAnother skipped plan\n'
+  fs[`${DIR}/${valid}`] = '# Objectives\n\nEarlier plan\n'
+  const list = (await run($, 'history')).text?.split('\n')
+  expect(list?.slice(0, 2)).toEqual([
+    ' 1. 2026-10-24 09:00  example  trimmed1  Earlier plan',
+    `Skipped 2 file(s) with unrecognized names: "${name}", "${noExtension}"`,
+  ])
+  const result = await run($, `history ${name}`)
+  expect(result.text).toContain('unrecognized name')
+  expect(result.text).toContain('YYYY-MM-DD-HH-MM-<project>-<8 alphanumeric characters>')
+  expect(result.context).toBeUndefined()
+  expect((await run($, `history ${noExtension}`)).text).toContain('unrecognized name')
+  expect(Object.keys(fs)).toEqual([`${DIR}/${name}`, `${DIR}/${noExtension}`, `${DIR}/${valid}`])
 })
 
 test('history logs the attach, one row per item carried over naming its id, and one per carried objective that has no item', async ($, on) => {

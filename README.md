@@ -93,9 +93,15 @@ Session notes in `~/.notes-keeping/<date>-<time>-<project>-<session>.md`, commit
 | `note <text>` | add a note to the last pasted text; each note is one more line |
 | `replies` | open the panel at the queue view |
 | `todo [sync]` | show the todo list; `sync` runs Laya over the objectives and the last reply now |
-| `history [n\|file]` | list earlier notes; pick one to continue it here: its objectives, updates and open todo items (statuses kept) are copied into this file under a `Continuation of:` line, and the picked file is never written. Todo items marked done `[x]` or declined `[-]` are not copied, nor is an objective whose items are all done or declined (an objective with no item, or with one open, is copied) |
+| `history [n\|file\|path]` | list earlier notes or continue one by number, filename, or external path. Copies its objectives, updates, and open todo items with their statuses under a `Continuation of:` line. Objectives with only done or declined items stay behind |
 | `show`, `hide` | open or close the panel |
 | `debug` | the selection poll: its tick count, when it last ran, the live selection, and its last ten outcomes, each one saying why a selection opened the pane or did not |
+
+To continue a note from outside the notes folder, run `/notes-keeping history ~/scratch/trimmed.md` or give an
+absolute path. The command saves a copy under a generated history filename, leaves the source intact, and
+continues the copy in the current session. `/notes-keeping history` reports skipped files with unrecognized
+names. Selecting one by its exact filename shows the required format
+`YYYY-MM-DD-HH-MM-<project>-<8 alphanumeric characters>[-<number>].md`.
 
 ## The panel
 
@@ -399,7 +405,7 @@ labeled `Previous session's notes`: its Important, Chat and done or declined ite
 behind. Later prompts do not repeat it. Every prompt that carries the whole notes file carries it again while the
 notes still open with `Continuation of:` that file, a notes file of the folder (a line edited to name any other path
 puts nothing in). Only the directly attached file goes in, not the file it continued in turn. No size cap: it is a notes file of the same kind as the current one, which goes in whole too (the largest
-here were about 43 KB). `/notes-keeping history <n|file>` puts the attached file in context with its own output instead.
+here were about 43 KB). `/notes-keeping history <n|file|path>` puts the attached file in context with its own output instead.
 
 ### Action log
 
