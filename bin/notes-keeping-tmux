@@ -44,8 +44,11 @@ bind-key -T copy-mode-vi MouseDragEnd1Pane send-keys -X copy-pipe-and-cancel '' 
 bind-key -T copy-mode M-w send-keys -X copy-pipe-and-cancel '' 'notes-keeping-#{pane_id}-' \; run-shell -b "$quoted stamp #{q:socket_path} #{q:pane_id}"
 bind-key -T copy-mode MouseDragEnd1Pane send-keys -X copy-pipe-and-cancel '' 'notes-keeping-#{pane_id}-' \; run-shell -b "$quoted stamp #{q:socket_path} #{q:pane_id}"
 bind-key N run-shell -b "$quoted capture #{q:socket_path} #{q:pane_id}"
-$END
 EOF
+  if [ "${1:-1}" = 1 ] && [ "$(uname -s)" = Darwin ]; then
+    printf 'bind-key P run-shell "%s arm-clipboard #{q:socket_path} #{q:pane_id}"\n' "$quoted"
+  fi
+  printf '%s\n' "$END"
 }
 
 rewrite_without_block() {
@@ -75,11 +78,21 @@ copy-mode-vi MouseDragEnd1Pane
 copy-mode M-w
 copy-mode MouseDragEnd1Pane
 EOF
-  local temp existing owned
+  local temp existing owned arm=1 binding
+  if [ "$(uname -s)" = Darwin ]; then
+    binding="$(tmux list-keys -T prefix P 2>/dev/null || true)"
+    case "$binding" in
+      ''|*notes-keeping*arm-clipboard*) ;;
+      *)
+        arm=0
+        printf '%s\n' 'notes-keeping-tmux: Prefix then Shift+P is already bound. Kept it and installed the regular popup shortcut.' >&2
+        ;;
+    esac
+  fi
   temp="$(mktemp "${TMPDIR:-/tmp}/notes-keeping-tmux.XXXXXX")"
   existing="$(mktemp "${TMPDIR:-/tmp}/notes-keeping-tmux-existing.XXXXXX")"
   owned="$(mktemp "${TMPDIR:-/tmp}/notes-keeping-tmux-owned.XXXXXX")"
-  block > "$owned"
+  block "$arm" > "$owned"
   if [ -f "$CONFIG" ]; then
     rewrite_without_block "$CONFIG" "$existing"
   else

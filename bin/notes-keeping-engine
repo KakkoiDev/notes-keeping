@@ -382,12 +382,10 @@ if (!isLocked) {
   const lockArgs = process.platform === 'darwin' ? ['-t', '10', lock] : ['-w', '10', lock]
   const done = spawnSync(coordinator, [...lockArgs, process.execPath, process.argv[1]!, '--locked', '--file', path], {
     input: raw,
-    encoding: 'utf8',
+    stdio: ['pipe', 'inherit', 'inherit'],
     env: process.env,
   })
   if (done.error) fail(`${coordinator} failed: ${done.error.message}`)
-  if (done.stdout) process.stdout.write(done.stdout)
-  if (done.stderr) process.stderr.write(done.stderr)
   process.exit(done.status ?? 1)
 }
 

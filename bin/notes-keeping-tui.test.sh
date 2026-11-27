@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+export PATH="$ROOT/bin:$PATH"
 TMP_ROOT="${TMPDIR:-/tmp}"
 H="$(mktemp -d "$TMP_ROOT/nk-tui.XXXXXX")"
 export PYTHONDONTWRITEBYTECODE=1
@@ -73,6 +74,54 @@ module.open_workspace = lambda server, pane, session, cwd: opened.append((server
 module.capture(os.environ['SOCKET'], os.environ['PANE'])
 assert len(opened) == 1
 assert opened[0][0:2] == (os.environ['SOCKET'], os.environ['PANE'])
+server, pane = opened[0][:2]
+revision = [10]
+metadata_reads = []
+content_reads = []
+clipboard_drafts = []
+messages = []
+module.clipboard_revision = lambda: metadata_reads.append(revision[0]) or revision[0]
+module.read_clipboard = lambda: content_reads.append(True) or b'fresh clipboard fixture'
+module.open_capture = lambda *args, **kwargs: clipboard_drafts.append((args, kwargs))
+module.pane_message = lambda *args: messages.append(args[-1])
+
+module.capture(server, pane)
+assert not metadata_reads and not content_reads and opened[-1][:2] == (server, pane)
+module.arm_clipboard(server, pane)
+arm_path = module.key_path('clipboard-arms', server, pane)
+assert arm_path.exists() and not content_reads
+module.capture(server, pane)
+assert not arm_path.exists() and not content_reads and opened[-1][:2] == (server, pane)
+
+module.arm_clipboard(server, pane)
+revision[0] += 1
+module.capture(server, pane)
+assert len(clipboard_drafts) == len(content_reads) == 1 and not arm_path.exists()
+args, kwargs = clipboard_drafts[0]
+assert args[0]['paneId'] == pane and args[3] == b'fresh clipboard fixture'
+assert kwargs['label'] == 'Clipboard preview'
+read_count = len(metadata_reads)
+module.capture(server, pane)
+assert len(content_reads) == 1 and len(metadata_reads) == read_count and opened[-1][:2] == (server, pane)
+
+for stale in ({'generation': 'wrong-generation'}, {'armedAt': 0}):
+    module.arm_clipboard(server, pane)
+    module.atomic_json(arm_path, {**module.checked_record(arm_path), **stale})
+    revision[0] += 1
+    read_count = len(metadata_reads)
+    module.capture(server, pane)
+    assert not arm_path.exists() and len(content_reads) == 1 and len(metadata_reads) == read_count
+
+def changed_during_read():
+    revision[0] += 1
+    return b'clipboard changed concurrently'
+
+module.arm_clipboard(server, pane)
+revision[0] += 1
+module.read_clipboard = changed_during_read
+module.capture(server, pane)
+assert len(clipboard_drafts) == 1 and 'clipboard changed while reading' in messages[-1]
+
 preview = module.linked('See [docs](https://example.com/a) and https://example.com/b.')
 assert preview.count('\x1b]8;;https://') == 2
 assert 'https://example.com/b\x1b\\' in preview and '\x1b\\.' in preview
@@ -178,7 +227,8 @@ assert source_path.read_bytes() == saved_source
 PY
 
 TUI="$ROOT/bin/notes-keeping-tui" ADAPTER="$ROOT/bin/notes-keeping-codex" CWD="$H/project" SOCKET="$SOCKET" PANE="${PANES[0]}" SESSION="$SESSION" python3 - <<'PY'
-import hashlib, importlib.machinery, json, os, pty, select, subprocess, time
+import hashlib, importlib.machinery, json, os, pty, select, shlex, subprocess, time
+from pathlib import Path
 module = importlib.machinery.SourceFileLoader('notes_keeping_tui_navigation', os.environ['TUI']).load_module()
 
 def run(args, keys):
@@ -301,6 +351,24 @@ for status, row in status_rows.items():
 assert 'Continuation of: ' + status_note.name in empty_note.read_text()
 assert status_note.read_bytes() == source_before
 
+large_history = module.notes_dir() / '2000-01-01-00-00-archive-feed0002.md'
+large_chat = ('Long archived chat line.\n' * 50_000) + 'End of archived chat.'
+large_history.write_text('# Objectives\n\n# Chat\n\n' + large_chat + '\n')
+_, preview = module.request({'type': 'preview', **fixture_header, 'source': large_history.name})
+assert json.loads(preview)['chat'] == large_chat
+
+_, current_body = module.request({'type': 'workspace', **header})
+linked_id = next(item['id'] for item in json.loads(current_body)['todos'] if item['text'] == 'pane one α')
+bridge = Path(os.environ['CWD']) / 'config/notes-keeping-bridge'
+bridge.parent.mkdir()
+fleet = {'rows': [{'task': 'linked-fixture', 'title': 'Linked fixture call', 'flag': '!', 'word': 'call', 'todos': [linked_id]}]}
+bridge.write_text("#!/bin/sh\nprintf '%s\\n' " + shlex.quote(json.dumps(fleet)) + '\n')
+bridge.chmod(0o700)
+call_frames = run(popup, b'mq').split('\x1b[2J\x1b[H')
+todo_frames = [frame for frame in call_frames if 'Filter:' in frame]
+assert 'Open calls: 1' in todo_frames[0] and 'Linked fixture call' in todo_frames[0]
+assert 'Open calls:' not in todo_frames[-1]
+
 PY
 
 BEFORE="$(shasum -a 256 "$NOTE_ONE")"
@@ -329,3 +397,6 @@ printf 'ok   no-selection opens full workspace on Todos and same-cwd targets sta
 printf 'ok   all workspace views, direct category save, Todo status, and OSC 8 links work\n'
 printf 'ok   History arrows, preview, return, and view refresh preserve the workspace mapping\n'
 printf 'ok   all six Todo statuses, filter persistence, and empty-session History attach work\n'
+printf 'ok   large History previews survive the mutation lock and IPC frame\n'
+printf 'ok   visible linked calls are counted and filtered calls are hidden\n'
+printf 'ok   clipboard preview requires a fresh one-shot arm and rejects a race\n'
